@@ -36,11 +36,11 @@ It combines native C database speed (`libcorm`) with intelligent decision judgin
 
 ---
 
-## Quickstart: Pair with Local `axil-qllm` (60 Seconds)
+## Quickstart: Pair with Local `axil-auren` (60 Seconds)
 
-You can pair `pi-mm` with [axil-qllm](https://github.com/tty-pt/libqllm) (or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
+You can pair `pi-mm` with [axil-auren](https://github.com/tty-pt/auren) (formerly `axil-qllm`, or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
 
-> 📖 **Full axil-qllm Documentation**: See [libqllm README](https://github.com/tty-pt/libqllm) (or local [libqllm/README.md](../../../libqllm/README.md)) for installation and multi-model configuration details.
+> 📖 **Full axil-auren Documentation**: See [auren README](https://github.com/tty-pt/auren) (or local [auren/README.md](../../../auren/README.md)) for installation and multi-model configuration details.
 
 ### 1. Download Fast GGUF Models (~530 MB total)
 
@@ -56,16 +56,16 @@ curl -L -o ~/.models/bge-small-en-v1.5.gguf \
   https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q8_0.gguf
 ```
 
-### 2. Start the `axil-qllm` Multi-Model Daemon
+### 2. Start the `axil-auren` Multi-Model Daemon
 
 ```bash
-QLLM_JUDGE_MODEL="qwen" \
-QLLM_JUDGE_PATH=~/.models/qwen2.5-0.5b-instruct.gguf \
-QLLM_CHAT_MODEL="qwen" \
-QLLM_CHAT_PATH=~/.models/qwen2.5-0.5b-instruct.gguf \
-QLLM_EMBED_MODEL="bge-small" \
-QLLM_EMBED_PATH=~/.models/bge-small-en-v1.5.gguf \
-axil -A -d -p 4242 -m $HOME/libqllm/lib/libaxil-qllm
+AUREN_JUDGE_MODEL="qwen" \
+AUREN_JUDGE_PATH=~/.models/qwen2.5-0.5b-instruct.gguf \
+AUREN_CHAT_MODEL="qwen" \
+AUREN_CHAT_PATH=~/.models/qwen2.5-0.5b-instruct.gguf \
+AUREN_EMBED_MODEL="bge-small" \
+AUREN_EMBED_PATH=~/.models/bge-small-en-v1.5.gguf \
+axil -A -d -p 4242 -m $HOME/auren/lib/libaxil-auren
 ```
 
 ### 3. Enable in Pi

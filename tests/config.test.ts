@@ -164,3 +164,29 @@ Deno.test("resolveAdvancedTools: PI_MM_ADVANCED_TOOLS env var takes precedence",
     Deno.removeSync(dir, { recursive: true });
   }
 });
+
+Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
+  const envRec = {
+    AUREN_URL: "http://localhost:4242",
+    AUREN_MODEL: "auren-model",
+    AUREN_KEY: "auren-token",
+    QLLM_URL: "http://localhost:9999",
+    QLLM_MODEL: "qllm-model",
+    QLLM_KEY: "qllm-token",
+  };
+  const filled = applyEnv(DEFAULT_CONFIG, envRec);
+  check(filled.embedUrl === "http://localhost:4242/v1/embeddings", "AUREN_URL sets embedUrl");
+  check(filled.judgeUrl === "http://localhost:4242/api/v1/systemone/", "AUREN_URL sets judgeUrl");
+  check(filled.synthUrl === "http://localhost:4242/v1/chat/completions", "AUREN_URL sets synthUrl");
+  check(filled.embedModel === "auren-model", "AUREN_MODEL sets embedModel");
+  check(filled.embedKey === "auren-token", "AUREN_KEY sets embedKey");
+
+  // Fallback to QLLM_URL when AUREN_URL is absent
+  const fallbackRec = {
+    QLLM_URL: "http://localhost:9999",
+    QLLM_MODEL: "qllm-model",
+  };
+  const fallbackFilled = applyEnv(DEFAULT_CONFIG, fallbackRec);
+  check(fallbackFilled.embedUrl === "http://localhost:9999/v1/embeddings", "QLLM_URL fallback embedUrl");
+  check(fallbackFilled.embedModel === "qllm-model", "QLLM_MODEL fallback embedModel");
+});

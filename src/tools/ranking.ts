@@ -132,20 +132,20 @@ export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria):
 
   score *= (LIFECYCLE_WEIGHTS[env.lifecycle] ?? 0.8);
 
-  // Provenance bonus for evidence-backed conclusions
+  // Provenance bonus for evidence-backed conclusions (multiplicative to preserve RRF scale)
   if (env.evidence && env.evidence.length > 0) {
-    score += 0.005;
+    score *= 1.05;
   }
 
   // Utility feedback factor
   if (env.utility) {
     const net = (env.utility.usedCount || 0) - (env.utility.irrelevantCount || 0) - (env.utility.obsoleteCount || 0) * 2;
-    score += Math.max(-0.015, Math.min(0.015, net * 0.002));
+    score *= (1 + Math.max(-0.05, Math.min(0.05, net * 0.01)));
   }
 
   // Scope compatibility bonus
-  if (crit.project && env.context?.project === crit.project) score += 0.01;
-  if (crit.subsystem && env.context?.subsystem === crit.subsystem) score += 0.01;
+  if (crit.project && env.context?.project === crit.project) score *= 1.05;
+  if (crit.subsystem && env.context?.subsystem === crit.subsystem) score *= 1.05;
 
   return score;
 }

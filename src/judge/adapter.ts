@@ -102,8 +102,8 @@ export async function callJevJudge(
         type: "choice",
         instructions: "Is this user-provided information worth remembering for future conversations? Answer yes or no.",
         criteria: {
-          yes: "The user provided meaningful personal facts, experiences, preferences, technical discoveries, decisions, or specific details worth remembering.",
-          no: "The exchange is transient chitchat, routine acknowledgements, questions without new facts, or casual filler.",
+          yes: "The user stated meaningful new personal facts, experiences, preferences, technical discoveries, or decisions worth remembering.",
+          no: "The user is asking a question, inquiry, or recall test (e.g. 'do you remember', 'what did I say'), or the exchange is transient chitchat, routine acknowledgements, or casual filler.",
         },
       },
     },

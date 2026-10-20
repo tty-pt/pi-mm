@@ -179,10 +179,10 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   let defaultSynthModel = envSynthModel;
   let defaultSynthKey = envSynthKey;
 
-  // Legacy fallback if QLLM_URL is set
-  const qllmBase = env["QLLM_URL"];
-  if (qllmBase && qllmBase.trim() !== "") {
-    const trimmedBase = qllmBase.trim().replace(/\/+$/, "");
+  // Auren endpoint fallback (or legacy QLLM_URL)
+  const aurenBase = env["AUREN_URL"] ?? env["QLLM_URL"];
+  if (aurenBase && aurenBase.trim() !== "") {
+    const trimmedBase = aurenBase.trim().replace(/\/+$/, "");
     if (!defaultJudgeUrl) {
       defaultJudgeUrl = trimmedBase.endsWith("/api/v1/systemone/") ? trimmedBase :
                        (trimmedBase.endsWith("/api/v1/systemone") ? `${trimmedBase}/` : `${trimmedBase}/api/v1/systemone/`);
@@ -194,12 +194,14 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
       defaultSynthUrl = trimmedBase.endsWith("/v1/chat/completions") ? trimmedBase :
                        (trimmedBase.endsWith("/chat/completions") ? trimmedBase : `${trimmedBase}/v1/chat/completions`);
     }
-    if (!defaultJudgeModel && env["QLLM_MODEL"]) defaultJudgeModel = env["QLLM_MODEL"];
-    if (!defaultEmbedModel && env["QLLM_MODEL"]) defaultEmbedModel = env["QLLM_MODEL"];
-    if (!defaultSynthModel && env["QLLM_MODEL"]) defaultSynthModel = env["QLLM_MODEL"];
-    if (!defaultJudgeKey && env["QLLM_KEY"]) defaultJudgeKey = env["QLLM_KEY"];
-    if (!defaultEmbedKey && env["QLLM_KEY"]) defaultEmbedKey = env["QLLM_KEY"];
-    if (!defaultSynthKey && env["QLLM_KEY"]) defaultSynthKey = env["QLLM_KEY"];
+    const aurenModel = env["AUREN_MODEL"] ?? env["QLLM_MODEL"];
+    const aurenKey = env["AUREN_KEY"] ?? env["QLLM_KEY"];
+    if (!defaultJudgeModel && aurenModel) defaultJudgeModel = aurenModel;
+    if (!defaultEmbedModel && aurenModel) defaultEmbedModel = aurenModel;
+    if (!defaultSynthModel && aurenModel) defaultSynthModel = aurenModel;
+    if (!defaultJudgeKey && aurenKey) defaultJudgeKey = aurenKey;
+    if (!defaultEmbedKey && aurenKey) defaultEmbedKey = aurenKey;
+    if (!defaultSynthKey && aurenKey) defaultSynthKey = aurenKey;
   }
 
   const envUrl = defaultEmbedUrl;

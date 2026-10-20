@@ -127,6 +127,14 @@ export function buildInjectedContext(
       : formatCompactMemoryEntry(cand)) + "\n";
 
     if (content.length + entry.length > effectiveBudget) {
+      // If entry with excerpts exceeds budget, fall back to compact entry without excerpts
+      if (excerpts && excerpts.length > 0) {
+        const compactEntry = formatCompactMemoryEntry(cand) + "\n";
+        if (content.length + compactEntry.length <= effectiveBudget) {
+          content += compactEntry;
+          continue;
+        }
+      }
       if (content === header) {
         content += entry.slice(0, Math.max(0, effectiveBudget - content.length - 4)) + "...\n";
       }
@@ -155,7 +163,7 @@ async function runScanWithTimeout(
   const semanticTimeout = Math.min(1000, Math.max(100, Math.floor(timeoutMs * 0.67)));
 
   try {
-    const hybridPromise = executeHybridScan(env, { topic, limit: 5, embed: true, dedupe: true })
+    const hybridPromise = executeHybridScan(env, { topic, limit: 5, embed: true, dedupe: true, overfetch: true })
       .then((res) => res.records);
 
     const timeoutPromise = new Promise<null>((resolve) => {
@@ -186,7 +194,7 @@ async function runScanWithTimeout(
 
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
   try {
-    const lexPromise = executeHybridScan(env, { topic, limit: 5, embed: false, dedupe: true })
+    const lexPromise = executeHybridScan(env, { topic, limit: 5, embed: false, dedupe: true, overfetch: true })
       .then((res) => res.records);
 
     const fallbackTimeoutPromise = new Promise<FusedCandidate[]>((resolve) => {

@@ -83,3 +83,107 @@ Deno.test("decodePayload handles evidence links and utility feedback", () => {
   assert.strictEqual(decoded.envelope.utility?.usedCount, 3);
   assert.strictEqual(decoded.envelope.utility?.lastOutcome, "useful");
 });
+
+Deno.test("payload optimization: compact encoding reduces payload size and preserves all fields", () => {
+  const largeRequest = "A".repeat(5000);
+  const largeProblem = "B".repeat(5000);
+  const largeApproach = "C".repeat(2000);
+
+  const envelope: MemoryEnvelope = {
+    level: "L1",
+    type: "investigation",
+    lifecycle: "tested",
+    summary: "Investigation into memory footprint",
+    evidence: [201, 202, 203],
+    supersedes: 150,
+    supersededBy: 300,
+    tags: ["perf", "corm"],
+    context: {
+      project: "site",
+      subsystem: "pi-mm",
+      module: "payload",
+    },
+    episode: {
+      request: largeRequest,
+      problem: largeProblem,
+      approaches: [
+        { approach: largeApproach, outcome: "worked", reason: "effective compression" },
+      ],
+      findings: ["Finding 1", "Finding 2"],
+      outcome: "success",
+      sessionId: "sess-abc-123",
+      sessionFile: "/tmp/sess-abc-123.jsonl",
+      leafId: "leaf_999",
+    },
+  };
+
+  const rawLegacy = `2026-10-20:${JSON.stringify(envelope)}`;
+  const rawCompact = encodePayload("2026-10-20", envelope);
+
+  // Assert significant size reduction (>70% on large transcript-heavy records)
+  assert.ok(rawCompact.length < rawLegacy.length * 0.3, `Expected >70% size reduction, got ${rawCompact.length} vs ${rawLegacy.length}`);
+
+  // Assert compact payload format
+  assert.ok(rawCompact.startsWith("2026-10-20:{\"_v\":1,"));
+
+  // Assert decodePayload restores all essential fields
+  const decoded = decodePayload(rawCompact);
+  assert.strictEqual(decoded.date, "2026-10-20");
+  assert.strictEqual(decoded.envelope.level, "L1");
+  assert.strictEqual(decoded.envelope.type, "investigation");
+  assert.strictEqual(decoded.envelope.lifecycle, "tested");
+  assert.strictEqual(decoded.envelope.summary, "Investigation into memory footprint");
+  assert.deepStrictEqual(decoded.envelope.evidence, [201, 202, 203]);
+  assert.strictEqual(decoded.envelope.supersedes, 150);
+  assert.strictEqual(decoded.envelope.supersededBy, 300);
+  assert.deepStrictEqual(decoded.envelope.tags, ["perf", "corm"]);
+  assert.strictEqual(decoded.envelope.context?.project, "site");
+  assert.strictEqual(decoded.envelope.context?.subsystem, "pi-mm");
+
+  // Transcript provenance pointers preserved for session_history lookup
+  assert.strictEqual(decoded.envelope.episode?.sessionId, "sess-abc-123");
+  assert.strictEqual(decoded.envelope.episode?.sessionFile, "/tmp/sess-abc-123.jsonl");
+  assert.strictEqual(decoded.envelope.episode?.leafId, "leaf_999");
+  assert.strictEqual(decoded.envelope.episode?.outcome, "success");
+  assert.deepStrictEqual(decoded.envelope.episode?.findings, ["Finding 1", "Finding 2"]);
+
+  // Oversized text fields are safely bounded
+  assert.ok(decoded.envelope.episode?.request && decoded.envelope.episode.request.length <= 400);
+  assert.ok(decoded.envelope.episode?.problem && decoded.envelope.episode.problem.length <= 400);
+  assert.ok(decoded.envelope.episode?.approaches?.[0]?.approach && decoded.envelope.episode.approaches[0].approach.length <= 200);
+});
+
+Deno.test("payload optimization: decodePayload seamlessly reads both legacy verbose JSON and compact v1 JSON", () => {
+  const legacyJson = JSON.stringify({
+    level: "L1",
+    type: "note",
+    lifecycle: "observed",
+    summary: "Legacy verbose note",
+    evidence: [42],
+    episode: {
+      problem: "Legacy problem description",
+      findings: ["legacy finding"],
+      outcome: "success",
+    },
+  });
+
+  const legacyPayload = `2026-10-15:${legacyJson}`;
+  const decodedLegacy = decodePayload(legacyPayload);
+
+  assert.strictEqual(decodedLegacy.date, "2026-10-15");
+  assert.strictEqual(decodedLegacy.envelope.level, "L1");
+  assert.strictEqual(decodedLegacy.envelope.type, "note");
+  assert.strictEqual(decodedLegacy.envelope.lifecycle, "observed");
+  assert.strictEqual(decodedLegacy.envelope.summary, "Legacy verbose note");
+  assert.deepStrictEqual(decodedLegacy.envelope.evidence, [42]);
+  assert.strictEqual(decodedLegacy.envelope.episode?.problem, "Legacy problem description");
+
+  // Re-encoding converts it to compact v1 format
+  const reEncoded = encodePayload(decodedLegacy.date, decodedLegacy.envelope);
+  assert.ok(reEncoded.startsWith("2026-10-15:{\"_v\":1,"));
+
+  const reDecoded = decodePayload(reEncoded);
+  assert.strictEqual(reDecoded.envelope.summary, "Legacy verbose note");
+  assert.strictEqual(reDecoded.envelope.level, "L1");
+  assert.deepStrictEqual(reDecoded.envelope.evidence, [42]);
+});

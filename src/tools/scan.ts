@@ -156,6 +156,7 @@ export interface HybridScanOptions {
   embed?: boolean;
   limit?: number;
   dedupe?: boolean;
+  overfetch?: boolean;
 }
 
 export async function executeHybridScan(
@@ -169,6 +170,9 @@ export async function executeHybridScan(
 
   const timeLevel = resolveTimeLevel(opts.level, opts.timeWindow);
   const limit = defaultLimit(opts.limit) || env.cfg.scanLimit;
+  // Overfetch raw candidates from storage when requested (e.g. auto_recall)
+  // to prevent downstream filters from starving valid memories.
+  const rawFetchLimit = opts.overfetch ? Math.max(limit * 4, 25) : limit;
   const untilRaw = opts.until;
   const until = typeof untilRaw === "string" && /^\d{4}-\d{2}-\d{2}/.test(untilRaw) ? untilRaw.slice(0, 10) : undefined;
   const wantEmbed = opts.embed === true;
@@ -179,7 +183,7 @@ export async function executeHybridScan(
   const cwd = memDir(env);
   const now = env.nowProvider();
 
-  const lexResult = await queryLexicalPath(env, cwd, axes, timeLevel, now, until, topic, limit);
+  const lexResult = await queryLexicalPath(env, cwd, axes, timeLevel, now, until, topic, rawFetchLimit);
   if (lexResult.error) details["lexicalError"] = lexResult.error;
   debugLog("recall", "Lexical query path evaluated", {
     topic: topic.slice(0, 80),
@@ -190,7 +194,7 @@ export async function executeHybridScan(
 
   let semLines: ResultLine[] = [];
   if (embedReady) {
-    const semResult = await querySemanticPath(env, cwd, axes, timeLevel, now, until, topic, limit);
+    const semResult = await querySemanticPath(env, cwd, axes, timeLevel, now, until, topic, rawFetchLimit);
     if (semResult.error) details["embedError"] = semResult.error;
     semLines = semResult.lines;
     debugLog("recall", "Semantic query path evaluated", {

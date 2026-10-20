@@ -309,6 +309,7 @@ Deno.test("session_history: End-to-End Multi-Turn Aircraft Recall across Session
     await daemonRunner.run(buildStoreInvocation(cormBin, fspec, 1, envPayload, axisPath, tmpDir, eEnv));
 
     // Verify CORM only stored the compact memory (transcript was NOT duplicated in CORM)
+    assert.ok(envPayload.startsWith("2026-10-16:{\"_v\":1,"), "encodePayload must emit compact v1 format");
     const listRes = await daemonRunner.run(buildListInvocation(cormBin, fspec, axisPath, tmpDir, eEnv));
     const refs = parseBareRefs(listRes.stdout);
     assert.strictEqual(refs.length, 1, "CORM must contain only 1 compact memory record");
