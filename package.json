@@ -1,0 +1,62 @@
+{
+  "name": "@tty-pt/pi-mm",
+  "version": "0.1.0",
+  "description": "Memory Mipmaps extension for Pi Coding Agent — persistent, hierarchical recall with automatic bounded context injection and streamlined memory_recall, memory_record, memory_review tools.",
+  "keywords": [
+    "pi-package",
+    "memory",
+    "mipmaps",
+    "persistence",
+    "corm"
+  ],
+  "license": "BSD-2-Clause",
+  "author": "quirinpa",
+  "homepage": "https://github.com/tty-pt/pi-mm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tty-pt/pi-mm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tty-pt/pi-mm/issues"
+  },
+  "icon": "thumb.png",
+  "files": [
+    "index.ts",
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "cover.png",
+    "thumb.png"
+  ],
+  "main": "index.ts",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "deno test --allow-all --sloppy-imports --node-modules-dir=none tests/",
+    "lint": "deno lint src/ tests/ scripts/",
+    "benchmark": "deno run --allow-all scripts/benchmark-mm.ts",
+    "zip": "deno run --allow-all scripts/zip_bundle.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-agent-core": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true }
+  },
+  "pi": {
+    "image": "cover.png",
+    "extensions": [
+      "index.ts"
+    ],
+    "skills": [
+      "skills/pi-mm/SKILL.md"
+    ]
+  }
+}
