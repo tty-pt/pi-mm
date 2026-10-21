@@ -7,6 +7,7 @@ import { traverseDown, renderTree } from "./traverse.ts";
 import type { FusedCandidate } from "./ranking.ts";
 import { enrichCandidatesWithSessionHistory } from "../hooks/auto_recall.ts";
 import type { SessionExcerpt } from "../session_history.ts";
+import { canonicalSortByRef } from "../blocks.ts";
 
 const RECALL_PARAMS = {
   type: "object",
@@ -113,14 +114,17 @@ async function executeRecall(
 
     const excerptsMap = await enrichCandidatesWithSessionHistory(records, query, ctx.cwd);
 
-    const lines = [`Found ${records.length} relevant memory record(s) for "${query}":\n`];
-    for (const rec of records) {
+    // Canonical ordering by ascending ref ensures stable prompt block hashing across turns
+    const sortedRecords = canonicalSortByRef(records);
+
+    const lines = [`Found ${sortedRecords.length} relevant memory record(s) for "${query}":\n`];
+    for (const rec of sortedRecords) {
       lines.push(formatResult(rec, evidenceMap?.get(rec.ref), excerptsMap.get(rec.ref)));
     }
 
     return {
       content: [{ type: "text", text: lines.join("\n") }],
-      details: { query, count: records.length, results: records, scanDetails: details },
+      details: { query, count: sortedRecords.length, results: sortedRecords, scanDetails: details },
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
