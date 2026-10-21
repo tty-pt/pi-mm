@@ -28,7 +28,7 @@ It combines native C database speed (`libcorm`) with intelligent decision judgin
 `pi-mm` hooks directly into the standard Pi extension lifecycle:
 
 1. **Before Agent Starts (`before_agent_start`)**:  
-   When you send a prompt, `pi-mm` runs a hybrid search across lexical keywords ([libstoma](https://github.com/tty-pt/site/tree/main/external/libstoma)) and vector embeddings ([libsepal](https://github.com/tty-pt/site/tree/main/external/libsepal)). Relevant memories are automatically injected into the prompt context.
+   When you send a prompt, `pi-mm` runs a hybrid search across lexical keywords ([liblemma](https://github.com/tty-pt/liblemma)) and vector embeddings ([libsepal](https://github.com/tty-pt/libsepal)). Relevant memories are automatically injected into the prompt context.
 2. **When the Turn Concludes (`agent_settled`)**:  
    When the agent finishes its response, `pi-mm` evaluates the exchange using an intelligent judge to decide whether to `remember`, `update`, or `skip`. Meaningful technical conclusions and learnings are cleanly summarized and persisted to disk.
 3. **Agent Tools**:  
@@ -38,7 +38,7 @@ It combines native C database speed (`libcorm`) with intelligent decision judgin
 
 ## Quickstart: Pair with Local `axil-auren` (60 Seconds)
 
-You can pair `pi-mm` with [axil-auren](https://github.com/tty-pt/auren) (formerly `axil-qllm`, or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
+You can pair `pi-mm` with [axil-auren](https://github.com/tty-pt/auren) (or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
 
 > 📖 **Full axil-auren Documentation**: See [auren README](https://github.com/tty-pt/auren) (or local [auren/README.md](../../../auren/README.md)) for installation and multi-model configuration details.
 
@@ -97,16 +97,22 @@ When you talk to Pi, `pi-mm` will automatically classify technical decisions wit
 
 `pi-mm` can be installed like any standard Pi extension:
 
-### Project-Specific (Recommended for Repositories)
+### Package Installation (Recommended)
+Install via npm / Pi extension registry:
+```bash
+pi install npm:@tty-pt/pi-mm
+```
+
+### Project-Specific Clone
 Place or clone the extension into your repository's `.pi/extensions/` directory:
 ```bash
-git clone https://github.com/tty-pt/site .pi/extensions/pi-mm
+git clone https://github.com/tty-pt/pi-mm.git .pi/extensions/pi-mm
 ```
 
 ### Global User Extension
 Place or clone the extension into your global Pi agent directory:
 ```bash
-git clone https://github.com/tty-pt/site ~/.pi/agent/extensions/pi-mm
+git clone https://github.com/tty-pt/pi-mm.git ~/.pi/agent/extensions/pi-mm
 ```
 
 ### Direct CLI Flag
