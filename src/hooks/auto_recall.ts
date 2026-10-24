@@ -7,18 +7,24 @@ import { memDir, sepalConfigured } from "../tools/index.ts";
 import { filespecFor } from "../corm.ts";
 import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } from "../session_history.ts";
 
+import { isCleanSummaryText } from "../payload.ts";
+import { isQuestionMemory } from "../tools/ranking.ts";
+
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
 
 const TRIVIAL_PROMPT_RE = /^(hi|hello|hey|greetings|thanks|thank you|thx|ok|okay|k|yes|no|yep|nope|sure|good morning|good afternoon|good evening|cool|bye|goodbye|test|ping|pong)[!.?\s]*$/i;
+const WORKFLOW_PROMPT_RE = /^(?:review running|quest \w+ promoted|setback recorded|verdict arrives|draft proposal)\b/i;
 
 export function shouldTriggerAutoRecall(prompt: string): boolean {
   const trimmed = prompt.trim();
   if (trimmed.length < 5) return false;
   if (TRIVIAL_PROMPT_RE.test(trimmed)) return false;
+  if (WORKFLOW_PROMPT_RE.test(trimmed)) return false;
   // Normalize internal whitespace and strip trailing punctuation for robust matching
   const normalized = trimmed.replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
   if (TRIVIAL_PROMPT_RE.test(normalized)) return false;
+  if (WORKFLOW_PROMPT_RE.test(normalized)) return false;
   return true;
 }
 
@@ -79,6 +85,12 @@ export async function primeSubsystemInvariants(
     return results;
   })();
   return await Promise.race([work, timer]);
+}
+
+export function isMemoryRecallPrompt(prompt?: string): boolean {
+  if (!prompt) return false;
+  const p = prompt.trim().toLowerCase();
+  return /^(?:do\s+you\s+(?:remember|recall)|what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+(?:i|we)\s+(?:say|tell|mention|decide|discuss)|did\s+i\s+(?:mention|tell|say)|can\s+you\s+(?:remember|recall)|remind\s+me|have\s+we\s+discussed|did\s+we\s+talk\s+about)\b/i.test(p);
 }
 
 export function isDirectMemoryQuestion(prompt?: string): boolean {
@@ -177,11 +189,18 @@ export function buildInjectedContext(
   excerptsMap?: Map<number, SessionExcerpt[]>,
   prompt?: string,
 ): string {
-  // Exclude contradicted and superseded records, and exclude raw tool episodes (L0) from conversational context
+  // Exclude contradicted and superseded records, raw tool episodes (L0),
+  // corrupted/unprintable summaries, and question-memories from conversational context
+  const isDirectQuestion = isDirectMemoryQuestion(prompt);
+  const isExplicitRecall = isMemoryRecallPrompt(prompt);
   const valid = candidates.filter((c) => {
     const lc = c.envelope?.lifecycle ?? c.lifecycle;
     const level = c.envelope?.level ?? c.level;
-    return lc !== "contradicted" && lc !== "superseded" && level !== "L0";
+    if (lc === "contradicted" || lc === "superseded" || level === "L0") return false;
+    const summary = c.envelope?.summary || c.summary;
+    if (!isCleanSummaryText(summary)) return false;
+    if (!isDirectQuestion && !isExplicitRecall && c.envelope && isQuestionMemory(c, c.envelope)) return false;
+    return true;
   });
   if (valid.length === 0) return "";
 
@@ -193,7 +212,6 @@ export function buildInjectedContext(
 - For casual conversation and greetings, reply conversationally without invoking codebase tools.`;
 
   // Compress/omit guidance when user explicitly asks direct memory questions, freeing budget for memories
-  const isDirectQuestion = isDirectMemoryQuestion(prompt);
   const includeGuidance = !isDirectQuestion && budget >= 600;
   const guidanceText = includeGuidance ? guidance : "";
 

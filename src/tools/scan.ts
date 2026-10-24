@@ -1,9 +1,10 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
-import { filespecFor, buildScanInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
+import { filespecFor, buildScanInvocation, buildGetInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
 import type { MipmapLevel } from "../types.ts";
 import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria } from "./ranking.ts";
+import { decodePayload, isCleanSummaryText } from "../payload.ts";
 import { debugLog } from "../debug.ts";
 import { getAssociatedTokens } from "../associative.ts";
 
@@ -237,6 +238,26 @@ export async function executeHybridScan(
   if (opts.bbox) {
     const isletRefs = await querySpatialFilter(env, cwd, axes, limit, opts.bbox);
     fused = fused.filter((c) => isletRefs.has(c.ref));
+  }
+
+  // For top candidates where record parsing failed or was truncated, attempt clean retrieval via GET
+  const eEnv = embedEnv(env.cfg);
+  for (const cand of fused.slice(0, Math.min(rawFetchLimit, 15))) {
+    const decoded = decodePayload(cand.record);
+    if (!isCleanSummaryText(decoded.envelope.summary) || decoded.envelope.summary.startsWith("[Corrupted payload")) {
+      try {
+        const getRes = await env.runner.run(buildGetInvocation(bin, filespecFor(cwd, wantEmbed), cand.ref, axes, cwd, eEnv));
+        if (getRes.code === 0 && (getRes.stdoutBytes || getRes.stdout.trim())) {
+          const fresh = decodePayload(getRes.stdoutBytes ?? getRes.stdout.trim());
+          if (isCleanSummaryText(fresh.envelope.summary)) {
+            cand.envelope = fresh.envelope;
+            cand.record = getRes.stdout.trim();
+          }
+        }
+      } catch {
+        // Best effort clean fetch
+      }
+    }
   }
 
   const filterCrit: FilterCriteria = {

@@ -9,7 +9,7 @@ import { parseBareRefs } from "../resolve.ts";
 import { encodePayload, decodePayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
 import type { MemoryEnvelope, EpisodeRecord, MemoryContext } from "../types.ts";
-import { handleBeforeAgentStart, type BeforeAgentStartEvent } from "./auto_recall.ts";
+import { handleBeforeAgentStart, isMemoryRecallPrompt, type BeforeAgentStartEvent } from "./auto_recall.ts";
 import { validateEvidenceRef } from "../tools/lifecycle.ts";
 import { executeHybridScan } from "../tools/scan.ts";
 import { runAutoConsolidation, runDeferredConsolidation } from "../tools/consolidate.ts";
@@ -378,6 +378,11 @@ export function isInformativeExecution(event: ToolResultEvent): boolean {
       return false;
     }
     return true;
+  }
+
+  // Memory introspection and session recall tools are not software engineering modifications
+  if (/^(?:memory_|vcc_recall)/.test(toolName)) {
+    return false;
   }
 
   // Routine bash commands or trivial outputs without code modification or verification
@@ -1164,7 +1169,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           let shouldStoreConversational = false;
           let contentToStore = prompt;
 
-          if (mode === "off") {
+          if (isMemoryRecallPrompt(prompt)) {
+            debugLog("capture", "Skipping conversational capture for memory recall query", { prompt: prompt.slice(0, 80) });
+            shouldStoreConversational = false;
+          } else if (mode === "off") {
             debugLog("capture", "Capture mode is off; skipping automatic capture");
           } else if (mode === "keyword") {
             const keywords = env.cfg.captureKeywords ?? (env.cfg.captureKeyword ? [env.cfg.captureKeyword] : ["@remember", "@memory", "remember:", "note:"]);

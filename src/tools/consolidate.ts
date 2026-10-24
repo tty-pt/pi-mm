@@ -4,6 +4,7 @@ import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { synthConfigured } from "../config.ts";
 import { filespecFor, buildGetInvocation, buildStoreInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { decodePayload, encodePayload } from "../payload.ts";
+import { isMemoryRecallPrompt } from "../hooks/auto_recall.ts";
 import { parseBareRefs, nextRef } from "../resolve.ts";
 import { withLock } from "../lock.ts";
 import { debugLog } from "../debug.ts";
@@ -344,6 +345,10 @@ async function autoL0ToL1(
         : (existingL1.envelope.lifecycle === "tested" || group.some((g) => g.envelope.lifecycle === "tested") ? "tested" : "observed");
 
       const baseProblem = existingL1.envelope.episode?.problem || group[0].envelope.episode?.request || group[0].envelope.episode?.problem || group[0].envelope.summary;
+      if (isMemoryRecallPrompt(baseProblem)) {
+        for (const r of groupEvidence) cited.add(r);
+        continue;
+      }
       const updatedSummary = workedApproach?.approach
         ? `Investigation: ${baseProblem} — verified: ${workedApproach.approach}`
         : `Investigation: ${baseProblem}`;
@@ -432,6 +437,10 @@ async function autoL0ToL1(
         ? (hasSupportedEvidence ? "supported" : "tested")
         : (group.some((g) => g.envelope.lifecycle === "tested") ? "tested" : "observed");
       const problem = group[0].envelope.episode?.request || group[0].envelope.episode?.problem || group[0].envelope.summary;
+      if (isMemoryRecallPrompt(problem)) {
+        for (const r of groupEvidence) cited.add(r);
+        continue;
+      }
       const summary = worked?.approach
         ? `Investigation: ${problem} — verified: ${worked.approach}`
         : `Investigation: ${problem}`;

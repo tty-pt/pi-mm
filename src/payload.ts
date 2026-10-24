@@ -1075,12 +1075,41 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
   };
 }
 
+export function isCleanSummaryText(text?: string): boolean {
+  if (!text || typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.includes("\uFFFD")) return false; // Replacement character from invalid UTF-8
+  if (trimmed.startsWith("[Corrupted payload")) return false;
+
+  let controlCount = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    // Disallow null bytes and control characters < 32 except tab (9), newline (10), carriage return (13)
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) return false;
+    // Disallow DEL (127) and C1 control characters (128-159)
+    if (code >= 127 && code <= 159) return false;
+    // Count suspicious Latin-1 high bytes often seen in mojibake
+    if (code >= 160 && code <= 255) {
+      controlCount++;
+    }
+  }
+  // If more than 15% of characters in non-trivial text are non-ASCII Latin-1 symbols (classic mojibake), reject
+  if (trimmed.length > 5 && controlCount / trimmed.length > 0.15) {
+    return false;
+  }
+  return true;
+}
+
 export function decodePayload(raw: string | Uint8Array): { date: string; envelope: MemoryEnvelope } {
   if (isHtokPayload(raw)) {
     return decodeHtokPayload(raw);
   }
   const rawStr = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
   const { date, text } = splitRawPayload(rawStr);
+  if (isHtokPayload(text)) {
+    return decodeHtokPayload(text);
+  }
   const trimmed = text.trim();
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
     try {
@@ -1179,6 +1208,18 @@ export function decodePayload(raw: string | Uint8Array): { date: string; envelop
   }
 
   // Case C: Legacy plain text
+  if (!isCleanSummaryText(text)) {
+    return {
+      date,
+      envelope: {
+        level: "L0",
+        type: "episode",
+        lifecycle: "contradicted",
+        summary: "[Corrupted payload: unprintable binary data]",
+      },
+    };
+  }
+
   return {
     date,
     envelope: {

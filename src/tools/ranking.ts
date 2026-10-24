@@ -1,4 +1,4 @@
-import { decodePayload } from "../payload.ts";
+import { decodePayload, isCleanSummaryText } from "../payload.ts";
 import type { ResultLine } from "../corm.ts";
 import type { LifecycleState, MemoryEnvelope, MipmapLevel } from "../types.ts";
 
@@ -44,7 +44,11 @@ export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelo
 export function isQuestionMemory(_cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
   const s = (envelope.summary || "").trim();
   if (s.endsWith("?")) return true;
-  if (/^(?:remember\s+anything|anything\s+about|do\s+you\s+remember|can\s+you\s+remember|what\s+did\s+i\s+say|did\s+i\s+mention)\b/i.test(s)) {
+  if (/^(?:investigation:\s*)?(?:remember\s+anything|anything\s+about|do\s+you\s+remember|can\s+you\s+remember|what\s+did\s+i\s+say|did\s+i\s+mention|what\s+do\s+you\s+remember|what\s+do\s+you\s+recall|what\s+did\s+i\s+tell)\b/i.test(s)) {
+    return true;
+  }
+  const prob = (envelope.episode?.problem || envelope.episode?.request || "").trim();
+  if (prob.endsWith("?") && /^(?:do\s+you|what\s+did|what\s+do|did\s+i|can\s+you)\b/i.test(prob)) {
     return true;
   }
   return false;
@@ -221,6 +225,12 @@ export function filterAndEnrich(
 
     // Exclude assistant echoes
     if (isAssistantEcho(cand, envelope)) continue;
+
+    // Exclude corrupted or unprintable payloads
+    if (!isCleanSummaryText(envelope.summary)) continue;
+
+    // Exclude question-formed investigations from normal retrieval
+    if (envelope.type === "investigation" && isQuestionMemory(cand, envelope)) continue;
 
     const enriched: FusedCandidate = {
       ...cand,
