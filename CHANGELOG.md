@@ -2,6 +2,15 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.3.1]
+
+### Added
+- **Latent Human-Like Mipmap Recall & LOD Gating (`src/hooks/auto_recall.ts`)**:
+  - Gated proactive context injection on conversational turns: unprompted conversational and task prompts lacking subsystem mentions yield zero context injection.
+  - Proactive priming on technical turns strictly bounded to L2 subsystem invariants and active hypotheses matching mentioned subsystems.
+  - Episodic memories (L1) remain latent, surfacing on-demand only upon explicit recall inquiries.
+  - Sanitized binary payload decoding and mojibake prevention (`src/payload.ts`, `src/tools/ranking.ts`).
+
 ## [0.3.0]
 
 ### Added
