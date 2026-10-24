@@ -173,7 +173,7 @@ Deno.test("e2e: complete usable semantic memory workflow for Pi Coding Agent", a
   backend.store(encodePayload("2026-03-30", hypEnv), 4);
 
   // 2. A new request describes the same issue using different wording
-  const newPrompt = "We are encountering descriptor exhaustion when reopening the database";
+  const newPrompt = "We are encountering descriptor exhaustion when reopening the libcorm database";
 
   // 3 & 4. Relevant prior experience is retrieved and reaches the model before solving begins
   const autoRecallResult = await handleBeforeAgentStart(
