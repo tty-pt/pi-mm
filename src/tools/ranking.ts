@@ -1,5 +1,5 @@
 import { decodePayload } from "../payload.ts";
-import type { ResultLine } from "../qmap.ts";
+import type { ResultLine } from "../corm.ts";
 import type { LifecycleState, MemoryEnvelope, MipmapLevel } from "../types.ts";
 
 export type CandidateOrigin = "lemma" | "sepal" | "both";
@@ -61,21 +61,42 @@ export function isAssistantEcho(_cand: FusedCandidate, envelope: MemoryEnvelope)
   return false;
 }
 
+export function isTechnicalInquiry(query?: string): boolean {
+  if (!query) return false;
+  const q = query.trim();
+  if (/[/\\._#:]/.test(q)) return true; // file paths, extensions, symbols
+  if (/\b(?:function|class|const|let|var|import|export|include|err|error|crash|bug|fix|build|make|socket|corm|db)\b/i.test(q)) return true;
+  if (/[A-Z]+_[A-Z0-9_]+/.test(q)) return true; // UPPER_CASE constants
+  if (/[a-z]+[A-Z][a-zA-Z0-9]*/.test(q)) return true; // camelCase identifiers
+  return false;
+}
+
 /**
- * Standard Reciprocal Rank Fusion (RRF) with configurable smoothing constant k (default 60).
+ * Dynamic RRF smoothing constant scaled adaptively to candidate pool size.
+ * Handles edge cases |candidates| in {0, 1} cleanly.
+ */
+export function adaptiveRrfK(candidateCount: number): number {
+  if (candidateCount <= 1) return 10;
+  return Math.max(10, Math.min(60, candidateCount * 2));
+}
+
+/**
+ * Standard Reciprocal Rank Fusion (RRF) with optional smoothing constant k.
+ * When k is omitted, scales adaptively via adaptiveRrfK().
  * Merges independent candidate sets without scale incompatibility between lexical BM25 and cosine ANN.
  */
 export function fuseRankingsRRF(
   lexical: ResultLine[],
   semantic: ResultLine[],
-  k = 60,
+  k?: number,
 ): FusedCandidate[] {
+  const effectiveK = k !== undefined ? k : adaptiveRrfK(lexical.length + semantic.length);
   const candidateMap = new Map<number, FusedCandidate>();
 
   for (let i = 0; i < lexical.length; i++) {
     const item = lexical[i];
     const rank = i + 1;
-    const rrfContrib = 1 / (k + rank);
+    const rrfContrib = 1 / (effectiveK + rank);
     candidateMap.set(item.ref, {
       ref: item.ref,
       record: item.record,
@@ -89,7 +110,7 @@ export function fuseRankingsRRF(
   for (let j = 0; j < semantic.length; j++) {
     const item = semantic[j];
     const rank = j + 1;
-    const rrfContrib = 1 / (k + rank);
+    const rrfContrib = 1 / (effectiveK + rank);
     const existing = candidateMap.get(item.ref);
     if (existing) {
       existing.origin = "both";
@@ -147,6 +168,16 @@ export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria):
   if (crit.project && env.context?.project === crit.project) score *= 1.05;
   if (crit.subsystem && env.context?.subsystem === crit.subsystem) score *= 1.05;
 
+  // Flashbulb anchor memory salience boost
+  if (env.isAnchor) {
+    score *= 1.25;
+  }
+
+  // Downrank code or documentation syntax artifacts unless L0 is explicitly requested
+  if (crit.mipmap !== "L0" && isCodeOrDocArtifact(cand, env)) {
+    score *= 0.2;
+  }
+
   return score;
 }
 
@@ -155,10 +186,18 @@ export function filterAndEnrich(
   crit: FilterCriteria,
 ): FusedCandidate[] {
   const filtered: FusedCandidate[] = [];
+  const technical = isTechnicalInquiry(crit.query);
 
   for (const cand of candidates) {
     const { envelope } = decodePayload(cand.record);
     if (crit.mipmap && envelope.level !== crit.mipmap) continue;
+
+    // Strict pruning of code/doc artifacts on conversational queries
+    if (crit.mipmap !== "L0" && isCodeOrDocArtifact(cand, envelope)) {
+      if (!technical) {
+        continue;
+      }
+    }
 
     // Lifecycle filtering:
     // Exclude superseded records from normal search by default.
@@ -180,8 +219,6 @@ export function filterAndEnrich(
       continue;
     }
 
-    // Exclude question-shaped memories
-    if (isQuestionMemory(cand, envelope)) continue;
     // Exclude assistant echoes
     if (isAssistantEcho(cand, envelope)) continue;
 

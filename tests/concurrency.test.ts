@@ -5,17 +5,23 @@ import { flushSessionBuffer, activeSessionBuffer } from "../src/hooks/events.ts"
 import { withLock } from "../src/lock.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import { give } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import type { CormRunner } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
 import { join } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+
+const homeDir = Deno.env.get("HOME") || "";
+const releases = ["1.4.0", "1.3.0", "1.2.0"];
+const activeRelease = releases.find((r) => existsSync(join(homeDir, `.pi/agent/install/releases/${r}/node_modules/jiti`))) || "1.4.0";
+const nodeModulesPath = join(homeDir, `.pi/agent/install/releases/${activeRelease}/node_modules`);
 
 class ThreadSafeFakeStore {
   public records = new Map<number, string>();
   public nextId = 1;
   public delayMs = 10;
 
-  createRunner(): QmapRunner {
+  createRunner(): CormRunner {
     return {
       run: async (inv): Promise<PiExecResult> => {
         const { args } = inv;
@@ -69,7 +75,7 @@ Deno.test("concurrency: simultaneous manual stores receive unique refs without c
     cwd: tmpDir,
     runner: store.createRunner(),
     nowProvider: () => new Date("2026-10-15T10:00:00Z"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: tmpDir },
   });
 
   const tool = makeStoreTool(envFn);
@@ -100,7 +106,7 @@ Deno.test("concurrency: simultaneous automatic episode flush vs manual store all
     cwd: tmpDir,
     runner: store.createRunner(),
     nowProvider: () => new Date("2026-10-15T10:00:00Z"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: tmpDir },
   });
 
   // Seed activeSessionBuffer with an event
@@ -142,7 +148,7 @@ Deno.test("concurrency: simultaneous consolidation attempts allocate unique refs
     cwd: tmpDir,
     runner: store.createRunner(),
     nowProvider: () => new Date("2026-10-15T10:00:00Z"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: tmpDir },
   });
 
   // Seed store with an L0 source episode at ref 1
@@ -1034,8 +1040,7 @@ Deno.test("concurrency: Node production runtime multi-process contention seriali
   await writeFile(c1File, c1Script);
   await writeFile(c2File, c2Script);
 
-  const homeDir = Deno.env.get("HOME") || "";
-  const env = { ...Deno.env.toObject(), NODE_PATH: join(homeDir, ".pi/agent/install/releases/1.2.0/node_modules") };
+  const env = { ...Deno.env.toObject(), NODE_PATH: nodeModulesPath };
 
   const p1 = new Deno.Command("node", {
     args: [c1File, tmpDir, logFile, b1, coordFile],
@@ -1132,8 +1137,7 @@ Deno.test("concurrency: Node production runtime automatically recovers coordinat
   await writeFile(c1File, c1Script);
   await writeFile(c2File, c2Script);
 
-  const homeDir = Deno.env.get("HOME") || "";
-  const env = { ...Deno.env.toObject(), NODE_PATH: join(homeDir, ".pi/agent/install/releases/1.2.0/node_modules") };
+  const env = { ...Deno.env.toObject(), NODE_PATH: nodeModulesPath };
 
   const p1Cmd = new Deno.Command("node", {
     args: [c1File, tmpDir, logFile, b1, coordFile],

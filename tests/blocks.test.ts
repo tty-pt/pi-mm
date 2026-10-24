@@ -1,4 +1,4 @@
-import { assertEquals, assertNotEquals } from "jsr:@std/assert";
+import assert from "node:assert";
 import {
   fnv1a64,
   createPromptBlock,
@@ -9,19 +9,19 @@ import {
 Deno.test("fnv1a64: produces deterministic 16-hex-digit hash", () => {
   const h1 = fnv1a64("Hello World");
   const h2 = fnv1a64("Hello World");
-  assertEquals(h1, h2);
-  assertEquals(h1.length, 16);
+  assert.strictEqual(h1, h2);
+  assert.strictEqual(h1.length, 16);
 
   const h3 = fnv1a64("Hello World!");
-  assertNotEquals(h1, h3);
+  assert.notStrictEqual(h1, h3);
 });
 
 Deno.test("createPromptBlock: generates block with content hash", () => {
   const block = createPromptBlock("sys:directive", "Always be concise.", "system");
-  assertEquals(block.id, "sys:directive");
-  assertEquals(block.text, "Always be concise.");
-  assertEquals(block.role, "system");
-  assertEquals(block.hash, fnv1a64("Always be concise."));
+  assert.strictEqual(block.id, "sys:directive");
+  assert.strictEqual(block.text, "Always be concise.");
+  assert.strictEqual(block.role, "system");
+  assert.strictEqual(block.hash, fnv1a64("Always be concise."));
 });
 
 Deno.test("composePromptBlocks: concatenates texts and lists hashes", () => {
@@ -29,8 +29,8 @@ Deno.test("composePromptBlocks: concatenates texts and lists hashes", () => {
   const b2 = createPromptBlock("b2", "Part 2");
   const comp = composePromptBlocks([b1, b2]);
 
-  assertEquals(comp.prompt, "Part 1\n\nPart 2");
-  assertEquals(comp.hashes, [b1.hash, b2.hash]);
+  assert.strictEqual(comp.prompt, "Part 1\n\nPart 2");
+  assert.deepStrictEqual(comp.hashes, [b1.hash, b2.hash]);
 });
 
 Deno.test("canonicalSortByRef: stably orders records by ref ascending", () => {
@@ -42,8 +42,8 @@ Deno.test("canonicalSortByRef: stably orders records by ref ascending", () => {
   ];
 
   const sorted = canonicalSortByRef(records);
-  assertEquals(sorted.map((r) => r.ref), [7, 23, 42, 105]);
+  assert.deepStrictEqual(sorted.map((r) => r.ref), [7, 23, 42, 105]);
 
   // Original array remains unmodified
-  assertEquals(records[0].ref, 42);
+  assert.strictEqual(records[0].ref, 42);
 });

@@ -3,14 +3,14 @@ import { makeRecordTool } from "../src/tools/record.ts";
 import { makeLifecycleTool } from "../src/tools/lifecycle.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner, Invocation } from "../src/qmap.ts";
+import type { CormRunner, Invocation } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
-import { decodePayload, encodePayload } from "../src/payload.ts";
+import { decodePayload, encodePayload, bytesToBinaryString } from "../src/payload.ts";
 
-function fakeRunner(results: PiExecResult[]): { runner: QmapRunner; invocations: Invocation[] } {
+function fakeRunner(results: PiExecResult[]): { runner: CormRunner; invocations: Invocation[] } {
   let idx = 0;
   const invocations: Invocation[] = [];
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: (inv: Invocation): Promise<PiExecResult> => {
       invocations.push(inv);
       if (idx < results.length) {
@@ -22,14 +22,14 @@ function fakeRunner(results: PiExecResult[]): { runner: QmapRunner; invocations:
   return { runner, invocations };
 }
 
-function makeEnv(runner: QmapRunner): ToolEnv {
+function makeEnv(runner: CormRunner): ToolEnv {
   try { Deno.removeSync("/tmp/fake-mm/.pi/mm/.ref_seq"); } catch { /* ignore */ }
   try { Deno.removeSync("/tmp/fake-mm/.ref_seq"); } catch { /* ignore */ }
   return {
     cwd: "/tmp/fake-mm",
     runner,
     nowProvider: () => new Date("2026-03-30T12:00:00"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: ".pi/mm" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: ".pi/mm" },
   };
 }
 
@@ -50,8 +50,8 @@ Deno.test("epistemic_safety: memory_record assigns tested when approach worked w
   }, undefined, undefined, ctx);
 
   assert.ok(invocations.length >= 2);
-  const storedPayload = invocations[1].args[1];
-  const { envelope } = decodePayload(storedPayload.slice(2));
+  const storedPayload = invocations[1].payloadBytes ?? invocations[1].args[1].slice(2);
+  const { envelope } = decodePayload(storedPayload);
   assert.strictEqual(envelope.lifecycle, "tested", "Unverified worked approach must be marked tested, not supported");
   assert.ok(envelope.summary.includes("tested: Set SO_RCVTIMEO"), "Summary must say tested, not verified");
 });
@@ -74,8 +74,8 @@ Deno.test("epistemic_safety: memory_record assigns tested when approach worked w
     },
   }, undefined, undefined, ctx);
 
-  const storedPayload = invocations[1].args[1];
-  const { envelope } = decodePayload(storedPayload.slice(2));
+  const storedPayload = invocations[1].payloadBytes ?? invocations[1].args[1].slice(2);
+  const { envelope } = decodePayload(storedPayload);
   assert.strictEqual(envelope.lifecycle, "tested", "Model-reported tests must be marked tested, not supported");
   assert.ok(envelope.summary.includes("tested: Set SO_RCVTIMEO"), "Summary must say tested");
   assert.ok(envelope.summary.includes("model-reported tests: test_socket_timeout"), "Summary must explicitly note model-reported tests");
@@ -106,7 +106,7 @@ Deno.test("epistemic_safety: memory_record rejects contradicted evidence referen
     summary: "Refuted theory about sockets",
   };
   const { runner } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", contradictedTarget), stderr: "", code: 0 },
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", contradictedTarget)), stderr: "", code: 0 },
   ]);
 
   const tool = makeRecordTool(() => Promise.resolve(makeEnv(runner)));
@@ -129,7 +129,7 @@ Deno.test("epistemic_safety: memory_record assigns supported when valid evidence
     summary: "Valid observation about socket descriptors",
   };
   const { runner, invocations } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", validTarget), stderr: "", code: 0 }, // get ref 10
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", validTarget)), stderr: "", code: 0 }, // get ref 10
     { stdout: "1\n10\n", stderr: "", code: 0 },                                  // list
     { stdout: "", stderr: "", code: 0 },                                         // store
   ]);
@@ -144,9 +144,8 @@ Deno.test("epistemic_safety: memory_record assigns supported when valid evidence
   }, undefined, undefined, ctx);
 
   assert.ok(invocations.length >= 3);
-  const storedPayload = invocations[2].args[1];
-  const payloadStr = storedPayload.slice(storedPayload.indexOf(":") + 1);
-  const { envelope } = decodePayload(payloadStr);
+  const storedPayload = invocations[2].payloadBytes ?? invocations[2].args[1].slice(invocations[2].args[1].indexOf(":") + 1);
+  const { envelope } = decodePayload(storedPayload);
   assert.strictEqual(envelope.lifecycle, "supported", "Verified with valid evidence must be supported");
   assert.ok(envelope.summary.includes("verified: Set SO_RCVTIMEO"));
 });
@@ -165,8 +164,8 @@ Deno.test("epistemic_safety: memory_record assigns observed when approach failed
     ],
   }, undefined, undefined, ctx);
 
-  const storedPayload = invocations[1].args[1];
-  const { envelope } = decodePayload(storedPayload.slice(2));
+  const storedPayload = invocations[1].payloadBytes ?? invocations[1].args[1].slice(2);
+  const { envelope } = decodePayload(storedPayload);
   assert.strictEqual(envelope.lifecycle, "observed", "Failed approach must be marked observed");
 });
 
@@ -183,7 +182,7 @@ Deno.test("epistemic_safety: memory_lifecycle rejects promotion to supported wit
     evidence: [],
   };
   const { runner } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", existing), stderr: "", code: 0 },
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", existing)), stderr: "", code: 0 },
   ]);
 
   const tool = makeLifecycleTool(() => Promise.resolve(makeEnv(runner)));
@@ -204,7 +203,7 @@ Deno.test("epistemic_safety: memory_lifecycle rejects promotion when evidenceRef
     evidence: [],
   };
   const { runner } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", existing), stderr: "", code: 0 }, // get ref 7
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", existing)), stderr: "", code: 0 }, // get ref 7
     { stdout: "", stderr: "not found", code: 1 },                           // get ref 42 fails
   ]);
 
@@ -232,8 +231,8 @@ Deno.test("epistemic_safety: memory_lifecycle rejects promotion when evidenceRef
     summary: "Refuted evidence",
   };
   const { runner } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", existing), stderr: "", code: 0 },           // get ref 7
-    { stdout: encodePayload("2026-03-30", contradictedTarget), stderr: "", code: 0 }, // get ref 42
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", existing)), stderr: "", code: 0 },           // get ref 7
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", contradictedTarget)), stderr: "", code: 0 }, // get ref 42
   ]);
 
   const tool = makeLifecycleTool(() => Promise.resolve(makeEnv(runner)));
@@ -260,8 +259,8 @@ Deno.test("epistemic_safety: memory_lifecycle promotes to supported when valid e
     summary: "Verified root cause evidence",
   };
   const { runner, invocations } = fakeRunner([
-    { stdout: encodePayload("2026-03-30", existing), stderr: "", code: 0 },    // get ref 7
-    { stdout: encodePayload("2026-03-30", validTarget), stderr: "", code: 0 }, // get ref 42
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", existing)), stderr: "", code: 0 },    // get ref 7
+    { stdout: bytesToBinaryString(encodePayload("2026-03-30", validTarget)), stderr: "", code: 0 }, // get ref 42
     { stdout: "", stderr: "", code: 0 },                                       // store ref 7
   ]);
 
@@ -273,9 +272,8 @@ Deno.test("epistemic_safety: memory_lifecycle promotes to supported when valid e
   }, undefined, undefined, ctx);
 
   assert.ok(invocations.length >= 3);
-  const storedPayload = invocations[2].args[1];
-  const payloadStr = storedPayload.slice(storedPayload.indexOf(":") + 1);
-  const { envelope } = decodePayload(payloadStr);
+  const storedPayload = invocations[2].payloadBytes ?? invocations[2].args[1].slice(invocations[2].args[1].indexOf(":") + 1);
+  const { envelope } = decodePayload(storedPayload);
   assert.strictEqual(envelope.lifecycle, "supported");
   assert.ok(envelope.evidence?.includes(42), "evidenceRef must be recorded in envelope.evidence");
 });

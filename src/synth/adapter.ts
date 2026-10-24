@@ -118,11 +118,13 @@ RULES:
 2. Do NOT merely concatenate or join strings from the input summaries. Do NOT use template prefixes like "Scoped Knowledge:" or "Project Knowledge:".
 3. If a prior abstraction is provided, reconcile the prior abstraction with the new evidence to produce an updated, comprehensive successor knowledge statement.
 4. CODE CONTROLS PROVENANCE: cite ONLY the numeric evidence references provided. Do NOT invent references.
-5. Return strictly valid JSON with this exact schema:
+5. If the evidence records disproven approaches, errors, or failed attempts, extract explicit negative rules ("Do NOT...") to prevent repeating mistakes. Format as a string array under "constraints".
+6. Return strictly valid JSON with this exact schema:
 {
   "summary": "Coherent, synthesized scope knowledge statement (1-3 sentences)",
   "explanation": "Brief reasoning explaining how the evidence supports this synthesis",
-  "citedRefs": [1, 2]
+  "citedRefs": [1, 2],
+  "constraints": ["Do NOT use synchronous blocking sockets in the UI loop"]
 }`;
 
   let userPrompt = `Scope: ${input.scope} (${input.isConversational ? "conversational / personal" : "technical / project"})\n\n`;
@@ -164,11 +166,18 @@ RULES:
       return { status: "validation_error", reason: "Model returned zero valid cited references from the provided evidence set" };
     }
 
+    const constraints = Array.isArray(parsed.constraints)
+      ? parsed.constraints
+          .filter((c: unknown) => typeof c === "string" && (c as string).trim().length > 0)
+          .map((c: string) => c.trim())
+      : undefined;
+
     return {
       status: "ok",
       summary,
       explanation: typeof parsed.explanation === "string" ? parsed.explanation.trim() : undefined,
       citedRefs: validRefs,
+      constraints: constraints && constraints.length > 0 ? constraints : undefined,
     };
   } catch (err) {
     return { status: "validation_error", reason: `Failed to parse model JSON: ${err instanceof Error ? err.message : String(err)}` };

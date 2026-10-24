@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
-import { filespecFor, buildGetInvocation, buildStoreInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildGetInvocation, buildStoreInvocation, embedEnv } from "../corm.ts";
 import { decodePayload, encodePayload } from "../payload.ts";
 import type { UtilityFeedback } from "../types.ts";
 
@@ -31,11 +31,12 @@ export function makeFeedbackTool(envSource: EnvSource): PiToolSpec {
         const outcome = params["utility"] as "useful" | "irrelevant" | "obsolete";
         const note = typeof params["note"] === "string" ? params["note"].trim() : undefined;
 
+        const bin = env.cfg.cormBin;
         if (!Number.isInteger(ref) || ref < 0) {
           return { content: [{ type: "text", text: "mm feedback: invalid ref" }], details: { error: "invalid-ref" } };
         }
-        if (env.cfg.qmapBin === "") {
-          return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap" } };
+        if (!bin) {
+          return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
         }
 
         const embed = sepalConfigured(env.cfg);
@@ -44,7 +45,7 @@ export function makeFeedbackTool(envSource: EnvSource): PiToolSpec {
         const axes = axisPath(env);
         const eEnv = embedEnv(env.cfg);
 
-        const getRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, ref, axes, cwd, eEnv));
+        const getRes = await env.runner.run(buildGetInvocation(bin, fspec, ref, axes, cwd, eEnv));
         if (getRes.code !== 0 || !getRes.stdout.trim()) {
           return { content: [{ type: "text", text: `mm feedback: ref ${ref} not found` }], details: { error: "not-found", ref } };
         }
@@ -65,7 +66,7 @@ export function makeFeedbackTool(envSource: EnvSource): PiToolSpec {
         envelope.utility = util;
 
         const updatedPayload = encodePayload(date, envelope);
-        const storeRes = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, updatedPayload, axes, cwd, eEnv));
+        const storeRes = await env.runner.run(buildStoreInvocation(bin, fspec, ref, updatedPayload, axes, cwd, eEnv));
         if (storeRes.code !== 0) {
           return { content: [{ type: "text", text: `mm feedback update failed: ${storeRes.stderr}` }], details: { error: storeRes.stderr, ref } };
         }

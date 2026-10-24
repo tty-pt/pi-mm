@@ -2,11 +2,11 @@ import { join } from "node:path";
 import assert from "node:assert";
 import { makeStoreTool } from "../src/tools/store.ts";
 import { SessionEventBuffer } from "../src/hooks/events.ts";
-import { fakeRunner, runTool, okResult } from "./fake-qmap.ts";
+import { fakeRunner, runTool, okResult } from "./fake-corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
-import { decodePayload } from "../src/payload.ts";
+import { decodePayload, bytesToBinaryString } from "../src/payload.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import type { CormRunner } from "../src/corm.ts";
 
 const CWD = await Deno.makeTempDir({ prefix: "mm-episode-cwd-" });
 const ctx = { cwd: CWD, hasUI: false, mode: "agent" };
@@ -15,14 +15,14 @@ function now(): Date {
   return new Date("2026-10-14T12:00:00Z");
 }
 
-function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
+function env(runner: CormRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
   try { Deno.removeSync(join(CWD, ".ref_seq")); } catch { /* ignore */ }
   try { Deno.removeSync(join(CWD, ".pi", "mm", ".ref_seq")); } catch { /* ignore */ }
   return {
     cwd: CWD,
     runner,
     nowProvider: now,
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", ...cfg },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", ...cfg },
   };
 }
 
@@ -103,8 +103,8 @@ Deno.test("episode: store captures comprehensive L0 episode with failed vs worke
   assert.strictEqual(details.level, "L0");
   assert.strictEqual(details.summary, "Intermittent SIGSEGV in stoma_query_eval");
 
-  const arg = runner.invocations[1].args[1];
-  const storedPayload = arg.slice(arg.indexOf(":") + 1);
+  const arg = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1];
+  const storedPayload = arg instanceof Uint8Array ? arg : (typeof arg === "string" && arg.includes(":") ? arg.slice(arg.indexOf(":") + 1) : arg);
   const { date, envelope } = decodePayload(storedPayload);
   assert.strictEqual(date, "2026-10-14");
   assert.strictEqual(envelope.level, "L0");
@@ -166,12 +166,13 @@ Deno.test("episode: end-to-end capture hook -> persistence -> fresh session reco
   }, ctx);
   assert.strictEqual((storeRes.details as Record<string, unknown>).ref, 1);
 
-  const storedPayload = runnerSession1.invocations[1].args[1];
-  const storedJson = storedPayload.slice(storedPayload.indexOf(":") + 1);
+  const storedPayload = runnerSession1.invocations[1].payloadBytes ?? runnerSession1.invocations[1].args[1];
+  const storedJson = storedPayload instanceof Uint8Array ? storedPayload : storedPayload.slice(storedPayload.indexOf(":") + 1);
 
   // Step 3: Reconstruct fresh session / client
+  const payloadStr = storedJson instanceof Uint8Array ? bytesToBinaryString(storedJson) : storedJson;
   const runnerSession2 = fakeRunner([
-    okResult(`1 1.000000 ${storedJson}\n`),
+    okResult(`1 1.000000 ${payloadStr}\n`),
   ]);
   const scanTool = makeScanTool(give(env(runnerSession2)));
 
@@ -221,8 +222,8 @@ Deno.test("episode: automatic persistence on agent_settled without manual store 
 
   // Assert store invocation occurred automatically
   assert.strictEqual(runner.invocations.length, 2);
-  const storedArg = runner.invocations[1].args[1];
-  const { envelope } = decodePayload(storedArg.slice(storedArg.indexOf(":") + 1));
+  const storedArg = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1];
+  const { envelope } = decodePayload(storedArg instanceof Uint8Array ? storedArg : storedArg.slice(storedArg.indexOf(":") + 1));
   assert.strictEqual(envelope.level, "L0");
   assert.strictEqual(envelope.type, "episode");
   assert.strictEqual(envelope.lifecycle, "observed"); // Default to observed!
@@ -241,8 +242,8 @@ Deno.test("episode: failed write followed by retry preserves unpersisted events 
   activeSessionBuffer.setJournalDir(tmpDir);
 
   let shouldFail = true;
-  const runner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const runner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -296,8 +297,8 @@ Deno.test("episode: session_start preserves unpersisted events but drops flushed
   activeSessionBuffer.setJournalDir(tmpDir);
 
   let allowStore = true;
-  const runner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const runner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -364,14 +365,14 @@ Deno.test("episode: captures diffs and runtime environment from tool modificatio
   activeSessionBuffer.clear();
   const tmpDir = await Deno.makeTempDir({ prefix: "mm-diffs-" });
   activeSessionBuffer.setJournalDir(tmpDir);
-  let storedPayload = "";
-  const runner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  let storedPayload: string | Uint8Array = "";
+  const runner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
       if (inv.args[0] === "-p") {
-        storedPayload = inv.args[1];
+        storedPayload = inv.payloadBytes ?? inv.args[1];
         return Promise.resolve({ stdout: "1", stderr: "", code: 0 });
       }
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
@@ -404,7 +405,10 @@ Deno.test("episode: captures diffs and runtime environment from tool modificatio
   await mockPi.emit("agent_settled", {}, ctx);
 
   assert.notStrictEqual(storedPayload, "");
-  const { envelope } = decodePayload(storedPayload.slice(storedPayload.indexOf(":") + 1));
+  const payloadToDecode = typeof storedPayload === "string" && storedPayload.includes(":")
+    ? storedPayload.slice(storedPayload.indexOf(":") + 1)
+    : storedPayload;
+  const { envelope } = decodePayload(payloadToDecode);
   assert.strictEqual(envelope.level, "L0");
   // Conforms to deduplicated session referencing contract: raw diff excerpts omitted
   assert.strictEqual(envelope.episode?.diffs, undefined);
@@ -778,8 +782,8 @@ Deno.test("episode: session_start during in-flight flush preserves flush guard a
     releaseStoreDelay = resolve;
   });
 
-  const slowRunner: import("../src/qmap.ts").QmapRunner = {
-    async run(inv: import("../src/qmap.ts").Invocation) {
+  const slowRunner: import("../src/corm.ts").CormRunner = {
+    async run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         const refs = [...fakeStore.keys()].join("\n");
         return { stdout: refs ? refs + "\n" : "", stderr: "", code: 0 };
@@ -788,10 +792,11 @@ Deno.test("episode: session_start during in-flight flush preserves flush guard a
         // Pause inside store operation
         await storeDelayPromise;
         const ref = nextId++;
-        const payload = inv.args[1];
-        fakeStore.set(ref, payload);
+        const payload = inv.payloadBytes ?? inv.args[1];
+        fakeStore.set(ref, payload instanceof Uint8Array ? bytesToBinaryString(payload) : payload);
         const { decodePayload } = await import("../src/payload.ts");
-        const { envelope } = decodePayload(payload.slice(payload.indexOf(":") + 1));
+        const rawPayload = payload instanceof Uint8Array ? payload : payload.slice(payload.indexOf(":") + 1);
+        const { envelope } = decodePayload(rawPayload);
         if (envelope.episode?.eventIds) {
           committedBatches.push(envelope.episode.eventIds);
         }
@@ -803,7 +808,7 @@ Deno.test("episode: session_start during in-flight flush preserves flush guard a
 
   const { DEFAULT_CONFIG } = await import("../src/config.ts");
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/fake/qmap" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/fake/corm" },
     runner: slowRunner,
     nowProvider: () => new Date("2026-10-15T12:00:00Z"),
     cwd: "/tmp",
@@ -1526,6 +1531,175 @@ Deno.test("episode: snapshot interleaving marks only successfully persisted even
   assert.strictEqual(diskDataBoth[0].id, "evt_rec_A");
   assert.strictEqual(diskDataBoth[1].id, "evt_rec_B");
 });
+
+Deno.test("noise gate: isInformativeExecution drops empty, trivial, degenerate, and uninformative events", async () => {
+  const { isInformativeExecution, summarizeToolEvent } = await import("../src/episode.ts");
+
+  // 1. Trivial outputs
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "true" },
+      content: [{ type: "text", text: "" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "echo done" },
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "echo 0" },
+      content: [{ type: "text", text: "0" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "echo '(no output)'" },
+      content: [{ type: "text", text: "(no output)" }],
+      isError: false,
+    }),
+    false
+  );
+
+  // 2. Degenerate syntax fragments
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      content: [{ type: "text", text: "{" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      content: [{ type: "text", text: "{}" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      content: [{ type: "text", text: ";" }],
+      isError: false,
+    }),
+    false
+  );
+
+  // 3. Uninformative search/read probes
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "search_code",
+      input: { pattern: "nonexistent_fn" },
+      content: [{ type: "text", text: "0 matches" }],
+      isError: false,
+    }),
+    false
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "read",
+      input: { path: "empty.txt" },
+      content: [{ type: "text", text: "" }],
+      isError: false,
+    }),
+    false
+  );
+
+  // 3b. Informative search and read probes with non-empty results
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "search_code",
+      input: { pattern: "handle_request" },
+      content: [{ type: "text", text: "src/server.c:42: int handle_request(void)" }],
+      isError: false,
+    }),
+    true
+  );
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "read",
+      input: { path: "src/config.h" },
+      content: [{ type: "text", text: "#define MAX_BUF 4096" }],
+      isError: false,
+    }),
+    true
+  );
+
+  // 4. Preserves informative code modifications
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "edit",
+      input: { path: "src/server.c" },
+      content: [{ type: "text", text: "applied 1 edit" }],
+      isError: false,
+    }),
+    true
+  );
+
+  // 5. Preserves verified test executions
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "deno test" },
+      content: [{ type: "text", text: "ok 1 - all green 0 failed" }],
+      isError: false,
+    }),
+    true
+  );
+
+  // 6. Preserves failed test executions
+  assert.strictEqual(
+    isInformativeExecution({
+      toolName: "bash",
+      input: { command: "deno test" },
+      content: [{ type: "text", text: "FAIL: syntax error on line 42" }],
+      isError: true,
+    }),
+    true
+  );
+
+  // 7. Verify summarizeToolEvent integration
+  assert.strictEqual(
+    summarizeToolEvent({
+      toolName: "bash",
+      input: { command: "echo done" },
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+    }),
+    null
+  );
+  assert.strictEqual(
+    summarizeToolEvent({
+      toolName: "search_code",
+      content: [{ type: "text", text: "0 matches" }],
+      isError: false,
+    }),
+    null
+  );
+  const editSig = summarizeToolEvent({
+    toolName: "edit",
+    input: { path: "src/main.rs" },
+    content: [{ type: "text", text: "applied 2 edits" }],
+    isError: false,
+  });
+  assert.notStrictEqual(editSig, null);
+  assert.strictEqual(editSig?.toolName, "edit");
+});
+
 
 
 

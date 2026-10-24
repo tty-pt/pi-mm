@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -11,13 +12,13 @@ import { handleBeforeAgentStart } from "../src/hooks/auto_recall.ts";
 import { queryLexicalPath, querySemanticPath } from "../src/tools/scan.ts";
 import { decodePayload } from "../src/payload.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { buildListInvocation, buildGetInvocation, filespecFor } from "../src/qmap.ts";
+import { buildListInvocation, buildGetInvocation, filespecFor } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
 
 const home = Deno.env.get("HOME") || "";
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
 
 // Semantic projection helper for local deterministic embedding server
@@ -81,8 +82,6 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
     const eEnv = {
       CORM_SEPAL_EMBED_URL: embedUrl,
       CORM_SEPAL_EMBED_MODEL: embedModel,
-      QMAP_SEPAL_EMBED_URL: embedUrl,
-      QMAP_SEPAL_EMBED_MODEL: embedModel,
     };
 
     // Ensure cormd is running with joint, stoma, and sepal
@@ -111,13 +110,13 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
       };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     const createEnv = (sessId: string, sessFile: string) => {
       return {
         cfg: {
           ...DEFAULT_CONFIG,
-          qmapBin: cormBin,
+          cormBin: cormBin,
           cormdBin,
           memDir: tmpDir,
           axisLibs: axisPath,
@@ -334,12 +333,12 @@ Deno.test("conversational memory: multi-turn tool interaction preserves final co
       };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     const createEnv = () => ({
       cfg: {
         ...DEFAULT_CONFIG,
-        qmapBin: cormBin,
+        cormBin: cormBin,
         cormdBin,
         memDir: tmpDir,
         axisLibs: axisPath,
@@ -509,8 +508,6 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
     const eEnv = {
       CORM_SEPAL_EMBED_URL: embedUrl,
       CORM_SEPAL_EMBED_MODEL: embedModel,
-      QMAP_SEPAL_EMBED_URL: embedUrl,
-      QMAP_SEPAL_EMBED_MODEL: embedModel,
     };
 
     await ensureDaemon({
@@ -538,12 +535,12 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
       };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     const createEnv = (sessId: string, sessFile: string) => ({
       cfg: {
         ...DEFAULT_CONFIG,
-        qmapBin: cormBin,
+        cormBin: cormBin,
         cormdBin,
         memDir: tmpDir,
         axisLibs: axisPath,
@@ -725,8 +722,6 @@ Deno.test("conversational memory: end-to-end Session A 'I spoke to my grandfathe
     const eEnv = {
       CORM_SEPAL_EMBED_URL: embedUrl,
       CORM_SEPAL_EMBED_MODEL: embedModel,
-      QMAP_SEPAL_EMBED_URL: embedUrl,
-      QMAP_SEPAL_EMBED_MODEL: embedModel,
     };
 
     await ensureDaemon({
@@ -754,12 +749,12 @@ Deno.test("conversational memory: end-to-end Session A 'I spoke to my grandfathe
       };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     const createEnv = (sessId: string, sessFile: string) => ({
       cfg: {
         ...DEFAULT_CONFIG,
-        qmapBin: cormBin,
+        cormBin: cormBin,
         cormdBin,
         memDir: tmpDir,
         axisLibs: axisPath,

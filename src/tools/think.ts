@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
-import { filespecFor, buildGetInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildGetInvocation, embedEnv } from "../corm.ts";
 import { isNumericRef } from "../resolve.ts";
 import { scanTopRef } from "./scan.ts";
 import { decodePayload, splitRawPayload } from "../payload.ts";
@@ -26,8 +26,9 @@ export function makeThinkTool(envSource: EnvSource): PiToolSpec {
       try {
         const env = await envSource(ctx as PiCtx);
         const key = typeof params["key"] === "string" ? params["key"].trim() : "";
+        const bin = env.cfg.cormBin;
         if (key === "") return { content: [{ type: "text", text: "mm think: empty key (degradation: soft)" }], details: { error: "empty-key" } };
-        if (env.cfg.qmapBin === "") return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap" } };
+        if (!bin) return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
 
         const ref = isNumericRef(key)
           ? Number(key)
@@ -35,7 +36,7 @@ export function makeThinkTool(envSource: EnvSource): PiToolSpec {
         if (ref === null) return { content: [{ type: "text", text: `mm think: no memory matches ${key}` }], details: { error: "no-match" } };
 
         const embed = sepalConfigured(env.cfg);
-        const result = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, filespecFor(memDir(env), embed), ref, axisPath(env), memDir(env), embedEnv(env.cfg)));
+        const result = await env.runner.run(buildGetInvocation(bin, filespecFor(memDir(env), embed), ref, axisPath(env), memDir(env), embedEnv(env.cfg)));
         const payload = result.code === 0 ? result.stdout.trim() : "";
         if (payload === "") {
           return { content: [{ type: "text", text: `mm think: ref ${ref} returned nothing` }], details: { ref, error: "empty-get" } };

@@ -1,10 +1,11 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
-import { filespecFor, buildScanInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../qmap.ts";
+import { filespecFor, buildScanInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
 import type { MipmapLevel } from "../types.ts";
 import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria } from "./ranking.ts";
 import { debugLog } from "../debug.ts";
+import { getAssociatedTokens } from "../associative.ts";
 
 export type EnrichedRecord = FusedCandidate;
 
@@ -59,8 +60,9 @@ async function querySpatialFilter(
   env: ToolEnv, cwd: string, axes: string, limit: number, bbox: { dim?: number; s: string; l: string },
 ): Promise<Set<number>> {
   const isletFspec = `${cwd}/mem-islet.db@islet:a:s`;
+  const bin = env.cfg.cormBin;
   const res = await env.runner.run(buildScanInvocation(
-    env.cfg.qmapBin, isletFspec, "islet", limit * 2, axes, cwd, undefined,
+    bin, isletFspec, "islet", limit * 2, axes, cwd, undefined,
     [`--dim=${bbox.dim ?? 2}`, `--s=${bbox.s}`, `--l=${bbox.l}`],
   ));
   return res.code === 0 ? new Set(parseResultLines(res.stdout).map((l) => l.ref)) : new Set();
@@ -85,19 +87,36 @@ async function scanTokenFallback(
 
   const filtered = allTokens.filter((w) => !STOP_WORDS.has(w.toLowerCase()));
   const words = filtered.length > 0 ? filtered : allTokens;
+  const targetWords = words.slice(0, 6);
+  const associated = getAssociatedTokens(cwd, targetWords, 2);
+  const searchWords = Array.from(new Set([...targetWords, ...associated])).slice(0, 8);
 
-  const seen = new Set<number>();
-  const lines: ResultLine[] = [];
-  for (const w of words.slice(0, 6)) {
+  const bin = env.cfg.cormBin;
+  const subPromises = searchWords.map((w) => {
     const subArgs = [
       ...scanWindowArgs(timeLevel, now, until),
       "--field=text", "--matched=1", "--query=" + w,
     ];
-    const subRes = await env.runner.run(buildScanInvocation(env.cfg.qmapBin, filespecFor(cwd, false), expr, limit, axes, cwd, undefined, subArgs));
-    if (subRes.code === 0) {
-      for (const line of parseResultLines(subRes.stdout)) {
-        if (!seen.has(line.ref)) { seen.add(line.ref); lines.push(line); }
+    return env.runner.run(buildScanInvocation(bin, filespecFor(cwd, false), expr, limit, axes, cwd, undefined, subArgs));
+  });
+
+  const settled = await Promise.allSettled(subPromises);
+
+  const seen = new Set<number>();
+  const lines: ResultLine[] = [];
+  // Preserve deterministic first-seen ordering according to targetWords token order
+  for (const res of settled) {
+    if (res.status === "fulfilled" && res.value.code === 0) {
+      for (const line of parseResultLines(res.value.stdout)) {
+        if (!seen.has(line.ref)) {
+          seen.add(line.ref);
+          lines.push(line);
+        }
       }
+    } else if (res.status === "rejected") {
+      debugLog("recall", "Token sub-query failed; isolated from fallback pool", {
+        reason: res.reason instanceof Error ? res.reason.message : String(res.reason),
+      });
     }
   }
   return lines;
@@ -112,8 +131,9 @@ export async function queryLexicalPath(
     ...scanWindowArgs(timeLevel, now, until),
     "--field=text", "--matched=1", "--query=" + topic,
   ];
+  const bin = env.cfg.cormBin;
   const res = await env.runner.run(buildScanInvocation(
-    env.cfg.qmapBin, filespecFor(cwd, false), lexExpr, limit, axes, cwd, undefined, lexArgs,
+    bin, filespecFor(cwd, false), lexExpr, limit, axes, cwd, undefined, lexArgs,
   ));
   if (res.code === 0) {
     let lines = parseResultLines(res.stdout);
@@ -135,8 +155,9 @@ export async function querySemanticPath(
     "--query=" + topic,
     "--min-sim=" + String(SEPAL_MIN_SIM),
   ];
+  const bin = env.cfg.cormBin;
   const res = await env.runner.run(buildScanInvocation(
-    env.cfg.qmapBin, filespecFor(cwd, true), semExpr, limit, axes, cwd, embedEnv(env.cfg), semArgs,
+    bin, filespecFor(cwd, true), semExpr, limit, axes, cwd, embedEnv(env.cfg), semArgs,
   ));
   if (res.code === 0) {
     return { lines: parseResultLines(res.stdout) };
@@ -165,8 +186,9 @@ export async function executeHybridScan(
 ): Promise<{ records: FusedCandidate[]; details: Record<string, unknown> }> {
   const topic = opts.topic.trim();
   const details: Record<string, unknown> = {};
+  const bin = env.cfg.cormBin;
   if (topic === "") return { records: [], details: { records: [] } };
-  if (env.cfg.qmapBin === "") return { records: [], details: { error: "no-qmap", records: [] } };
+  if (!bin) return { records: [], details: { error: "no-corm", records: [] } };
 
   const timeLevel = resolveTimeLevel(opts.level, opts.timeWindow);
   const limit = defaultLimit(opts.limit) || env.cfg.scanLimit;
@@ -241,8 +263,9 @@ async function executeScan(envSource: EnvSource, params: Record<string, unknown>
   try {
     const env = await envSource(ctx);
     const topic = typeof params["topic"] === "string" ? params["topic"].trim() : "";
+    const bin = env.cfg.cormBin;
     if (topic === "") return { content: [{ type: "text", text: "mm scan: empty topic (degradation: soft)" }], details: { records: [] } };
-    if (env.cfg.qmapBin === "") return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap", records: [] } };
+    if (!bin) return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm", records: [] } };
 
     const { details } = await executeHybridScan(env, params as unknown as HybridScanOptions);
     if (details["lexicalError"] && (!details["records"] || (details["records"] as unknown[]).length === 0)) {
@@ -267,7 +290,8 @@ export function makeScanTool(envSource: EnvSource): PiToolSpec {
 
 export async function scanTopRef(envSource: EnvSource, ctx: PiCtx, topic: string): Promise<number | null> {
   const env = await envSource(ctx as PiCtx);
-  if (env.cfg.qmapBin === "") return null;
+  const bin = env.cfg.cormBin;
+  if (!bin) return null;
   const { records } = await executeHybridScan(env, { topic, limit: 1 });
   return records.length > 0 ? records[0].ref : null;
 }

@@ -3,13 +3,13 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import * as net from "node:net";
-import { DaemonQmapRunner } from "../src/daemon.ts";
-import { buildScanInvocation, buildStoreInvocation, type Invocation } from "../src/qmap.ts";
+import { DaemonCormRunner } from "../src/daemon.ts";
+import { buildScanInvocation, buildStoreInvocation, type Invocation } from "../src/corm.ts";
 
 const home = Deno.env.get("HOME") || "";
 const cormAxisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 function sendRaw(sockPath: string, cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -133,7 +133,7 @@ Deno.test("hardening 2: database identity verification rejects same-basename dat
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockA, {
+    const runner = new DaemonCormRunner(sockA, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -182,7 +182,7 @@ Deno.test("hardening 3: secondary index failure halts stale query serving and re
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -248,7 +248,7 @@ Deno.test("hardening 4: failed deletion / stale index entries in nonempty DB are
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -313,7 +313,7 @@ Deno.test("hardening 5: failure injection during index reset/rebuild returns fra
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -370,7 +370,7 @@ Deno.test("hardening 6: repeated reconciliation does not leak handles or obsolet
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 

@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildListInvocation, buildGetInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildListInvocation, buildGetInvocation } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
 import { decodePayload } from "../src/payload.ts";
 import { installSessionHooks, activeConversationTurn, type PiCtx } from "../src/hooks/events.ts";
@@ -16,8 +17,8 @@ import {
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("incremental_consolidation: ordinary turns capture L0/L1 without running L2/L3 synchronously", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-incr-ord-" });
@@ -31,11 +32,11 @@ Deno.test("incremental_consolidation: ordinary turns capture L0/L1 without runni
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -111,7 +112,7 @@ Deno.test("incremental_consolidation: threshold gating marks L2 pending and exec
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const synthServer = Deno.serve({ port: 0 }, async (req) => {
       const body = await req.json();
@@ -132,7 +133,7 @@ Deno.test("incremental_consolidation: threshold gating marks L2 pending and exec
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -252,11 +253,11 @@ Deno.test("incremental_consolidation: status observability and explicit force ex
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

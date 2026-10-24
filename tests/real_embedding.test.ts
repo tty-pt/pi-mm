@@ -16,8 +16,8 @@ Deno.test("real_embedding: distinguishes synthetic test plumbing from real seman
   // axis store fan-out, and cosine scoring).
   // Live semantic model validation tests semantic-quality comprehension of models like nomic-embed-text.
   const hasLiveConfig = Boolean(
-    (Deno.env.get("CORM_SEPAL_EMBED_URL") || Deno.env.get("QMAP_SEPAL_EMBED_URL")) &&
-    (Deno.env.get("CORM_SEPAL_EMBED_MODEL") || Deno.env.get("QMAP_SEPAL_EMBED_MODEL")),
+    (Deno.env.get("CORM_SEPAL_EMBED_URL") || Deno.env.get("CORM_SEPAL_EMBED_URL")) &&
+    (Deno.env.get("CORM_SEPAL_EMBED_MODEL") || Deno.env.get("CORM_SEPAL_EMBED_MODEL")),
   );
 
   if (hasLiveConfig) {

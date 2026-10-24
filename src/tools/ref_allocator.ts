@@ -1,7 +1,7 @@
 import { readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { QmapRunner } from "../qmap.ts";
-import { buildListInvocation } from "../qmap.ts";
+import type { CormRunner } from "../corm.ts";
+import { buildListInvocation } from "../corm.ts";
 import { parseBareRefs, nextRef } from "../resolve.ts";
 
 export function refSeqFilePath(memDir: string): string {
@@ -15,13 +15,13 @@ export function refSeqFilePath(memDir: string): string {
  */
 export async function reconcileRefSeq(
   memDir: string,
-  runner: QmapRunner,
-  qmapBin: string,
+  runner: CormRunner,
+  cormBin: string,
   fspec: string,
   axes: string,
   eEnv?: Record<string, string>,
 ): Promise<number> {
-  const listRes = await runner.run(buildListInvocation(qmapBin, fspec, axes, memDir, eEnv));
+  const listRes = await runner.run(buildListInvocation(cormBin, fspec, axes, memDir, eEnv));
   const refs = parseBareRefs(listRes.stdout);
   const next = nextRef(refs);
 
@@ -85,8 +85,8 @@ export async function isRefSeqInitialized(memDir: string): Promise<boolean> {
  */
 export async function allocateNextRef(
   memDir: string,
-  runner: QmapRunner,
-  qmapBin: string,
+  runner: CormRunner,
+  cormBin: string,
   fspec: string,
   axes: string,
   eEnv?: Record<string, string>,
@@ -108,7 +108,7 @@ export async function allocateNextRef(
   if (currentVal === null) {
     if (budget) budget.charge("list", 1);
     // Missing, empty, or unparseable: perform one-time roster reconciliation
-    const reconciledStart = await reconcileRefSeq(memDir, runner, qmapBin, fspec, axes, eEnv);
+    const reconciledStart = await reconcileRefSeq(memDir, runner, cormBin, fspec, axes, eEnv);
     // Write reconciledStart + 1 for subsequent callers
     const targetPath = seqPath;
     const tmpPath = `${targetPath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;

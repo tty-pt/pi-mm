@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildListInvocation, buildGetInvocation, buildStoreInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildListInvocation, buildGetInvocation, buildStoreInvocation } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import { installSessionHooks, activeConversationTurn, type PiCtx } from "../src/hooks/events.ts";
@@ -24,8 +25,8 @@ import type { L2SynthesisInput, L3SynthesisInput } from "../src/synth/types.ts";
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("genuine_synthesis: 1. Ordinary turn settlement does not scan full DB or invoke L2/L3 synthesis", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-synth-test1-" });
@@ -43,7 +44,7 @@ Deno.test("genuine_synthesis: 1. Ordinary turn settlement does not scan full DB 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Seed 25 background records in the database
     for (let i = 1; i <= 25; i++) {
@@ -58,7 +59,7 @@ Deno.test("genuine_synthesis: 1. Ordinary turn settlement does not scan full DB 
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -131,12 +132,12 @@ Deno.test("genuine_synthesis: 2. Per-turn and deferred work respect consolidateB
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const batchLimit = 3;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -327,7 +328,7 @@ Deno.test("genuine_synthesis: 6. Reciprocal successor links (supersedes/supersed
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let synthCount = 0;
     const synthServer = Deno.serve({ port: 0 }, async (req) => {
@@ -350,7 +351,7 @@ Deno.test("genuine_synthesis: 6. Reciprocal successor links (supersedes/supersed
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -453,14 +454,14 @@ Deno.test("genuine_synthesis: 7. Failures, conflicts, and insufficient evidence 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Server that always returns 500
     const failingServer = Deno.serve({ port: 0 }, () => new Response("Server error", { status: 500 }));
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -525,11 +526,11 @@ Deno.test("genuine_synthesis: 8. Status observability, force option, and thresho
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -615,7 +616,7 @@ Deno.test("genuine_synthesis: 10. Compaction and shutdown hooks do not perform w
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Seed 30 items
     for (let i = 1; i <= 30; i++) {
@@ -630,7 +631,7 @@ Deno.test("genuine_synthesis: 10. Compaction and shutdown hooks do not perform w
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

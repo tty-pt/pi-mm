@@ -4,13 +4,13 @@ import { makeRecordTool } from "../src/tools/record.ts";
 import { makeReviewTool } from "../src/tools/review.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner, Invocation } from "../src/qmap.ts";
+import type { CormRunner, Invocation } from "../src/corm.ts";
 import type { PiExecResult, PiToolSpec } from "../src/hooks/events.ts";
 
-function fakeRunner(results: PiExecResult[]): { runner: QmapRunner; invocations: Invocation[] } {
+function fakeRunner(results: PiExecResult[]): { runner: CormRunner; invocations: Invocation[] } {
   let idx = 0;
   const invocations: Invocation[] = [];
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: (inv: Invocation): Promise<PiExecResult> => {
       invocations.push(inv);
       if (idx < results.length) {
@@ -22,14 +22,14 @@ function fakeRunner(results: PiExecResult[]): { runner: QmapRunner; invocations:
   return { runner, invocations };
 }
 
-function makeEnv(runner: QmapRunner): ToolEnv {
+function makeEnv(runner: CormRunner): ToolEnv {
   try { Deno.removeSync("/tmp/fake-mm/.pi/mm/.ref_seq"); } catch { /* ignore */ }
   try { Deno.removeSync("/tmp/fake-mm/.ref_seq"); } catch { /* ignore */ }
   return {
     cwd: "/tmp/fake-mm",
     runner,
     nowProvider: () => new Date("2026-03-30T12:00:00"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: ".pi/mm" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: ".pi/mm" },
   };
 }
 

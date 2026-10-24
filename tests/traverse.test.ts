@@ -1,11 +1,11 @@
 import assert from "node:assert";
 import { makeTraverseTool } from "../src/tools/traverse.ts";
 import { makeScanTool } from "../src/tools/scan.ts";
-import { fakeRunner, runTool, okResult } from "./fake-qmap.ts";
+import { fakeRunner, runTool, okResult } from "./fake-corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
-import { encodePayload } from "../src/payload.ts";
+import { encodePayload, bytesToBinaryString as b2s } from "../src/payload.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import type { CormRunner } from "../src/corm.ts";
 
 const CWD = await Deno.makeTempDir({ prefix: "mm-traverse-cwd-" });
 const ctx = { cwd: CWD, hasUI: false, mode: "agent" };
@@ -14,12 +14,12 @@ function now(): Date {
   return new Date("2026-09-15T10:00:00");
 }
 
-function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
+function env(runner: CormRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
   return {
     cwd: CWD,
     runner,
     nowProvider: now,
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", ...cfg },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", ...cfg },
   };
 }
 
@@ -137,7 +137,7 @@ Deno.test("scan: filters records by mipmap level and lifecycle", async () => {
   });
 
   const runner = fakeRunner([
-    okResult(`1 1.000000 ${epL0}\n2 0.900000 ${invL2}\n3 0.800000 ${oldL2}\n`),
+    okResult(`1 1.000000 ${b2s(epL0)}\n2 0.900000 ${b2s(invL2)}\n3 0.800000 ${b2s(oldL2)}\n`),
   ]);
 
   const tool = makeScanTool(give(env(runner)));

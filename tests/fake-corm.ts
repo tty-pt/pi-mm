@@ -1,7 +1,8 @@
 import type { PiExecResult, PiToolSpec } from "../src/hooks/events.ts";
-import type { Invocation, QmapRunner } from "../src/qmap.ts";
+import type { Invocation, CormRunner } from "../src/corm.ts";
+import { bytesToBinaryString } from "../src/payload.ts";
 
-export interface FakeRunner extends QmapRunner {
+export interface FakeRunner extends CormRunner {
   invocations: Invocation[];
   results: PiExecResult[];
   set: (results: PiExecResult[]) => void;
@@ -31,29 +32,23 @@ export function fakeRunner(initial?: PiExecResult[]): FakeRunner {
   return runner;
 }
 
-export function okResult(stdout: string, stderr = ""): PiExecResult {
-  return { stdout, stderr, code: 0 };
+export function okResult(stdout: string | Uint8Array): PiExecResult {
+  if (stdout instanceof Uint8Array) {
+    return { stdout: bytesToBinaryString(stdout), stderr: "", code: 0, stdoutBytes: stdout };
+  }
+  return { stdout, stderr: "", code: 0 };
 }
 
-export function failResult(stdout: string, stderr: string, code = 1): PiExecResult {
-  return { stdout, stderr, code };
-}
-
-export function fakePi(exec?: (command: string, args: string[]) => Promise<PiExecResult>) {
-  const tools: PiToolSpec[] = [];
-  return {
-    tools,
-    on(): void {},
-    registerTool(tool: PiToolSpec): void { tools.push(tool); },
-    exec: exec ?? (() => Promise.resolve({ stdout: "", stderr: "", code: 0 })),
-  };
-}
-
-export function runTool(
+export async function runTool(
   tool: PiToolSpec,
   params: Record<string, unknown>,
-  ctx: { cwd: string },
+  ctx: { cwd: string; hasUI?: boolean; mode?: string } | import("../src/hooks/events.ts").PiCtx,
 ): Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown }> {
-  const cwd = ctx.cwd;
-  return tool.execute("", params, undefined, undefined, { cwd, hasUI: false, mode: "test" });
+  return await tool.execute(
+    "call-1",
+    params,
+    undefined,
+    () => {},
+    ctx as import("../src/hooks/events.ts").PiCtx,
+  );
 }

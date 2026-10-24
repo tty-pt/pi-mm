@@ -2,11 +2,11 @@ import { mkdir } from "node:fs/promises";
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
-import { filespecFor, buildStoreInvocation, buildGetInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildStoreInvocation, buildGetInvocation, embedEnv, payloadDate } from "../corm.ts";
 import { allocateNextRef } from "./ref_allocator.ts";
-import { payloadDate } from "../qmap.ts";
-import { encodePayload, decodePayload } from "../payload.ts";
+import { encodePayload, decodePayload, encodeHtokPayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
+import { recordAssociations } from "../associative.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord, MemoryContext } from "../types.ts";
 
 const STORE_PARAMS = {
@@ -77,7 +77,8 @@ async function applySupersedes(
   newRef: number,
   nowIso: string,
 ): Promise<void> {
-  const getOld = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, oldRef, axes, cwd, eEnv));
+  const bin = env.cfg.cormBin || env.cfg.qmapBin || "";
+  const getOld = await env.runner.run(buildGetInvocation(bin, fspec, oldRef, axes, cwd, eEnv));
   if (getOld.code === 0 && getOld.stdout.trim()) {
     const { date: oldDate, envelope: oldEnv } = decodePayload(getOld.stdout.trim());
     const prev = oldEnv.lifecycle;
@@ -91,7 +92,10 @@ async function applySupersedes(
       reason: `Superseded by ref ${newRef}`,
       evidenceRef: newRef,
     });
-    await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, oldRef, encodePayload(oldDate, oldEnv), axes, cwd, eEnv));
+    const payload = fspec.includes(":a:b")
+      ? encodeHtokPayload(oldDate, oldEnv)
+      : encodePayload(oldDate, oldEnv);
+    await env.runner.run(buildStoreInvocation(bin, fspec, oldRef, payload, axes, cwd, eEnv));
   }
 }
 
@@ -102,9 +106,10 @@ async function storeSpatialGrid(
   ref: number,
   grid: { x: number; y: number },
 ): Promise<void> {
+  const bin = env.cfg.cormBin || env.cfg.qmapBin || "";
   const isletFspec = `${cwd}/mem-islet.db@islet:a:s`;
   try {
-    await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, isletFspec, ref, `${grid.x},${grid.y}`, axes, cwd));
+    await env.runner.run(buildStoreInvocation(bin, isletFspec, ref, `${grid.x},${grid.y}`, axes, cwd));
   } catch {
     // Spatial grid store is best-effort
   }
@@ -129,6 +134,7 @@ function buildEnvelope(params: Record<string, unknown>, summary: string, ep?: Ep
     evidence: Array.isArray(params["evidence"]) ? (params["evidence"] as number[]) : undefined,
     supersedes: typeof params["supersedes"] === "number" ? params["supersedes"] : undefined,
     tags: Array.isArray(params["tags"]) ? (params["tags"] as string[]) : undefined,
+    isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
   };
   const isStructured = Boolean(
     ep || params["level"] || params["context"] || params["evidence"] ||
@@ -150,23 +156,25 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
     const date = payloadDate(typeof params["timestamp"] === "string" ? params["timestamp"] : undefined, env.nowProvider());
     const axes = axisPath(env);
     const cwd = memDir(env);
-    if (env.cfg.qmapBin === "") return { content: [{ type: "text", text: `mm unavailable: qmap binary not found` }], details: { error: "no-qmap" } };
+    const bin = env.cfg.cormBin || env.cfg.qmapBin || "";
+    if (!bin) return { content: [{ type: "text", text: `mm unavailable: corm binary not found` }], details: { error: "no-corm" } };
     try { await mkdir(cwd, { recursive: true }); } catch { /* best-effort */ }
 
     const embed = sepalConfigured(env.cfg);
     const fspec = filespecFor(cwd, embed);
     const eEnv = embedEnv(env.cfg);
     return await withLock(cwd, async () => {
-      const ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv);
-      const { envelope, isStructured } = buildEnvelope(params, summary, ep);
-      const payload = isStructured ? encodePayload(date, envelope) : `${date}:${summary}`;
+      const ref = await allocateNextRef(cwd, env.runner, bin, fspec, axes, eEnv);
+      const { envelope } = buildEnvelope(params, summary, ep);
+      const payload = encodeHtokPayload(date, envelope);
 
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, payload, axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(bin, fspec, ref, payload, axes, cwd, eEnv));
       if (res.code !== 0) {
         return { content: [{ type: "text", text: `mm store failed (exit ${res.code}): ${res.stderr || res.stdout}` }], details: { ref, key: `@${date}`, error: res.stderr || res.stdout } };
       }
       if (typeof params["supersedes"] === "number") await applySupersedes(env, fspec, axes, cwd, eEnv, params["supersedes"], ref, date);
       if (envelope.context?.grid) await storeSpatialGrid(env, axes, cwd, ref, envelope.context.grid);
+      void recordAssociations(cwd, summary).catch(() => {});
       return exportDetail({ ref, key: `@${date}`, level: envelope.level, lifecycle: envelope.lifecycle, summary });
     });
   } catch (err) {

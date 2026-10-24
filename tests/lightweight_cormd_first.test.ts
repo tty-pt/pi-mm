@@ -2,16 +2,16 @@ import { strict as assert } from "node:assert";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { ensureDaemon, probeDaemonSocket, DaemonQmapRunner, isDaemonLockHeld } from "../src/daemon.ts";
-import { buildStoreInvocation, buildScanInvocation, buildGetInvocation } from "../src/qmap.ts";
+import { ensureDaemon, probeDaemonSocket, DaemonCormRunner, isDaemonLockHeld } from "../src/daemon.ts";
+import { buildStoreInvocation, buildScanInvocation, buildGetInvocation } from "../src/corm.ts";
 import { activeSessionBuffer, flushSessionBuffer, summarizeToolEvent, installSessionHooks } from "../src/hooks/events.ts";
 import { decodePayload } from "../src/payload.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 
 const home = Deno.env.get("HOME") || "";
 const cormAxisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 function runCli(args: string[], cwd: string, envOverrides: Record<string, string> = {}): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
@@ -157,14 +157,14 @@ Deno.test("lightweight 4: automatic episode references authentic Pi session IDs 
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-compact-session-" });
   activeSessionBuffer.setJournalDir(tmpDir);
 
-  const capturedPayloads: string[] = [];
+  const capturedPayloads: Array<string | Uint8Array> = [];
   const runner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
       if (inv.args[0] === "-p") {
-        capturedPayloads.push(inv.args[1]);
+        capturedPayloads.push(inv.payloadBytes ?? inv.args[1]);
         return Promise.resolve({ stdout: "1", stderr: "", code: 0 });
       }
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
@@ -172,7 +172,7 @@ Deno.test("lightweight 4: automatic episode references authentic Pi session IDs 
   };
 
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: cormBin, memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: cormBin, memDir: tmpDir },
     runner,
     nowProvider: () => new Date("2026-10-16T10:00:00Z"),
     cwd: tmpDir,
@@ -209,7 +209,7 @@ Deno.test("lightweight 4: automatic episode references authentic Pi session IDs 
   assert.strictEqual(ref, 1);
   assert.strictEqual(capturedPayloads.length, 1);
 
-  const payload = capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
+  const payload = capturedPayloads[0] instanceof Uint8Array ? capturedPayloads[0] : capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
   const { envelope } = decodePayload(payload);
 
   // Assert genuine session linkage
@@ -259,7 +259,7 @@ Deno.test("lightweight 4b: routine successful bash operations are filtered out a
   // 2. End-to-end hook integration test: emit routine bash operations and confirm zero flushes
   let storeCount = 0;
   const runner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -272,7 +272,7 @@ Deno.test("lightweight 4b: routine successful bash operations are filtered out a
   };
 
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: cormBin, memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: cormBin, memDir: tmpDir },
     runner,
     nowProvider: () => new Date(),
     cwd: tmpDir,
@@ -352,14 +352,14 @@ Deno.test("lightweight 5: crash journal lifecycle prunes committed events and de
 
   // 2. Execute flush: on success, the journal file must be unlinked!
   const runner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       if (inv.args[0] === "-p") return Promise.resolve({ stdout: "1", stderr: "", code: 0 });
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
     },
   };
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: cormBin, memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: cormBin, memDir: tmpDir },
     runner,
     nowProvider: () => new Date(),
     cwd: tmpDir,
@@ -386,7 +386,7 @@ Deno.test("lightweight 6: dynamic CORM growth past initial mask capacity preserv
     cwd: tmpDir,
   });
 
-  const runner = new DaemonQmapRunner(sockPath, {
+  const runner = new DaemonCormRunner(sockPath, {
     run: (_inv) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
   });
 
@@ -435,7 +435,7 @@ Deno.test("lightweight 6: dynamic CORM growth past initial mask capacity preserv
       cwd: tmpDir,
     });
 
-    const runner2 = new DaemonQmapRunner(sockPath, {
+    const runner2 = new DaemonCormRunner(sockPath, {
       run: (_inv) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -475,7 +475,7 @@ Deno.test("lightweight 7: existing database compatibility verifies pre-existing 
     cwd: tmpDir,
   });
 
-  const runner = new DaemonQmapRunner(sockPath, {
+  const runner = new DaemonCormRunner(sockPath, {
     run: (_inv) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
   });
 

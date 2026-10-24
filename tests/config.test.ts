@@ -1,4 +1,4 @@
-import { readMmConfig, loadConfig, applyEnv, resolveQmapBin, resolveAxisPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
+import { readMmConfig, loadConfig, applyEnv, resolveCormBin, resolveAxisPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
 import { resolveMemDir } from "../src/tools/index.ts";
 import { join } from "node:path";
 
@@ -8,7 +8,7 @@ function check(cond: boolean, msg: string): void {
 
 Deno.test("loadConfig: undefined → defaults", () => {
   const cfg = loadConfig(undefined);
-  check(cfg.qmapBin === "", "qmapBin default empty");
+  check(cfg.cormBin === "", "cormBin default empty");
   check(cfg.axisLibs === null, "axisLibs default null");
   check(cfg.memDir === ".pi/mm", "memDir default");
   check(cfg.scanLimit === 10, "scanLimit default");
@@ -16,39 +16,39 @@ Deno.test("loadConfig: undefined → defaults", () => {
 
 Deno.test("loadConfig: valid overrides honored, invalid values fall back", () => {
   const cfg = loadConfig({
-    qmapBin: "/usr/bin/qmap",
+    cormBin: "/usr/bin/corm",
     axisLibs: "/a:/b",
     memDir: "mem",
     scanLimit: 5,
   });
-  check(cfg.qmapBin === "/usr/bin/qmap", "qmapBin override");
+  check(cfg.cormBin === "/usr/bin/corm", "cormBin override");
   check(cfg.axisLibs === "/a:/b", "axisLibs override");
   check(cfg.memDir === "mem", "memDir override");
   check(cfg.scanLimit === 5, "scanLimit override");
 
-  const bad = loadConfig({ qmapBin: 3, axisLibs: null, memDir: "", scanLimit: -2 });
-  check(bad.qmapBin === "", "qmapBin non-string → default");
+  const bad = loadConfig({ cormBin: 3, axisLibs: null, memDir: "", scanLimit: -2 });
+  check(bad.cormBin === "", "cormBin non-string → default");
   check(bad.axisLibs === null, "axisLibs null → default");
   check(bad.memDir === DEFAULT_CONFIG.memDir, "memDir empty → default");
   check(bad.scanLimit === 10, "negative scanLimit → default");
 });
 
 Deno.test("applyEnv: fills only when settings unset; respects settings otherwise", () => {
-  const fromSettings = loadConfig({ qmapBin: "/usr/bin/qmap", axisLibs: "/a:/b" });
-  const merged = applyEnv(fromSettings, { QMAP_BIN: "/env/qmap", QMAP_AXIS_PATH: "/env:/axes" });
-  check(merged.qmapBin === "/usr/bin/qmap", "settings qmapBin wins over env");
+  const fromSettings = loadConfig({ cormBin: "/usr/bin/corm", axisLibs: "/a:/b" });
+  const merged = applyEnv(fromSettings, { CORM_BIN: "/env/corm", CORM_AXIS_PATH: "/env:/axes" });
+  check(merged.cormBin === "/usr/bin/corm", "settings cormBin wins over env");
   check(merged.axisLibs === "/a:/b", "settings axisLibs wins over env");
 
-  const bare = applyEnv(DEFAULT_CONFIG, { QMAP_BIN: "/env/qmap", QMAP_AXIS_PATH: "/env:/axes" });
-  check(bare.qmapBin === "/env/qmap", "env QMAP_BIN fills unset qmapBin");
-  check(bare.axisLibs === "/env:/axes", "env QMAP_AXIS_PATH fills unset axisLibs");
+  const bare = applyEnv(DEFAULT_CONFIG, { CORM_BIN: "/env/corm", CORM_AXIS_PATH: "/env:/axes" });
+  check(bare.cormBin === "/env/corm", "env CORM_BIN fills unset cormBin");
+  check(bare.axisLibs === "/env:/axes", "env CORM_AXIS_PATH fills unset axisLibs");
 });
 
 Deno.test("applyEnv: sepal embed env vars fill unset fields; settings win", () => {
   const envRec = {
-    QMAP_SEPAL_EMBED_URL: "http://h:4242/v1/embeddings",
-    QMAP_SEPAL_EMBED_MODEL: "nomic-embed-text",
-    QMAP_SEPAL_EMBED_KEY: "secret",
+    CORM_SEPAL_EMBED_URL: "http://h:4242/v1/embeddings",
+    CORM_SEPAL_EMBED_MODEL: "nomic-embed-text",
+    CORM_SEPAL_EMBED_KEY: "secret",
   };
   const filled = applyEnv(DEFAULT_CONFIG, envRec);
   check(filled.embedUrl === "http://h:4242/v1/embeddings", "env fills url");
@@ -64,30 +64,30 @@ Deno.test("applyEnv: sepal embed env vars fill unset fields; settings win", () =
 
 Deno.test("sepalConfigured: true only when url+model both set", () => {
   check(sepalConfigured(DEFAULT_CONFIG) === false, "defaults false");
-  check(sepalConfigured(applyEnv(DEFAULT_CONFIG, { QMAP_SEPAL_EMBED_URL: "http://h" })) === false, "url only false");
-  check(sepalConfigured(applyEnv(DEFAULT_CONFIG, { QMAP_SEPAL_EMBED_MODEL: "m" })) === false, "model only false");
+  check(sepalConfigured(applyEnv(DEFAULT_CONFIG, { CORM_SEPAL_EMBED_URL: "http://h" })) === false, "url only false");
+  check(sepalConfigured(applyEnv(DEFAULT_CONFIG, { CORM_SEPAL_EMBED_MODEL: "m" })) === false, "model only false");
   check(
-    sepalConfigured(applyEnv(DEFAULT_CONFIG, { QMAP_SEPAL_EMBED_URL: "http://h", QMAP_SEPAL_EMBED_MODEL: "m" })) === true,
+    sepalConfigured(applyEnv(DEFAULT_CONFIG, { CORM_SEPAL_EMBED_URL: "http://h", CORM_SEPAL_EMBED_MODEL: "m" })) === true,
     "pair true",
   );
 });
 
-Deno.test("resolveQmapBin: precedence settings → env → PATH → in-site → none", () => {
-  const probe = (p: string): boolean => p === "/usr/bin/qmap" || p === "/env/qmap" ||
-    p === "/opt/bin/qmap" || p === "/repo/external/libqmap/bin/qmap";
-  const cfg = loadConfig({ qmapBin: "/usr/bin/qmap" });
-  check(resolveQmapBin(cfg, "/repo", ["/opt/bin"], probe).source === "settings", "settings chosen");
+Deno.test("resolveCormBin: precedence settings → env → PATH → in-site → none", () => {
+  const probe = (p: string): boolean => p === "/usr/bin/corm" || p === "/env/corm" ||
+    p === "/opt/bin/corm" || p === "/repo/external/libcorm/bin/corm";
+  const cfg = loadConfig({ cormBin: "/usr/bin/corm" });
+  check(resolveCormBin(cfg, "/repo", ["/opt/bin"], probe).source === "settings", "settings chosen");
 
-  const fromEnv = applyEnv(DEFAULT_CONFIG, { QMAP_BIN: "/env/qmap" });
-  check(resolveQmapBin(fromEnv, "/repo", ["/opt/bin"], probe).path === "/env/qmap", "env chosen");
+  const fromEnv = applyEnv(DEFAULT_CONFIG, { CORM_BIN: "/env/corm" });
+  check(resolveCormBin(fromEnv, "/repo", ["/opt/bin"], probe).path === "/env/corm", "env chosen");
 
-  const fromPath = resolveQmapBin(DEFAULT_CONFIG, "/repo", ["/opt/bin"], probe);
-  check(fromPath.source === "path" && fromPath.path === "/opt/bin/qmap", "PATH chosen");
+  const fromPath = resolveCormBin(DEFAULT_CONFIG, "/repo", ["/opt/bin"], probe);
+  check(fromPath.source === "path" && fromPath.path === "/opt/bin/corm", "PATH chosen");
 
-  const fromInSite = resolveQmapBin(DEFAULT_CONFIG, "/repo", ["/no/qmap"], probe);
+  const fromInSite = resolveCormBin(DEFAULT_CONFIG, "/repo", ["/no/corm"], probe);
   check(fromInSite.source === "insite", "in-site fallback chosen");
 
-  const none = resolveQmapBin(DEFAULT_CONFIG, "/nowhere", ["/no/qmap"], (p) => p === "/nowhere/external/libqmap/bin/qmap" && false);
+  const none = resolveCormBin(DEFAULT_CONFIG, "/nowhere", ["/no/corm"], (p) => p === "/nowhere/external/libcorm/bin/corm" && false);
   check(none.source === "none" && none.path === "", "none when nothing resolves");
 });
 

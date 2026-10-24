@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/corm.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import { installSessionHooks, activeConversationTurn, type PiCtx } from "../src/hooks/events.ts";
 import {
@@ -20,8 +21,8 @@ import type { L2SynthesisInput } from "../src/synth/types.ts";
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("correctness_gaps: 1. Ordinary turns and clean lifecycle boundaries perform ZERO list operations", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-gap-test1-" });
@@ -39,7 +40,7 @@ Deno.test("correctness_gaps: 1. Ordinary turns and clean lifecycle boundaries pe
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Seed 10 records
     for (let i = 1; i <= 10; i++) {
@@ -51,7 +52,7 @@ Deno.test("correctness_gaps: 1. Ordinary turns and clean lifecycle boundaries pe
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -122,7 +123,7 @@ Deno.test("correctness_gaps: 2. Concurrent allocateNextRef allocations remain st
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const { withLock } = await import("../src/lock.ts");
 
     // Allocate 20 references concurrently across multiple asynchronous tasks
@@ -159,7 +160,7 @@ Deno.test("correctness_gaps: 3. L3 reference-specific pruning and starvation-fre
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const synthServer = Deno.serve({ port: 0 }, async (req) => {
       const body = await req.json();
@@ -181,7 +182,7 @@ Deno.test("correctness_gaps: 3. L3 reference-specific pruning and starvation-fre
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -313,7 +314,7 @@ Deno.test("correctness_gaps: 6. Journal corruption preservation and automatic pe
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Seed 2 active uncited L1 records in 'security' scope
     await daemonRunner.run(buildStoreInvocation(cormBin, fspec, 1, encodePayload("2026-10-18", {
@@ -330,7 +331,7 @@ Deno.test("correctness_gaps: 6. Journal corruption preservation and automatic pe
     // Read journal with recovery context
     const recovered = await readConsolidationJournal(tmpDir, {
       runner: daemonRunner,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       fspec,
       axes: axisPath,
       l2Threshold: 2,
@@ -372,7 +373,7 @@ Deno.test("correctness_gaps: 7. L3 principle and boundary conditions survive per
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const l3Envelope = {
       level: "L3" as const,
@@ -424,9 +425,9 @@ Deno.test("correctness_gaps: 8. Detection and recovery of failed predecessor wri
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const testRunner = {
-      run: (inv: import("../src/qmap.ts").Invocation) => {
+      run: (inv: import("../src/corm.ts").Invocation) => {
         if (failPredecessorWrite && inv.args[0] === "-p" && inv.args[1].startsWith("3:")) {
           return Promise.resolve({ code: 1, stdout: "", stderr: "Simulated predecessor write failure" });
         }
@@ -453,7 +454,7 @@ Deno.test("correctness_gaps: 8. Detection and recovery of failed predecessor wri
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

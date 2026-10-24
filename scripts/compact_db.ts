@@ -1,34 +1,75 @@
-import { loadConfig } from "../src/config.ts";
-import { DaemonQmapRunner } from "../src/daemon.ts";
-import { ShellQmapRunner, buildListInvocation, buildGetInvocation, buildStoreInvocation, filespecFor, embedEnv } from "../src/qmap.ts";
+import { loadConfig, resolveCormBin, resolveAxisPath } from "../src/config.ts";
+import { DaemonCormRunner } from "../src/daemon.ts";
+import { ShellCormRunner, buildListInvocation, buildGetInvocation, buildStoreInvocation, filespecFor, embedEnv } from "../src/corm.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import { withLock } from "../src/lock.ts";
+import { join, isAbsolute } from "node:path";
 
 async function compactDatabase() {
-  const settingsPath = "/home/quirinpa/site/.pi/settings.json";
-  let rawMm = {};
+  const cwd = Deno.cwd();
+  const settingsPath = join(cwd, ".pi", "settings.json");
+  let rawMm: Record<string, unknown> = {};
   try {
-    const raw = JSON.parse(await Deno.readTextFile(settingsPath));
-    rawMm = raw["pi-mm"] || {};
+    const rawText = await Deno.readTextFile(settingsPath);
+    const raw = JSON.parse(rawText);
+    rawMm = (raw && typeof raw === "object" && (raw["pi-mm"] || raw["mm"])) || {};
   } catch {
     /* ignore fallback defaults */
   }
 
+  const rawMemDir = (rawMm["memDir"] as string | undefined) || join(cwd, ".pi", "mm");
+  const memDir = isAbsolute(rawMemDir) ? rawMemDir : join(cwd, rawMemDir);
+
   const cfg = loadConfig({
-    qmapBin: "/usr/bin/corm",
-    memDir: "/home/quirinpa/site/.pi/mm",
+    memDir,
     ...rawMm,
   });
 
-  const sockPath = `${cfg.memDir}/cormd.sock`;
-  const fallback = new ShellQmapRunner(() => Promise.resolve({ stdout: "", stderr: "no fallback", code: 1 }));
-  const runner = new DaemonQmapRunner(sockPath, fallback, 5000);
-  const fspec = filespecFor(cfg.memDir, false);
-  const axes = "/usr/lib:/usr/local/lib";
+  const pathDirs = (Deno.env.get("PATH") || "").split(":");
+  const resolved = resolveCormBin(cfg, cwd, pathDirs, (p) => {
+    try {
+      return Deno.statSync(p).isFile;
+    } catch {
+      return false;
+    }
+  });
+  const cormBin = resolved.path || cfg.cormBin || "corm";
+  const axes = resolveAxisPath(cfg, cwd);
+
+  const sockPath = join(memDir, "cormd.sock");
+  const fallback = new ShellCormRunner(async (cmd, args, options) => {
+    const p = new Deno.Command(cmd, {
+      args,
+      cwd: options?.cwd,
+      env: options?.env,
+      stdin: options?.stdin ? "piped" : "null",
+      stdout: "piped",
+      stderr: "piped",
+    });
+    let out;
+    if (options?.stdin) {
+      const child = p.spawn();
+      const w = child.stdin.getWriter();
+      await w.write(options.stdin);
+      await w.close();
+      out = await child.output();
+    } else {
+      out = await p.output();
+    }
+    const dec = new TextDecoder();
+    return {
+      stdout: dec.decode(out.stdout),
+      stderr: dec.decode(out.stderr),
+      code: out.code,
+    };
+  });
+
+  const runner = new DaemonCormRunner(sockPath, fallback, 5000);
+  const fspec = filespecFor(memDir, false);
   const eEnv = embedEnv(cfg);
 
-  console.log(`[compact_db] Connecting to ${sockPath}...`);
-  const listRes = await runner.run(buildListInvocation(cfg.qmapBin, fspec, axes, cfg.memDir, eEnv));
+  console.log(`[compact_db] Connecting via ${sockPath}...`);
+  const listRes = await runner.run(buildListInvocation(cormBin, fspec, axes, memDir, eEnv));
   if (listRes.code !== 0) {
     console.error(`[compact_db] Failed to list records: ${listRes.stderr}`);
     Deno.exit(1);
@@ -40,42 +81,61 @@ async function compactDatabase() {
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => !isNaN(n));
 
-  console.log(`[compact_db] Found ${refs.length} records in ${cfg.memDir}/mem.db.`);
+  console.log(`[compact_db] Found ${refs.length} records in ${memDir}/mem.db.`);
 
   let beforeBytes = 0;
   let afterBytes = 0;
+  let beforeNulls = 0;
+  let afterNulls = 0;
   let updatedCount = 0;
+  let diffsStripped = 0;
 
-  await withLock(cfg.memDir, async () => {
+  await withLock(memDir, async () => {
     for (const ref of refs) {
-      const getRes = await runner.run(buildGetInvocation(cfg.qmapBin, fspec, ref, axes, cfg.memDir, eEnv));
+      const getRes = await runner.run(buildGetInvocation(cormBin, fspec, ref, axes, memDir, eEnv));
       if (getRes.code !== 0 || !getRes.stdout.trim()) continue;
 
       const raw = getRes.stdout.trim();
       beforeBytes += raw.length;
+      for (let i = 0; i < raw.length; i++) {
+        if (raw.charCodeAt(i) === 0) beforeNulls++;
+      }
 
       const decoded = decodePayload(raw);
-      const compacted = encodePayload(decoded.date, decoded.envelope);
-      afterBytes += compacted.length;
 
-      if (compacted !== raw) {
-        const storeRes = await runner.run(buildStoreInvocation(cfg.qmapBin, fspec, ref, compacted, axes, cfg.memDir, eEnv));
-        if (storeRes.code === 0) {
-          updatedCount++;
-        }
+      // Section 3.5: Strip heavy debug diffs from superseded L0/L1 records
+      if (decoded.envelope.lifecycle === "superseded" && decoded.envelope.episode?.diffs) {
+        decoded.envelope.episode.diffs = undefined;
+        diffsStripped++;
+      }
+
+      // Re-encode into HTOK v4 format
+      const compacted = encodePayload(decoded.date, decoded.envelope);
+      const compactedBytes = typeof compacted === "string" ? new TextEncoder().encode(compacted) : compacted;
+      afterBytes += compactedBytes.length;
+      for (let i = 0; i < compactedBytes.length; i++) {
+        if (compactedBytes[i] === 0) afterNulls++;
+      }
+
+      const storeRes = await runner.run(buildStoreInvocation(cormBin, fspec, ref, compacted, axes, memDir, eEnv));
+      if (storeRes.code === 0) {
+        updatedCount++;
       }
     }
   });
 
   const savedBytes = beforeBytes - afterBytes;
   const pctReduction = beforeBytes > 0 ? ((savedBytes / beforeBytes) * 100).toFixed(1) : "0.0";
+  const nullReduction = beforeNulls > 0 ? (((beforeNulls - afterNulls) / beforeNulls) * 100).toFixed(1) : "0.0";
 
   console.log(`\n=== Compaction Summary ===`);
   console.log(`Records processed: ${refs.length}`);
-  console.log(`Records updated: ${updatedCount}`);
-  console.log(`Before total payload: ${(beforeBytes / 1024).toFixed(1)} KB`);
-  console.log(`After total payload: ${(afterBytes / 1024).toFixed(1)} KB`);
-  console.log(`Saved: ${(savedBytes / 1024).toFixed(1)} KB (${pctReduction}% reduction)`);
+  console.log(`Records updated to HTOK v4: ${updatedCount}`);
+  console.log(`Superseded records with diffs stripped: ${diffsStripped}`);
+  console.log(`Before total payload: ${(beforeBytes / 1024).toFixed(1)} KB (nulls: ${beforeNulls})`);
+  console.log(`After total payload: ${(afterBytes / 1024).toFixed(1)} KB (nulls: ${afterNulls})`);
+  console.log(`Payload Size Saved: ${(savedBytes / 1024).toFixed(1)} KB (${pctReduction}% reduction)`);
+  console.log(`Payload Null Byte Reduction: ${nullReduction}%`);
 }
 
 if (import.meta.main) {

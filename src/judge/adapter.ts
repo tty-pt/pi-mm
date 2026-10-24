@@ -1,6 +1,105 @@
 import type { MmConfig } from "../config.ts";
 import { judgeConfigured } from "../config.ts";
+import { debugLog } from "../debug.ts";
 import type { JudgeAction, JudgeDecision, JudgeResult } from "./types.ts";
+
+export interface MmHealthReport {
+  judgeOk: boolean;
+  judgeEndpoint: string;
+  judgeLatencyMs: number;
+  judgeModels?: string[];
+  judgeError?: string;
+  embedOk?: boolean;
+  embedEndpoint?: string;
+  embedLatencyMs?: number;
+  embedError?: string;
+}
+
+export async function checkMmHealth(cfg: MmConfig): Promise<MmHealthReport> {
+  const rawUrl = cfg.judgeUrl ? cfg.judgeUrl.trim() : "http://127.0.0.1:4242";
+  const base = rawUrl.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/v1$/, "");
+  const judgeStart = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(cfg.judgeTimeoutMs ?? 15000, 3000));
+
+  let judgeOk = false;
+  let judgeLatencyMs = 0;
+  let judgeModels: string[] | undefined;
+  let judgeError: string | undefined;
+
+  try {
+    const res = await fetch(`${base}/v1/models`, {
+      method: "GET",
+      headers: cfg.judgeKey ? { Authorization: `Bearer ${cfg.judgeKey.trim()}` } : {},
+      signal: controller.signal,
+    });
+    judgeLatencyMs = Date.now() - judgeStart;
+    if (res.ok) {
+      judgeOk = true;
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data?.data)) {
+        judgeModels = data.data.map((m: { id?: string }) => m.id).filter((id: unknown): id is string => typeof id === "string");
+      }
+    } else {
+      judgeError = `HTTP ${res.status}: ${res.statusText}`;
+    }
+  } catch (err: unknown) {
+    judgeLatencyMs = Date.now() - judgeStart;
+    judgeError = err instanceof Error ? err.message : String(err);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let embedOk: boolean | undefined;
+  let embedLatencyMs: number | undefined;
+  let embedError: string | undefined;
+  const embedUrl = cfg.embedUrl?.trim();
+
+  if (embedUrl) {
+    const embedStart = Date.now();
+    const embedCtrl = new AbortController();
+    const embedTimer = setTimeout(() => embedCtrl.abort(), 3000);
+    try {
+      const res = await fetch(embedUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(cfg.embedKey ? { Authorization: `Bearer ${cfg.embedKey.trim()}` } : {}),
+        },
+        body: JSON.stringify({
+          model: cfg.embedModel || "bge-small",
+          input: "health check",
+        }),
+        signal: embedCtrl.signal,
+      });
+      embedLatencyMs = Date.now() - embedStart;
+      if (res.ok) {
+        embedOk = true;
+      } else {
+        embedOk = false;
+        embedError = `HTTP ${res.status}: ${res.statusText}`;
+      }
+    } catch (err: unknown) {
+      embedLatencyMs = Date.now() - embedStart;
+      embedOk = false;
+      embedError = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(embedTimer);
+    }
+  }
+
+  return {
+    judgeOk,
+    judgeEndpoint: base,
+    judgeLatencyMs,
+    judgeModels,
+    judgeError,
+    embedOk,
+    embedEndpoint: embedUrl,
+    embedLatencyMs,
+    embedError,
+  };
+}
 
 export function normalizeJevUrl(baseUrlOrUrl: string): string {
   const trimmed = baseUrlOrUrl.trim();
@@ -79,7 +178,7 @@ export async function callJevJudge(
   if (!rawUrl) throw new Error("No judgeUrl configured");
 
   const url = normalizeJevUrl(rawUrl);
-  const timeoutMs = cfg.judgeTimeoutMs ?? 5000;
+  const timeoutMs = cfg.judgeTimeoutMs ?? 15000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -90,9 +189,10 @@ export async function callJevJudge(
     headers["Authorization"] = `Bearer ${cfg.judgeKey}`;
   }
 
+  const clippedResponse = response.length > 500 ? response.slice(0, 500) + "..." : response;
   const stateText = threadContext
-    ? `${threadContext}\nCurrent User: ${prompt}\nCurrent Assistant: ${response}`
-    : `User: ${prompt}\nAssistant: ${response}`;
+    ? `${threadContext}\nCurrent User: ${prompt}\nCurrent Assistant: ${clippedResponse}`
+    : `User: ${prompt}\nAssistant: ${clippedResponse}`;
 
   const reqBody: Record<string, unknown> = {
     model: cfg.judgeModel || "default",
@@ -180,7 +280,7 @@ export async function evaluateTurnWithJudge(
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     const fallbackAction = cfg.judgeFallback === "capture" ? "remember" : "skip";
-    console.warn(`[pi-mm] Judge service unavailable (${errMsg}). Applying fallback '${cfg.judgeFallback ?? "skip"}'.`);
+    debugLog("judgement", "Judge service unavailable", { error: errMsg, fallback: cfg.judgeFallback ?? "skip" });
 
     return {
       decision: {

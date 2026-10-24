@@ -133,8 +133,9 @@ pi --extension .pi/extensions/pi-mm
 | `judgeUrl` | `PI_MM_JUDGE_URL` | *(none)* | URL of System One judge (e.g. `http://127.0.0.1:4242`). |
 | `judgeModel` | `PI_MM_JUDGE_MODEL` | `"qwen"` / `"default"` | Model identifier for decision judging. |
 | `judgeKey` | `PI_MM_JUDGE_KEY` | *(none)* | Optional Bearer auth token for remote endpoints. |
-| `judgeTimeoutMs` | `PI_MM_JUDGE_TIMEOUT_MS` | `5000` | Abort timeout in milliseconds for judge evaluation. |
-| `judgeFallback` | `PI_MM_JUDGE_FALLBACK` | `"heuristic"` | Fallback on service failure: `"heuristic"` or `"skip"`. |
+| `judgeTimeoutMs` | `PI_MM_JUDGE_TIMEOUT_MS` | `15000` | Abort timeout in milliseconds for judge evaluation. |
+| `judgeFallback` | `PI_MM_JUDGE_FALLBACK` | `"skip"` | Fallback on service failure: `"skip"` or `"capture"`. |
+| `captureKeywords` | `PI_MM_CAPTURE_KEYWORDS` | `["@remember", "@memory", "remember:", "note:"]` | Trigger word families that bypass the judge and immediately save memory. |
 | `embedUrl` | `CORM_SEPAL_EMBED_URL` | *(none)* | URL of vector embeddings endpoint (e.g. `http://127.0.0.1:4242/v1/embeddings`). |
 | `embedModel` | `CORM_SEPAL_EMBED_MODEL` | *(none)* | Model identifier for embeddings (e.g. `bge-small`). |
 | `embedKey` | `CORM_SEPAL_EMBED_KEY` | *(none)* | Optional Bearer token for remote embeddings. |
@@ -145,6 +146,42 @@ pi --extension .pi/extensions/pi-mm
 | *(diagnostics)* | `PI_MM_DEBUG_MEMORY` | `0` | Set `1` to enable structured lifecycle diagnostics and JSONL tracing to stderr. |
 | *(diagnostics)* | `PI_MM_TRACE_FILE` | `"/tmp/pi_mm_trace.jsonl"` | Filepath for appending shared JSONL lifecycle events across processes. |
 | *(diagnostics)* | `PI_MM_RUN_ID` | *(auto-generated)* | Correlates diagnostic trace events across separate processes in a test run. |
+
+---
+
+## Cognitive Memory Architecture
+
+`pi-mm` models human memory dynamics through four pragmatic mechanisms:
+
+### 1. Flashbulb Memory Anchors (`FLAG_IS_ANCHOR = 0x08`)
+* Highly salient experiences (explicit `@remember` notes, multi-attempt breakthrough fixes, and user background stories) are permanently stamped with an anchor bit in the HTOK v4 binary header.
+* Anchors receive an automatic **$+25\%$ salience multiplier** in hybrid ranking and are protected from temporal decay or window pruning.
+
+### 2. Associative Co-occurrence Graph (`associations.json`)
+* As the agent works, `pi-mm` tracks co-occurring domain entities in an atomic association graph (`.pi/mm/associations.json`).
+* Implements **lateral spreading activation**: searching for `"airplanes"` proactively expands the candidate pool to include associated terms like `"grandpa"`, activating related memories without requiring verbatim keyword overlap.
+
+### 3. Proactive Subsystem Invariant Priming
+* When you mention project subsystems or file paths in your prompt (e.g. `mods/song`, `libcorm`), `pi-mm` proactively retrieves active L2 architectural rules and invariants before turn evaluation.
+* The rules are injected as `[Primed Subsystem Invariants]` so the agent is immediately aware of domain constraints.
+
+### 4. User Persona & Engineering Tenets
+* Personal preferences, architectural tenets, and biographical context are segregated under `context: { project: "user" }`.
+* Injected into prompts as `[User Persona & Engineering Tenets]` with strict token budget deduction, giving the agent authentic continuity across sessions.
+
+---
+
+## Diagnostic Commands (`/mm doctor`)
+
+Run `/mm doctor` (or `/mm status`) in Pi to inspect real-time memory health and storage metrics:
+```text
+/mm doctor
+```
+Reports:
+* **Primary Storage Health**: Physical size of `mem.db`, record counts, and exact HTOK null-byte density.
+* **Secondary Axis Modes**: Joint temporal axis (persistent vs ephemeral in-memory), Sepal vector axis (ephemeral zero-disk mode vs persistent file), and embed cache binary size.
+* **Endpoint Telemetry**: Live connectivity and latency for Jev System One judge and Sepal embeddings.
+* **Trigger Words & Invariants**: Active trigger word families and capability pipeline status.
 
 ---
 

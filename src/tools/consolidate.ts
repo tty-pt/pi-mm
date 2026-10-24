@@ -2,7 +2,7 @@ import { activeConversationTurn, type PiCtx, type PiToolSpec } from "../hooks/ev
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { synthConfigured } from "../config.ts";
-import { filespecFor, buildGetInvocation, buildStoreInvocation, buildListInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildGetInvocation, buildStoreInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { decodePayload, encodePayload } from "../payload.ts";
 import { parseBareRefs, nextRef } from "../resolve.ts";
 import { withLock } from "../lock.ts";
@@ -28,6 +28,10 @@ import {
 } from "./consolidation_journal.ts";
 import { synthesizeL2ScopeKnowledge, synthesizeL3GeneralPrinciple } from "../synth/adapter.ts";
 import type { L2SynthesisInput, L3SynthesisInput } from "../synth/types.ts";
+
+function cormBin(env: ToolEnv): string {
+  return env.cfg.cormBin;
+}
 import { allocateNextRef, advanceRefSeq, isRefSeqInitialized } from "./ref_allocator.ts";
 
 const LEVEL_RANK: Record<MipmapLevel, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
@@ -146,7 +150,7 @@ async function checkIdempotency(
   const slice = candidateRefs.slice(-limit);
   for (const r of slice) {
     if (budget && !budget.hasBudget(1)) break;
-    const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+    const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (res.code === 0 && res.stdout.trim()) {
       const { envelope } = decodePayload(res.stdout.trim());
@@ -170,7 +174,7 @@ async function validateSources(
   const targetRank = LEVEL_RANK[targetLevel];
   for (const r of sourceRefs) {
     if (budget && !budget.hasBudget(1)) break;
-    const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+    const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (res.code !== 0 || !res.stdout.trim()) {
       missing.push(r);
@@ -191,13 +195,13 @@ async function scanAllItems(
   env: ToolEnv, fspec: string, axes: string, cwd: string, eEnv: Record<string, string>,
   budget?: WorkBudgetTracker,
 ): Promise<StoredItem[]> {
-  const list = await env.runner.run(buildListInvocation(env.cfg.qmapBin, fspec, axes, cwd, eEnv));
+  const list = await env.runner.run(buildListInvocation(cormBin(env), fspec, axes, cwd, eEnv));
   if (budget) budget.charge("list", 1);
   const refs = parseBareRefs(list.stdout);
   const items: StoredItem[] = [];
   for (const r of refs) {
     if (budget && !budget.hasBudget(1)) break;
-    const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+    const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (res.code === 0 && res.stdout.trim()) {
       const { date, envelope } = decodePayload(res.stdout.trim());
@@ -212,8 +216,8 @@ async function storeAbs(
   envelope: MemoryEnvelope, date: string,
   budget?: WorkBudgetTracker,
 ): Promise<number | null> {
-  const ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
-  const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, encodePayload(date, envelope), axes, cwd, eEnv));
+  const ref = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
+  const res = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, ref, encodePayload(date, envelope), axes, cwd, eEnv));
   if (budget) budget.charge("store", 1);
   return res.code === 0 ? ref : null;
 }
@@ -344,7 +348,7 @@ async function autoL0ToL1(
         ? `Investigation: ${baseProblem} — verified: ${workedApproach.approach}`
         : `Investigation: ${baseProblem}`;
 
-      const successorRef = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+      const successorRef = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
 
       if (runId) {
         await recordPendingL1Transition(cwd, {
@@ -379,7 +383,7 @@ async function autoL0ToL1(
       };
 
       const res = await env.runner.run(
-        buildStoreInvocation(env.cfg.qmapBin, fspec, successorRef, encodePayload(date, successorEnvelope), axes, cwd, eEnv),
+        buildStoreInvocation(cormBin(env), fspec, successorRef, encodePayload(date, successorEnvelope), axes, cwd, eEnv),
       );
       if (budget) budget.charge("store", 1);
       if (res.code === 0) {
@@ -389,7 +393,7 @@ async function autoL0ToL1(
         existingL1.envelope.lifecycle = "superseded";
         existingL1.envelope.supersededBy = successorRef;
         const predStoreRes = await env.runner.run(
-          buildStoreInvocation(env.cfg.qmapBin, fspec, existingL1.ref, encodePayload(existingL1.date, existingL1.envelope), axes, cwd, eEnv),
+          buildStoreInvocation(cormBin(env), fspec, existingL1.ref, encodePayload(existingL1.date, existingL1.envelope), axes, cwd, eEnv),
         );
         if (budget) budget.charge("store", 1);
 
@@ -470,7 +474,7 @@ async function autoL0ToL1(
 
       let ref: number | null = null;
       if (runId) {
-        const allocatedRef = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+        const allocatedRef = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
         await recordPendingL1Transition(cwd, {
           runId,
           successorRef: allocatedRef,
@@ -478,7 +482,7 @@ async function autoL0ToL1(
           timestamp: new Date().toISOString(),
         });
         const res = await env.runner.run(
-          buildStoreInvocation(env.cfg.qmapBin, fspec, allocatedRef, encodePayload(date, envl), axes, cwd, eEnv),
+          buildStoreInvocation(cormBin(env), fspec, allocatedRef, encodePayload(date, envl), axes, cwd, eEnv),
         );
         if (budget) budget.charge("store", 1);
         if (res.code === 0) {
@@ -542,7 +546,7 @@ async function autoL0ToL1(
         continue;
       }
 
-      const successorRef = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+      const successorRef = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
 
       const successorEnvelope: MemoryEnvelope = {
         level: "L1",
@@ -562,13 +566,13 @@ async function autoL0ToL1(
         },
       };
 
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, successorRef, encodePayload(date, successorEnvelope), axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, successorRef, encodePayload(date, successorEnvelope), axes, cwd, eEnv));
       if (budget) budget.charge("store", 1);
       if (res.code === 0) {
         // Mark predecessor superseded
         existingL1.envelope.lifecycle = "superseded";
         existingL1.envelope.supersededBy = successorRef;
-        const predRes = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, existingL1.ref, encodePayload(existingL1.date, existingL1.envelope), axes, cwd, eEnv));
+        const predRes = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, existingL1.ref, encodePayload(existingL1.date, existingL1.envelope), axes, cwd, eEnv));
         if (budget) budget.charge("store", 1);
         if (predRes.code !== 0) {
           await recordInterruptedSuccessorInJournal(cwd, {
@@ -603,7 +607,7 @@ async function autoL0ToL1(
         continue;
       }
 
-      const l1Ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+      const l1Ref = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
 
       const l1Envelope: MemoryEnvelope = {
         level: "L1",
@@ -622,7 +626,7 @@ async function autoL0ToL1(
         },
       };
 
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, l1Ref, encodePayload(date, l1Envelope), axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, l1Ref, encodePayload(date, l1Envelope), axes, cwd, eEnv));
       if (budget) budget.charge("store", 1);
       if (res.code === 0) {
         activeConversationTurn.activeMemoryRef = l1Ref;
@@ -647,7 +651,7 @@ async function autoL0ToL1(
       representedL0Refs.push(l0.ref);
       continue;
     }
-    const l1Ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+    const l1Ref = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
     const l1Envelope: MemoryEnvelope = {
       level: "L1",
       type: l0.envelope.type ?? "note",
@@ -657,7 +661,7 @@ async function autoL0ToL1(
       context: l0.envelope.context,
       episode: l0.envelope.episode,
     };
-    const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, l1Ref, encodePayload(date, l1Envelope), axes, cwd, eEnv));
+    const res = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, l1Ref, encodePayload(date, l1Envelope), axes, cwd, eEnv));
     if (budget) budget.charge("store", 1);
     if (res.code === 0) {
       created.push(l1Ref);
@@ -698,7 +702,7 @@ async function reconcilePendingL1Transitions(
   for (const [runId, tr] of Object.entries(journal.pendingL1Transitions)) {
     if (budget && !budget.hasBudget(2)) break;
     try {
-      const succRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, tr.successorRef, axes, cwd, eEnv));
+      const succRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, tr.successorRef, axes, cwd, eEnv));
       if (budget) budget.charge("get", 1);
       const isMissing = succRes.code === 0 && succRes.stdout.trim() === "-1";
       const isSuccessfulRead = succRes.code === 0 && succRes.stdout.trim() !== "" && succRes.stdout.trim() !== "-1";
@@ -764,7 +768,7 @@ async function reconcilePendingL1Transitions(
       // Successor was persisted! Verify/reconcile predecessor link if needed
       let predReconciled = true;
       if (tr.predecessorRef) {
-        const predRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, tr.predecessorRef, axes, cwd, eEnv));
+        const predRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, tr.predecessorRef, axes, cwd, eEnv));
         if (budget) budget.charge("get", 1);
         if (predRes.code !== 0 || !predRes.stdout.trim() || predRes.stdout.trim() === "-1") {
           predReconciled = false;
@@ -782,7 +786,7 @@ async function reconcilePendingL1Transitions(
             predDecoded.envelope.lifecycle = "superseded";
             predDecoded.envelope.supersededBy = tr.successorRef;
             const predStoreRes = await env.runner.run(
-              buildStoreInvocation(env.cfg.qmapBin, fspec, tr.predecessorRef, encodePayload(predDecoded.date, predDecoded.envelope), axes, cwd, eEnv),
+              buildStoreInvocation(cormBin(env), fspec, tr.predecessorRef, encodePayload(predDecoded.date, predDecoded.envelope), axes, cwd, eEnv),
             );
             if (budget) budget.charge("store", 1);
             if (predStoreRes.code !== 0) {
@@ -884,14 +888,14 @@ async function reconcileInterruptedSuccessors(
   for (const item of [...journal.interruptedSuccessors]) {
     if (budget && !budget.hasBudget(2)) break;
     try {
-      const predRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, item.predecessorRef, axes, cwd, eEnv));
+      const predRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, item.predecessorRef, axes, cwd, eEnv));
       if (budget) budget.charge("get", 1);
       if (predRes.code === 0 && predRes.stdout.trim()) {
         const decoded = decodePayload(predRes.stdout.trim());
         decoded.envelope.lifecycle = "superseded";
         decoded.envelope.supersededBy = item.successorRef;
         const updateRes = await env.runner.run(
-          buildStoreInvocation(env.cfg.qmapBin, fspec, item.predecessorRef, encodePayload(decoded.date, decoded.envelope), axes, cwd, eEnv),
+          buildStoreInvocation(cormBin(env), fspec, item.predecessorRef, encodePayload(decoded.date, decoded.envelope), axes, cwd, eEnv),
         );
         if (budget) budget.charge("store", 1);
         if (updateRes.code === 0) {
@@ -1051,7 +1055,7 @@ async function autoL1ToL2(
     }
 
     // Allocate new ref from persistent sequence
-    const newRef = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+    const newRef = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
 
     const envl: MemoryEnvelope = {
       level: "L2",
@@ -1061,10 +1065,11 @@ async function autoL1ToL2(
       context: isConversational ? { subject: scope } : { project: scope },
       evidence: synthOutcome.citedRefs,
       supersedes: existingL2Item ? existingL2Item.ref : undefined,
+      constraints: synthOutcome.constraints && synthOutcome.constraints.length > 0 ? synthOutcome.constraints : undefined,
     };
 
     const storeRes = await env.runner.run(
-      buildStoreInvocation(env.cfg.qmapBin, fspec, newRef, encodePayload(date, envl), axes, cwd, eEnv),
+      buildStoreInvocation(cormBin(env), fspec, newRef, encodePayload(date, envl), axes, cwd, eEnv),
     );
     if (budget) budget.charge("store", 1);
 
@@ -1079,7 +1084,7 @@ async function autoL1ToL2(
       existingL2Item.envelope.supersededBy = newRef;
       const predRes = await env.runner.run(
         buildStoreInvocation(
-          env.cfg.qmapBin,
+          cormBin(env),
           fspec,
           existingL2Item.ref,
           encodePayload(existingL2Item.date, existingL2Item.envelope),
@@ -1160,7 +1165,7 @@ export async function runAutoConsolidation(
       const batchLimit = env.cfg.consolidateBatchLimit ?? 20;
       const targetRefs = combinedL0Refs.slice(0, batchLimit);
       for (const r of targetRefs) {
-        const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+        const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
         if (res.code === 0 && res.stdout.trim() && res.stdout.trim() !== "-1") {
           const { date, envelope } = decodePayload(res.stdout.trim());
           items.push({ ref: r, date, envelope });
@@ -1169,7 +1174,7 @@ export async function runAutoConsolidation(
 
       // Also fetch the active session's existing L1 (if known) to allow successor updates
       if (activeConversationTurn.activeMemoryRef && activeConversationTurn.activeSessionId && activeConversationTurn.activeSessionId === _ctx.sessionId) {
-        const activeRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, activeConversationTurn.activeMemoryRef, axes, cwd, eEnv));
+        const activeRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, activeConversationTurn.activeMemoryRef, axes, cwd, eEnv));
         if (activeRes.code === 0 && activeRes.stdout.trim() && activeRes.stdout.trim() !== "-1") {
           const { date, envelope } = decodePayload(activeRes.stdout.trim());
           items.push({ ref: activeConversationTurn.activeMemoryRef, date, envelope });
@@ -1185,7 +1190,7 @@ export async function runAutoConsolidation(
       for (const runId of runIdsInBatch) {
         const candidateL1Ref = initialJournal.pendingL1Transitions?.[runId]?.successorRef ?? initialJournal.activeL1ByRunId?.[runId];
         if (candidateL1Ref && !items.some((it) => it.ref === candidateL1Ref)) {
-          const l1Res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, candidateL1Ref, axes, cwd, eEnv));
+          const l1Res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, candidateL1Ref, axes, cwd, eEnv));
           if (l1Res.code === 0 && l1Res.stdout.trim() && l1Res.stdout.trim() !== "-1") {
             const { date, envelope } = decodePayload(l1Res.stdout.trim());
             items.push({ ref: candidateL1Ref, date, envelope });
@@ -1268,7 +1273,7 @@ export async function runAutoConsolidation(
 
     const journal = await readConsolidationJournal(cwd, {
       runner: env.runner,
-      qmapBin: env.cfg.qmapBin,
+      cormBin: cormBin(env),
       fspec,
       axes,
       eEnv,
@@ -1316,7 +1321,7 @@ export async function runDeferredConsolidation(
 
     const journal = await readConsolidationJournal(cwd, {
       runner: env.runner,
-      qmapBin: env.cfg.qmapBin,
+      cormBin: cormBin(env),
       fspec,
       axes,
       eEnv,
@@ -1446,7 +1451,7 @@ export async function runDeferredConsolidation(
     const items: StoredItem[] = [];
     for (const r of uniqueRefs) {
       if (!budget.hasBudget(1)) break;
-      const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+      const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
       budget.charge("get", 1);
       if (res.code === 0 && res.stdout.trim()) {
         const { date, envelope } = decodePayload(res.stdout.trim());
@@ -1634,7 +1639,7 @@ async function autoL2ToL3(
   }
 
   // Allocate new ref from persistent sequence
-  const ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv, budget);
+  const ref = await allocateNextRef(cwd, env.runner, cormBin(env), fspec, axes, eEnv, budget);
 
   const envl: MemoryEnvelope = {
     level: "L3",
@@ -1653,7 +1658,7 @@ async function autoL2ToL3(
   };
 
   const storeRes = await env.runner.run(
-    buildStoreInvocation(env.cfg.qmapBin, fspec, ref, encodePayload(date, envl), axes, cwd, eEnv),
+    buildStoreInvocation(cormBin(env), fspec, ref, encodePayload(date, envl), axes, cwd, eEnv),
   );
   if (budget) budget.charge("store", 1);
 
@@ -1667,7 +1672,7 @@ async function autoL2ToL3(
     existingL3Item.envelope.supersededBy = ref;
     const predRes = await env.runner.run(
       buildStoreInvocation(
-        env.cfg.qmapBin,
+        cormBin(env),
         fspec,
         existingL3Item.ref,
         encodePayload(existingL3Item.date, existingL3Item.envelope),
@@ -1704,7 +1709,7 @@ async function validateL3Generalization(
   const sourceEnvelopes: MemoryEnvelope[] = [];
   for (const r of sourceRefs) {
     if (budget && !budget.hasBudget(1)) break;
-    const item = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd, eEnv));
+    const item = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (item.code === 0 && item.stdout.trim()) {
       const { envelope } = decodePayload(item.stdout.trim());
@@ -1728,7 +1733,7 @@ async function executeConsolidate(
 ): Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown }> {
   try {
     const env = await envSource(ctx);
-    if (env.cfg.qmapBin === "") return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap" } };
+    if (!(env.cfg.cormBin || cormBin(env))) return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
     const mode = typeof params["mode"] === "string" ? params["mode"] : "manual";
     if (mode === "status") {
       const cwd = memDir(env);
@@ -1812,7 +1817,7 @@ async function executeConsolidate(
         }
       }
 
-      const list = await env.runner.run(buildListInvocation(env.cfg.qmapBin, fspec, axes, cwd, eEnv));
+      const list = await env.runner.run(buildListInvocation(cormBin(env), fspec, axes, cwd, eEnv));
       const allRefs = parseBareRefs(list.stdout);
       const existingRef = await checkIdempotency(env, fspec, axes, cwd, eEnv, allRefs, targetLevel, sourceRefs, summary);
       if (existingRef !== null) return exportDetail({ ref: existingRef, idempotent: true, level: targetLevel, summary, evidence: sourceRefs });
@@ -1830,7 +1835,7 @@ async function executeConsolidate(
       };
       const ref = nextRef(allRefs);
       await advanceRefSeq(cwd, ref + 1);
-      const storeRes = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, encodePayload(date, envelope), axes, cwd, eEnv));
+      const storeRes = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, ref, encodePayload(date, envelope), axes, cwd, eEnv));
       if (storeRes.code !== 0) return { content: [{ type: "text", text: `mm consolidate failed: store error` }], details: { error: "store-error" } };
       return exportDetail({ ref, idempotent: false, level: targetLevel, summary, evidence: sourceRefs });
     });

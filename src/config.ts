@@ -7,7 +7,8 @@ export type JudgeMode = "auto" | "heuristic" | "off";
 export type JudgeFallback = "capture" | "skip";
 
 export interface MmConfig {
-  qmapBin: string;
+  cormBin: string;
+  qmapBin?: string;
   cormdBin?: string;
   axisLibs: string | null;
   memDir: string;
@@ -19,6 +20,7 @@ export interface MmConfig {
   semanticSearch?: boolean;
   captureMode?: CaptureMode;
   captureKeyword?: string;
+  captureKeywords?: string[];
   judgeMode?: JudgeMode;
   judgeUrl?: string;
   judgeModel?: string;
@@ -33,10 +35,19 @@ export interface MmConfig {
   synthModel?: string;
   synthKey?: string;
   synthTimeoutMs?: number;
+  ephemeralSepal?: boolean;
+  ephemeralJoint?: boolean;
 }
 
+export const DEFAULT_CAPTURE_KEYWORDS: string[] = [
+  "@remember",
+  "@memory",
+  "remember:",
+  "note:",
+];
+
 export const DEFAULT_CONFIG: MmConfig = {
-  qmapBin: "",
+  cormBin: "",
   cormdBin: undefined,
   axisLibs: null,
   memDir: ".pi/mm",
@@ -44,8 +55,9 @@ export const DEFAULT_CONFIG: MmConfig = {
   advancedTools: false,
   captureMode: undefined,
   captureKeyword: "@remember",
+  captureKeywords: DEFAULT_CAPTURE_KEYWORDS,
   judgeMode: "auto",
-  judgeTimeoutMs: 5000,
+  judgeTimeoutMs: 15000,
   judgeFallback: "skip",
   consolidateL2Threshold: 3,
   consolidateL3Threshold: 2,
@@ -55,19 +67,20 @@ export const DEFAULT_CONFIG: MmConfig = {
   synthModel: undefined,
   synthKey: undefined,
   synthTimeoutMs: 15000,
+  ephemeralSepal: false,
 };
 
-export type QmapSource = "settings" | "env" | "path" | "insite" | "none";
+export type CormSource = "settings" | "env" | "path" | "insite" | "none";
 
-export interface QmapResolution {
-  source: QmapSource;
+export interface CormResolution {
+  source: CormSource;
   path: string;
 }
 
 export function loadConfig(raw: unknown): MmConfig {
   if (typeof raw !== "object" || raw === null) return DEFAULT_CONFIG;
   const record = raw as Record<string, unknown>;
-  const bin = record["qmapBin"];
+  const bin = record["cormBin"] ?? record["qmapBin"];
   const cormd = record["cormdBin"];
   const libs = record["axisLibs"];
   const dir = record["memDir"];
@@ -79,6 +92,7 @@ export function loadConfig(raw: unknown): MmConfig {
   const semSearch = record["semanticSearch"];
   const capMode = record["captureMode"];
   const capKeyword = record["captureKeyword"];
+  const capKeywords = record["captureKeywords"];
   const jMode = record["judgeMode"];
   const jUrl = record["judgeUrl"];
   const jModel = record["judgeModel"];
@@ -93,6 +107,7 @@ export function loadConfig(raw: unknown): MmConfig {
   const sModel = record["synthModel"];
   const sKey = record["synthKey"];
   const sTimeout = record["synthTimeoutMs"];
+  const ephem = record["ephemeralSepal"] ?? record["sepalEphemeral"];
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
   let effectiveCaptureMode: CaptureMode = "all";
@@ -106,6 +121,16 @@ export function loadConfig(raw: unknown): MmConfig {
     effectiveCaptureMode = "all";
   }
 
+  let effectiveKeywords: string[] = DEFAULT_CAPTURE_KEYWORDS;
+  if (Array.isArray(capKeywords)) {
+    effectiveKeywords = capKeywords
+      .filter((k) => typeof k === "string" && k.trim() !== "")
+      .map((k) => (k as string).trim());
+  } else if (typeof capKeyword === "string" && capKeyword.trim() !== "") {
+    // Backward-compatibility: if user specifies captureKeyword, prioritize [captureKeyword]
+    effectiveKeywords = [capKeyword.trim()];
+  }
+
   let effectiveFallback: JudgeFallback = DEFAULT_CONFIG.judgeFallback ?? "skip";
   if (jFallback === "capture" || jFallback === "skip") {
     effectiveFallback = jFallback;
@@ -113,8 +138,10 @@ export function loadConfig(raw: unknown): MmConfig {
     effectiveFallback = "skip";
   }
 
+  const effectiveBin = typeof bin === "string" && bin.trim() !== "" ? bin.trim() : DEFAULT_CONFIG.cormBin;
+
   return {
-    qmapBin: typeof bin === "string" && bin.trim() !== "" ? bin.trim() : DEFAULT_CONFIG.qmapBin,
+    cormBin: effectiveBin,
     cormdBin: typeof cormd === "string" && cormd.trim() !== "" ? cormd.trim() : undefined,
     axisLibs: typeof libs === "string" && libs.trim() !== "" ? libs.trim() : DEFAULT_CONFIG.axisLibs,
     memDir: typeof dir === "string" && dir.trim() !== "" ? dir.trim() : DEFAULT_CONFIG.memDir,
@@ -126,6 +153,7 @@ export function loadConfig(raw: unknown): MmConfig {
     semanticSearch: typeof semSearch === "boolean" ? semSearch : undefined,
     captureMode: effectiveCaptureMode,
     captureKeyword: typeof capKeyword === "string" && capKeyword.trim() !== "" ? capKeyword.trim() : DEFAULT_CONFIG.captureKeyword,
+    captureKeywords: effectiveKeywords,
     judgeMode: jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : DEFAULT_CONFIG.judgeMode,
     judgeUrl: typeof jUrl === "string" && jUrl.trim() !== "" ? jUrl.trim() : undefined,
     judgeModel: typeof jModel === "string" && jModel.trim() !== "" ? jModel.trim() : undefined,
@@ -140,18 +168,19 @@ export function loadConfig(raw: unknown): MmConfig {
     synthModel: typeof sModel === "string" && sModel.trim() !== "" ? sModel.trim() : undefined,
     synthKey: typeof sKey === "string" && sKey.trim() !== "" ? sKey.trim() : undefined,
     synthTimeoutMs: typeof sTimeout === "number" && sTimeout > 0 ? sTimeout : DEFAULT_CONFIG.synthTimeoutMs,
+    ephemeralSepal: typeof ephem === "boolean" ? ephem : DEFAULT_CONFIG.ephemeralSepal,
   };
 }
 
 export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>): MmConfig {
-  const envBin = env["CORM_BIN"] ?? env["QMAP_BIN"];
+  const envBin = env["CORM_BIN"];
   const envCormd = env["CORMD_BIN"];
-  const envLibs = env["CORM_AXIS_PATH"] ?? env["QMAP_AXIS_PATH"];
+  const envLibs = env["CORM_AXIS_PATH"];
 
   // Independent embedding settings
-  let defaultEmbedUrl = env["CORM_SEPAL_EMBED_URL"] ?? env["QMAP_SEPAL_EMBED_URL"];
-  let defaultEmbedModel = env["CORM_SEPAL_EMBED_MODEL"] ?? env["QMAP_SEPAL_EMBED_MODEL"];
-  let defaultEmbedKey = env["CORM_SEPAL_EMBED_KEY"] ?? env["QMAP_SEPAL_EMBED_KEY"];
+  let defaultEmbedUrl = env["CORM_SEPAL_EMBED_URL"];
+  let defaultEmbedModel = env["CORM_SEPAL_EMBED_MODEL"];
+  let defaultEmbedKey = env["CORM_SEPAL_EMBED_KEY"];
 
   // Explicit capture settings
   const envCapMode = env["PI_MM_CAPTURE_MODE"] ?? env["MM_CAPTURE_MODE"];
@@ -168,6 +197,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const envL3Thresh = env["PI_MM_CONSOLIDATE_L3_THRESHOLD"] ?? env["MM_CONSOLIDATE_L3_THRESHOLD"];
   const envMaxAge = env["PI_MM_CONSOLIDATE_MAX_AGE_HOURS"] ?? env["MM_CONSOLIDATE_MAX_AGE_HOURS"];
   const envBatchLim = env["PI_MM_CONSOLIDATE_BATCH_LIMIT"] ?? env["MM_CONSOLIDATE_BATCH_LIMIT"];
+  const envEphem = env["PI_MM_SEPAL_EPHEMERAL"] ?? env["MM_SEPAL_EPHEMERAL"] ?? env["CORM_SEPAL_EPHEMERAL"];
 
   // Independent synthesis settings
   const envSynthUrl = env["PI_MM_SYNTH_URL"] ?? env["MM_SYNTH_URL"];
@@ -213,6 +243,11 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const envJModel = defaultJudgeModel;
   const envJKey = defaultJudgeKey;
 
+  let ephemeralSepal = cfg.ephemeralSepal;
+  if (envEphem !== undefined) {
+    ephemeralSepal = envEphem === "1" || envEphem === "true";
+  }
+
   let semSearch = cfg.semanticSearch;
   if (typeof envSemSearch === "string") {
     semSearch = envSemSearch === "1" || envSemSearch.toLowerCase() === "true";
@@ -230,6 +265,12 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   let capKeyword = cfg.captureKeyword;
   if (typeof envCapKeyword === "string" && envCapKeyword.trim() !== "") {
     capKeyword = envCapKeyword.trim();
+  }
+
+  const envCapKeywords = env["PI_MM_CAPTURE_KEYWORDS"] ?? env["MM_CAPTURE_KEYWORDS"];
+  let capKeywords = cfg.captureKeywords;
+  if (typeof envCapKeywords === "string" && envCapKeywords.trim() !== "") {
+    capKeywords = envCapKeywords.split(",").map((k) => k.trim()).filter(Boolean);
   }
 
   let jMode = cfg.judgeMode;
@@ -251,8 +292,11 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const batchLimNum = envBatchLim ? parseInt(envBatchLim, 10) : undefined;
   const synthTimeoutNum = envSynthTimeout ? parseInt(envSynthTimeout, 10) : undefined;
 
+  const currentBin = cfg.cormBin || "";
+  const resolvedBin = (currentBin === "" && typeof envBin === "string" && envBin.trim() !== "") ? envBin.trim() : currentBin;
+
   return {
-    qmapBin: cfg.qmapBin === "" && typeof envBin === "string" && envBin.trim() !== "" ? envBin.trim() : cfg.qmapBin,
+    cormBin: resolvedBin,
     cormdBin: cfg.cormdBin ?? (typeof envCormd === "string" && envCormd.trim() !== "" ? envCormd.trim() : undefined),
     axisLibs: cfg.axisLibs === null && typeof envLibs === "string" && envLibs.trim() !== "" ? envLibs.trim() : cfg.axisLibs,
     memDir: cfg.memDir,
@@ -264,6 +308,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     semanticSearch: semSearch,
     captureMode: capMode,
     captureKeyword: capKeyword,
+    captureKeywords: capKeywords,
     judgeMode: jMode,
     judgeUrl: cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined),
     judgeModel: cfg.judgeModel ?? (typeof envJModel === "string" && envJModel.trim() !== "" ? envJModel.trim() : undefined),
@@ -278,6 +323,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     synthModel: cfg.synthModel ?? (typeof defaultSynthModel === "string" && defaultSynthModel.trim() !== "" ? defaultSynthModel.trim() : undefined),
     synthKey: cfg.synthKey ?? (typeof defaultSynthKey === "string" && defaultSynthKey.trim() !== "" ? defaultSynthKey.trim() : undefined),
     synthTimeoutMs: synthTimeoutNum && !isNaN(synthTimeoutNum) && synthTimeoutNum > 0 ? synthTimeoutNum : cfg.synthTimeoutMs,
+    ephemeralSepal,
   };
 }
 
@@ -324,23 +370,20 @@ export function describeCapabilities(cfg: MmConfig): string {
   return `pi-mm: ${parts.join(", ")}`;
 }
 
-export function resolveQmapBin(
+export function resolveCormBin(
   cfg: MmConfig,
   cwd: string,
   pathDirs: string[],
   probe: (p: string) => boolean,
-): QmapResolution {
-  if (cfg.qmapBin !== "") return { source: "settings", path: cfg.qmapBin };
+): CormResolution {
+  const currentBin = cfg.cormBin || "";
+  if (currentBin !== "") return { source: "settings", path: currentBin };
   for (const dir of pathDirs) {
     const candidateCorm = join(dir, "corm");
     if (probe(candidateCorm)) return { source: "path", path: candidateCorm };
-    const candidateQmap = join(dir, "qmap");
-    if (probe(candidateQmap)) return { source: "path", path: candidateQmap };
   }
   const inSiteCorm = join(cwd, "external", "libcorm", "bin", "corm");
   if (probe(inSiteCorm)) return { source: "insite", path: inSiteCorm };
-  const inSiteQmap = join(cwd, "external", "libqmap", "bin", "qmap");
-  if (probe(inSiteQmap)) return { source: "insite", path: inSiteQmap };
   return { source: "none", path: "" };
 }
 
@@ -349,11 +392,12 @@ export function resolveCormdBin(
   cwd: string,
   pathDirs: string[],
   probe: (p: string) => boolean,
-): QmapResolution {
+): CormResolution {
   if (cfg.cormdBin && cfg.cormdBin !== "") return { source: "settings", path: cfg.cormdBin };
-  if (cfg.qmapBin !== "") {
-    const qdir = join(cfg.qmapBin, "..");
-    const alongside = join(qdir, "cormd");
+  const currentBin = cfg.cormBin || "";
+  if (currentBin !== "") {
+    const cdir = join(currentBin, "..");
+    const alongside = join(cdir, "cormd");
     if (probe(alongside)) return { source: "insite", path: alongside };
   }
   for (const dir of pathDirs) {

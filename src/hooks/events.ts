@@ -3,7 +3,7 @@ import { axisPath, memDir, sepalConfigured } from "../tools/index.ts";
 import { describeCapabilities } from "../config.ts";
 import { evaluateTurnWithJudge } from "../judge/adapter.ts";
 import type { JudgeDecision } from "../judge/types.ts";
-import { filespecFor, buildStoreInvocation, buildGetInvocation, buildListInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildStoreInvocation, buildGetInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { allocateNextRef } from "../tools/ref_allocator.ts";
 import { parseBareRefs } from "../resolve.ts";
 import { encodePayload, decodePayload } from "../payload.ts";
@@ -16,6 +16,7 @@ import { runAutoConsolidation, runDeferredConsolidation } from "../tools/consoli
 import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
+import { recordAssociations } from "../associative.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -24,7 +25,7 @@ export interface PiToolSpec {
   execute: (toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, onUpdate: unknown, ctx: PiCtx) => Promise<PiAgentToolResult>;
 }
 export interface PiAgentToolResult { content: Array<{ type: string; text?: string }>; details?: unknown; }
-export interface PiExecResult { stdout: string; stderr: string; code: number; }
+export interface PiExecResult { stdout: string; stderr: string; code: number; stdoutBytes?: Uint8Array; }
 export interface PiCtx {
   cwd: string;
   hasUI: boolean;
@@ -44,6 +45,92 @@ export interface ToolResultEvent {
   toolCallId?: string; toolName: string; input?: Record<string, unknown>; args?: Record<string, unknown>;
   content?: Array<{ type: string; text?: string }>; isError?: boolean; details?: unknown;
 }
+
+export class SessionDrainRegistry {
+  private static inFlight = new Set<Promise<unknown>>();
+
+  static track<T>(p: Promise<T>): Promise<T> {
+    this.inFlight.add(p);
+    p.finally(() => this.inFlight.delete(p));
+    return p;
+  }
+
+  static get activeCount(): number {
+    return this.inFlight.size;
+  }
+
+  static async drain(timeoutMs = 5000): Promise<{ completed: boolean; remaining: number }> {
+    if (this.inFlight.size === 0) return { completed: true, remaining: 0 };
+    const all = Promise.allSettled(Array.from(this.inFlight));
+    let timedOut = false;
+    const timer = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+    });
+
+    await Promise.race([all, timer]);
+    if (timedOut && this.inFlight.size > 0) {
+      debugLog("consolidation", `Session drain timed out after ${timeoutMs}ms with ${this.inFlight.size} active tasks remaining`);
+      return { completed: false, remaining: this.inFlight.size };
+    }
+    return { completed: true, remaining: 0 };
+  }
+
+  static clear(): void {
+    this.inFlight.clear();
+  }
+}
+
+export const MAX_DIRTY_SCOPES_QUEUE = 50;
+
+export interface ConsolidationTask {
+  capturedL0Refs: number[];
+  ctx: PiCtx;
+  timestamp: number;
+}
+
+export class ConsolidationQueue {
+  private queue: ConsolidationTask[] = [];
+  private processing = false;
+
+  enqueue(task: ConsolidationTask, envSource: EnvSource): Promise<void> {
+    this.queue.push(task);
+    if (this.queue.length > MAX_DIRTY_SCOPES_QUEUE) {
+      this.queue.shift(); // Drop oldest unstarted task beyond capacity limit
+    }
+    const p = this.processNext(envSource);
+    SessionDrainRegistry.track(p);
+    return p;
+  }
+
+  private async processNext(envSource: EnvSource): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+    try {
+      while (this.queue.length > 0) {
+        const next = this.queue.shift()!;
+        try {
+          const env = await envSource(next.ctx);
+          await runAutoConsolidation(env, next.ctx, { newL0Refs: next.capturedL0Refs, incrementalOnly: true });
+        } catch (err) {
+          debugLog("consolidation", "Incremental consolidation error", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  get length(): number {
+    return this.queue.length;
+  }
+}
+
+export const consolidationQueue = new ConsolidationQueue();
 
 export interface SignificantEvent {
   id: string; timestamp: string; toolName: string; summary: string; isError: boolean;
@@ -240,7 +327,72 @@ export function extractBatchDiffs(batch: SignificantEvent[]): string[] {
   return diffs;
 }
 
+export function isInformativeExecution(event: ToolResultEvent): boolean {
+  if (!event || typeof event !== "object") return false;
+
+  const toolName = event.toolName || "";
+  const isErr = Boolean(event.isError);
+  const text = event.content?.map((c) => c.text || "").join(" ").trim() || "";
+  const cmd = String(event.input?.["command"] || event.args?.["command"] || "");
+
+  // 1. Degenerate Syntax Fragments: string fragments of length < 3 matching /^[{}()\[\];,]+$/
+  if (text.length > 0 && text.length < 3 && /^[{}()[\];,]+$/.test(text)) {
+    return false;
+  }
+
+  const isCodeMod = /edit|write|patch/i.test(toolName);
+  if (isCodeMod) {
+    return true;
+  }
+
+  const isTrivialOutput = !text || /^(?:\(no output\)|0|true|done|ok)$/i.test(text);
+
+  const hasErrorWord = /\b(?:FAIL|failed|error|fatal|panic)\b/i.test(text.replace(/0\s+failed/gi, ""));
+  const failed = isErr || hasErrorWord;
+
+  const isVerification = /test|check|verify|smoke/i.test(toolName) ||
+                         /test|check|make|deno|cargo|npm/i.test(cmd) ||
+                         /test|PASS|check-complexity|integration|ok\s+\d+|all green/i.test(text);
+  const verifiedWorked = !failed && isVerification && (/PASS|passed|all green|ok\s+-|0 failed/i.test(text));
+
+  // Failed executions with informative error context are preserved
+  if (failed) {
+    if (isTrivialOutput && !cmd) return false;
+    return true;
+  }
+
+  // Explicitly verified successes are preserved
+  if (verifiedWorked) {
+    return true;
+  }
+
+  // Verification commands with clean exit 0 and non-trivial output or explicit test command
+  if (isVerification && !failed && cmd && /test|check|verify/i.test(cmd) && !/^(?:echo|true|pwd|ls|cat)\b/.test(cmd)) {
+    return true;
+  }
+
+  // Dedicated search and read tools (search_code, read, search_graph, get_code_snippet, etc.)
+  const isSearchOrRead = /search|read|find|get_code/i.test(toolName);
+  if (isSearchOrRead) {
+    if (isTrivialOutput || /^(?:0 matches|no matches|0 results|found 0|empty)/i.test(text)) {
+      return false;
+    }
+    return true;
+  }
+
+  // Routine bash commands or trivial outputs without code modification or verification
+  if (isTrivialOutput || toolName === "bash") {
+    return false;
+  }
+
+  return true;
+}
+
 export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | null {
+  if (!isInformativeExecution(event)) {
+    return null;
+  }
+
   const isErr = Boolean(event.isError);
   const text = event.content?.map((c) => c.text || "").join(" ").trim() || "";
   const cmd = String(event.input?.["command"] || event.args?.["command"] || "");
@@ -251,15 +403,6 @@ export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | n
                          /test|check|make|deno|cargo|npm/i.test(cmd) ||
                          /test|PASS|check-complexity|integration|ok\s+\d+|all green/i.test(text);
   const verifiedWorked = !failed && isVerification && (/PASS|passed|all green|ok\s+-|0 failed/i.test(text));
-
-  // Filter out routine, non-error bash invocations and low-value tool calls without verification signals
-  if (event.toolName === "bash" && !failed && !verifiedWorked) {
-    return null;
-  }
-
-  const isTest = isVerification;
-  const isCodeMod = /edit|write|patch/i.test(event.toolName);
-  if (!isTest && !failed && !isCodeMod) return null;
 
   const outcome: "worked" | "failed" | undefined = failed ? "failed" : verifiedWorked ? "worked" : undefined;
   const firstLine = text.split("\n")[0]?.slice(0, 160) || `Executed ${event.toolName}`;
@@ -345,7 +488,7 @@ async function executeBatchFlush(
 
   try {
     const env = await envSource(ctx);
-    if (!env.cfg.qmapBin) { activeSessionBuffer.rollbackFlush("qmap-not-found"); return null; }
+    if (!env.cfg.cormBin) { activeSessionBuffer.rollbackFlush("corm-not-found"); return null; }
 
     const sessionManager = ctx.sessionManager ||
       ((ctx as unknown as Record<string, unknown>)?.sessionManager as
@@ -436,8 +579,8 @@ async function executeBatchFlush(
     const eEnv = embedEnv(env.cfg);
 
     return await withLock(cwd, async () => {
-      const ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv);
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, payload, axes, cwd, eEnv));
+      const ref = await allocateNextRef(cwd, env.runner, env.cfg.cormBin, fspec, axes, eEnv);
+      const res = await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, ref, payload, axes, cwd, eEnv));
       if (res.code === 0) {
         activeSessionBuffer.commitFlush(ids);
         await activeSessionBuffer.saveJournal(cwd).catch(() => {});
@@ -496,7 +639,7 @@ export async function persistConversationalMemory(
 ): Promise<number | null> {
   try {
     const env = await envSource(ctx);
-    if (!env.cfg.qmapBin || !classification.meaningful || !classification.summary) return null;
+    if (!env.cfg.cormBin || !classification.meaningful || !classification.summary) return null;
 
     const sessionManager = ctx.sessionManager ||
       ((ctx as unknown as Record<string, unknown>)?.sessionManager as
@@ -555,8 +698,8 @@ export async function persistConversationalMemory(
     });
 
     return await withLock(cwd, async () => {
-      const ref = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv);
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, ref, payload, axes, cwd, eEnv));
+      const ref = await allocateNextRef(cwd, env.runner, env.cfg.cormBin, fspec, axes, eEnv);
+      const res = await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, ref, payload, axes, cwd, eEnv));
       debugLog("persistence", "Executed corm store", {
         ref,
         exitCode: res.code,
@@ -610,7 +753,7 @@ export async function enrichActiveMemory(
     const eEnv = embedEnv(env.cfg);
 
     return await withLock(cwd, async () => {
-      const getRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, activeRef, axes, cwd, eEnv));
+      const getRes = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, activeRef, axes, cwd, eEnv));
       if (getRes.code !== 0 || !getRes.stdout.trim()) return false;
 
       const decoded = decodePayload(getRes.stdout.trim());
@@ -628,7 +771,7 @@ export async function enrichActiveMemory(
       decoded.envelope.episode.findings = findings;
 
       const payload = encodePayload(decoded.date, decoded.envelope);
-      const storeRes = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, activeRef, payload, axes, cwd, eEnv));
+      const storeRes = await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, activeRef, payload, axes, cwd, eEnv));
       debugLog("persistence", "Enriched existing active memory with follow-up", {
         ref: activeRef,
         newFact,
@@ -720,7 +863,7 @@ export async function handleMemoryUpdate(
       let targetPayloadToUpdate: { date: string; envelope: MemoryEnvelope } | null = null;
 
       if (targetRefNum !== undefined) {
-        const getRes = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, targetRefNum, axes, cwd, eEnv));
+        const getRes = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, targetRefNum, axes, cwd, eEnv));
         if (getRes.code === 0 && getRes.stdout.trim()) {
           try {
             const oldDecoded = decodePayload(getRes.stdout.trim());
@@ -767,7 +910,7 @@ export async function handleMemoryUpdate(
         }
       }
 
-      const newRef = await allocateNextRef(cwd, env.runner, env.cfg.qmapBin, fspec, axes, eEnv);
+      const newRef = await allocateNextRef(cwd, env.runner, env.cfg.cormBin, fspec, axes, eEnv);
 
       const episode: EpisodeRecord = {
         problem: prompt,
@@ -792,7 +935,7 @@ export async function handleMemoryUpdate(
       const newPayload = encodePayload(date, newEnvelope);
 
       // Store the new successor record
-      const res = await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, newRef, newPayload, axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, newRef, newPayload, axes, cwd, eEnv));
       if (res.code !== 0) return null;
 
       // If valid target was superseded, update predecessor with bidirectional supersededBy link
@@ -800,7 +943,7 @@ export async function handleMemoryUpdate(
         targetPayloadToUpdate.envelope.lifecycle = "superseded";
         targetPayloadToUpdate.envelope.supersededBy = newRef;
         const oldUpdatedPayload = encodePayload(targetPayloadToUpdate.date, targetPayloadToUpdate.envelope);
-        await env.runner.run(buildStoreInvocation(env.cfg.qmapBin, fspec, targetRefNum, oldUpdatedPayload, axes, cwd, eEnv));
+        await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, targetRefNum, oldUpdatedPayload, axes, cwd, eEnv));
       }
 
       // Update active turn tracking to the new active ref
@@ -844,7 +987,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
         const ctx = ctxUnknown as PiCtx;
         const sessionId = extractSessionId(ctx);
         const env = await envSource(ctx);
-        console.log(`[pi-mm] ${describeCapabilities(env.cfg)}`);
+        debugLog("startup", `[pi-mm] ${describeCapabilities(env.cfg)}`);
         const cwd = memDir(env);
         activeSessionBuffer.setJournalDir(cwd);
         const committedIds = new Set<string>();
@@ -881,9 +1024,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           embedModel: env.cfg.embedModel,
         }, { sessionId });
 
-        const list = await env.runner.run(buildListInvocation(env.cfg.qmapBin, fspec, axes, cwd));
+        const list = await env.runner.run(buildListInvocation(env.cfg.cormBin, fspec, axes, cwd));
         for (const r of parseBareRefs(list.stdout)) {
-          const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, r, axes, cwd));
+          const res = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, r, axes, cwd));
           if (res.code === 0 && res.stdout.trim()) {
             const { envelope } = decodePayload(res.stdout.trim());
             for (const id of envelope.episode?.eventIds || []) committedIds.add(id);
@@ -993,6 +1136,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
         await withLock(cwd, async () => {
           await recordNewL0InJournal(cwd, [flushedRef]);
         });
+        if (activeConversationTurn.prompt) {
+          void recordAssociations(cwd, activeConversationTurn.prompt).catch(() => {});
+        }
       } catch { /* best effort */ }
     }
 
@@ -1021,27 +1167,39 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           if (mode === "off") {
             debugLog("capture", "Capture mode is off; skipping automatic capture");
           } else if (mode === "keyword") {
-            const keyword = env.cfg.captureKeyword?.trim();
-            if (keyword && prompt.startsWith(keyword)) {
-              contentToStore = prompt.slice(keyword.length).trim();
+            const keywords = env.cfg.captureKeywords ?? (env.cfg.captureKeyword ? [env.cfg.captureKeyword] : ["@remember", "@memory", "remember:", "note:"]);
+            const lower = prompt.toLowerCase();
+            const matched = keywords.find((k: string) => lower.startsWith(k.toLowerCase()));
+            if (matched) {
+              contentToStore = prompt.slice(matched.length).replace(/^[:\-\s]+/, "").trim();
               if (contentToStore) shouldStoreConversational = true;
             }
           } else if (mode === "judge") {
-            const judgeStart = Date.now();
-            const judgeRes = await evaluateTurnWithJudge(prompt, response, env.cfg, globalThis.fetch, threadContext);
-            const judgeDurationMs = Date.now() - judgeStart;
+            // Check deterministic trigger word families first before querying judge
+            const keywords = env.cfg.captureKeywords ?? (env.cfg.captureKeyword ? [env.cfg.captureKeyword] : ["@remember", "@memory", "remember:", "note:"]);
+            const lower = prompt.toLowerCase();
+            const matched = keywords.find((k: string) => lower.startsWith(k.toLowerCase()));
 
-            traceEvent("judge_request", judgeRes.decision.action === "skip" ? "skip" : "ok", {
-              endpoint: env.cfg.judgeUrl || "unconfigured",
-              model: env.cfg.judgeModel || "none",
-              status: judgeRes.degraded ? "degraded" : (judgeRes.source === "llm" ? "http-200" : "fallback"),
-              elapsedMs: judgeDurationMs,
-              action: judgeRes.decision.action,
-              failureReason: judgeRes.decision.reason || null,
-            }, { sessionId });
+            if (matched) {
+              contentToStore = prompt.slice(matched.length).replace(/^[:\-\s]+/, "").trim();
+              if (contentToStore) shouldStoreConversational = true;
+            } else {
+              const judgeStart = Date.now();
+              const judgeRes = await evaluateTurnWithJudge(prompt, response, env.cfg, globalThis.fetch, threadContext);
+              const judgeDurationMs = Date.now() - judgeStart;
 
-            if (judgeRes.decision.action !== "skip") {
-              shouldStoreConversational = true;
+              traceEvent("judge_request", judgeRes.decision.action === "skip" ? "skip" : "ok", {
+                endpoint: env.cfg.judgeUrl || "unconfigured",
+                model: env.cfg.judgeModel || "none",
+                status: judgeRes.degraded ? "degraded" : (judgeRes.source === "llm" ? "http-200" : "fallback"),
+                elapsedMs: judgeDurationMs,
+                action: judgeRes.decision.action,
+                failureReason: judgeRes.decision.reason || null,
+              }, { sessionId });
+
+              if (judgeRes.decision.action !== "skip") {
+                shouldStoreConversational = true;
+              }
             }
           } else {
             // mode === "all"
@@ -1063,6 +1221,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
             if (l0Ref !== null && l0Ref !== undefined) {
               const numRef = typeof l0Ref === "number" ? l0Ref : parseInt(String(l0Ref), 10);
               if (!isNaN(numRef)) capturedL0Refs.push(numRef);
+              void recordAssociations(memDir(env), contentToStore).catch(() => {});
             }
           }
         } catch (err) {
@@ -1077,11 +1236,19 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     activeConversationTurn.timestamp = undefined;
     activeConversationTurn.activeRunId = undefined;
 
-    // 3. UNCONDITIONALLY run incremental auto-consolidation for settled agent runs
+    // 3. Dispatch incremental auto-consolidation through non-blocking queue
     if (hasActiveRun) {
       try {
-        const env = await envSource(ctx);
-        await runAutoConsolidation(env, ctx, { newL0Refs: capturedL0Refs, incrementalOnly: true });
+        const task: ConsolidationTask = {
+          capturedL0Refs: [...capturedL0Refs],
+          ctx,
+          timestamp: Date.now(),
+        };
+        const taskPromise = consolidationQueue.enqueue(task, envSource);
+        // In synchronous test harnesses allow awaiting; in live agent production runs non-blocking
+        if (ctx?.mode === "test" || (typeof Deno !== "undefined" && Deno?.env?.get("PI_MM_ASYNC_CONSOLIDATION") !== "1")) {
+          await taskPromise;
+        }
       } catch (err) {
         debugLog("consolidation", "Incremental consolidation error", {
           error: err instanceof Error ? err.message : String(err),
@@ -1144,5 +1311,8 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
       const env = await envSource(ctxUnknown as PiCtx);
       await runDeferredConsolidation(env, ctxUnknown as PiCtx);
     } catch { /* ignore shutdown errors */ }
+    try {
+      await SessionDrainRegistry.drain(3000);
+    } catch { /* ignore drain errors */ }
   });
 }

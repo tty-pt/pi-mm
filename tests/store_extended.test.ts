@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { makeStoreTool } from "../src/tools/store.ts";
 import { makeLifecycleTool } from "../src/tools/lifecycle.ts";
 import { makeFeedbackTool } from "../src/tools/feedback.ts";
-import { fakeRunner, runTool, okResult } from "./fake-qmap.ts";
+import { fakeRunner, runTool, okResult } from "./fake-corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import type { CormRunner } from "../src/corm.ts";
 
 const CWD = await Deno.makeTempDir({ prefix: "mm-store-cwd-" });
 const ctx = { cwd: CWD, hasUI: false, mode: "agent" };
@@ -16,14 +16,14 @@ function now(): Date {
   return new Date("2026-09-15T10:00:00");
 }
 
-function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
+function env(runner: CormRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
   try { Deno.removeSync(join(CWD, ".ref_seq")); } catch { /* ignore */ }
   try { Deno.removeSync(join(CWD, ".pi", "mm", ".ref_seq")); } catch { /* ignore */ }
   return {
     cwd: CWD,
     runner,
     nowProvider: now,
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", ...cfg },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", ...cfg },
   };
 }
 
@@ -53,10 +53,9 @@ Deno.test("store: storing L0 episode sets level L0 and serializes envelope", asy
   assert.strictEqual(details.level, "L0");
   assert.strictEqual(details.lifecycle, "observed");
 
-  const storedPayload = runner.invocations[1].args[1];
-  const [refPart, ...rest] = storedPayload.split(":");
-  assert.strictEqual(refPart, "1");
-  const { envelope } = decodePayload(rest.join(":"));
+  const storedPayload = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1];
+  const rawToDecode = storedPayload instanceof Uint8Array ? storedPayload : storedPayload.slice(storedPayload.indexOf(":") + 1);
+  const { envelope } = decodePayload(rawToDecode);
   assert.strictEqual(envelope.level, "L0");
   assert.strictEqual(envelope.lifecycle, "observed");
   assert.strictEqual(envelope.episode?.request, "Fix memory leak in stoma index");
@@ -84,8 +83,8 @@ Deno.test("store: supersedes updates the prior memory to superseded", async () =
   }, ctx);
 
   assert.strictEqual(runner.invocations.length, 4);
-  const oldRefPayload = runner.invocations[3].args[1];
-  const { envelope } = decodePayload(oldRefPayload.slice(2));
+  const oldRefPayload = runner.invocations[3].payloadBytes ?? runner.invocations[3].args[1];
+  const { envelope } = decodePayload(oldRefPayload instanceof Uint8Array ? oldRefPayload : oldRefPayload.slice(oldRefPayload.indexOf(":") + 1));
   assert.strictEqual(envelope.lifecycle, "superseded");
   assert.strictEqual(envelope.supersededBy, 2);
   assert.strictEqual(envelope.history?.[0].to, "superseded");
@@ -114,8 +113,8 @@ Deno.test("lifecycle: transition state updates envelope and appends history", as
   assert.strictEqual(details.previousState, "hypothesized");
   assert.strictEqual(details.currentState, "tested");
 
-  const updatedPayload = runner.invocations[1].args[1];
-  const { envelope } = decodePayload(updatedPayload.slice(2));
+  const updatedPayload = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1];
+  const { envelope } = decodePayload(updatedPayload instanceof Uint8Array ? updatedPayload : updatedPayload.slice(updatedPayload.indexOf(":") + 1));
   assert.strictEqual(envelope.lifecycle, "tested");
   assert.strictEqual(envelope.history?.[0].from, "hypothesized");
   assert.strictEqual(envelope.history?.[0].to, "tested");
@@ -146,8 +145,8 @@ Deno.test("feedback: records useful and increments counters", async () => {
   assert.strictEqual(util.usedCount, 3);
   assert.strictEqual(util.lastOutcome, "useful");
 
-  const updatedPayload = runner.invocations[1].args[1];
-  const { envelope } = decodePayload(updatedPayload.slice(2));
+  const updatedPayload = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1];
+  const { envelope } = decodePayload(updatedPayload instanceof Uint8Array ? updatedPayload : updatedPayload.slice(updatedPayload.indexOf(":") + 1));
   assert.strictEqual(envelope.utility?.usedCount, 3);
   assert.strictEqual(envelope.utility?.lastOutcome, "useful");
 });

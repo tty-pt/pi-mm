@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/corm.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import type { PiCtx } from "../src/hooks/events.ts";
 import { runDeferredConsolidation } from "../src/tools/consolidate.ts";
@@ -15,8 +16,8 @@ import { advanceRefSeq } from "../src/tools/ref_allocator.ts";
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("consolidation_progress_and_budget: 1. Small budget progress - L2 synthesis completes within tight limit", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-prog-budget-1-" });
@@ -35,9 +36,9 @@ Deno.test("consolidation_progress_and_budget: 1. Small budget progress - L2 synt
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -63,7 +64,7 @@ Deno.test("consolidation_progress_and_budget: 1. Small budget progress - L2 synt
     const BATCH_LIMIT = 5;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -148,9 +149,9 @@ Deno.test("consolidation_progress_and_budget: 2. 17 dirty L1 refs with predecess
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -179,7 +180,7 @@ Deno.test("consolidation_progress_and_budget: 2. 17 dirty L1 refs with predecess
     const BATCH_LIMIT = 20;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -313,9 +314,9 @@ Deno.test("consolidation_progress_and_budget: 3. L3 predecessor update with mult
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -343,7 +344,7 @@ Deno.test("consolidation_progress_and_budget: 3. L3 predecessor update with mult
     const BATCH_LIMIT = 8;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -448,9 +449,9 @@ Deno.test("consolidation_progress_and_budget: 4. Uninitialized .ref_seq allocati
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -476,7 +477,7 @@ Deno.test("consolidation_progress_and_budget: 4. Uninitialized .ref_seq allocati
     const BATCH_LIMIT = 6;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -554,7 +555,7 @@ Deno.test("consolidation_progress_and_budget: 5. Starvation-free scheduling: lar
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const synthServer = Deno.serve({ port: 0 }, async (req) => {
       const body = await req.json();
@@ -576,7 +577,7 @@ Deno.test("consolidation_progress_and_budget: 5. Starvation-free scheduling: lar
     const BATCH_LIMIT = 7;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -659,9 +660,9 @@ Deno.test("consolidation_progress_and_budget: 6. Hard limit verification across 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -690,7 +691,7 @@ Deno.test("consolidation_progress_and_budget: 6. Hard limit verification across 
     const BATCH_LIMIT = 7;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

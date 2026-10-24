@@ -1,11 +1,11 @@
 import assert from "node:assert";
 import { join } from "node:path";
 import { makeConsolidateTool } from "../src/tools/consolidate.ts";
-import { fakeRunner, runTool, okResult } from "./fake-qmap.ts";
+import { fakeRunner, runTool, okResult } from "./fake-corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
-import { encodePayload, decodePayload } from "../src/payload.ts";
+import { encodePayload, decodePayload, bytesToBinaryString } from "../src/payload.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import type { CormRunner } from "../src/corm.ts";
 
 const CWD = await Deno.makeTempDir({ prefix: "mm-consolidate-cwd-" });
 const ctx = { cwd: CWD, hasUI: false, mode: "agent" };
@@ -14,7 +14,7 @@ function now(): Date {
   return new Date("2026-10-14T12:00:00Z");
 }
 
-function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}, fetchFn?: typeof fetch): ToolEnv {
+function env(runner: CormRunner, cfg: Partial<MmConfig> = {}, fetchFn?: typeof fetch): ToolEnv {
   try { Deno.removeSync(join(CWD, ".ref_seq")); } catch { /* ignore */ }
   try { Deno.removeSync(join(CWD, ".pi", "mm", ".ref_seq")); } catch { /* ignore */ }
   try { Deno.removeSync(join(CWD, ".consolidation.json")); } catch { /* ignore */ }
@@ -23,7 +23,7 @@ function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}, fetchFn?: typeof f
     cwd: CWD,
     runner,
     nowProvider: now,
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", ...cfg },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", ...cfg },
     fetchFn,
   };
 }
@@ -56,8 +56,8 @@ Deno.test("consolidate: extracts L1 investigation from L0 episode", async () => 
   assert.strictEqual(details.idempotent, false);
   assert.deepStrictEqual(details.evidence, [1]);
 
-  const storedArg = runner.invocations[3].args[1];
-  const { envelope } = decodePayload(storedArg.slice(storedArg.indexOf(":") + 1));
+  const storedArg = runner.invocations[3].payloadBytes ?? runner.invocations[3].args[1];
+  const { envelope } = decodePayload(storedArg instanceof Uint8Array ? storedArg : storedArg.slice(storedArg.indexOf(":") + 1));
   assert.strictEqual(envelope.level, "L1");
   assert.strictEqual(envelope.type, "investigation");
   assert.deepStrictEqual(envelope.evidence, [1]);
@@ -129,12 +129,12 @@ Deno.test("consolidate: end-to-end full hierarchy (L0->L1->L2->L3) and traversal
   const { makeTraverseTool } = await import("../src/tools/traverse.ts");
 
   const store = new Map<number, string>();
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -231,12 +231,12 @@ Deno.test("consolidate: end-to-end full hierarchy (L0->L1->L2->L3) and traversal
 
 Deno.test("consolidate: automated workflow discovers unconsolidated L0 and creates L1", async () => {
   const store = new Map<number, string>();
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -288,8 +288,8 @@ Deno.test("consolidate: rejects invalid level transitions (e.g. L3 source to cre
   const store = new Map<number, string>();
   store.set(1, `2026-10-15:{"level":"L3","type":"pattern","summary":"High level lesson","lifecycle":"supported"}`);
 
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-r" && inv.args[1] === "-g") {
         const ref = Number(inv.args[2]);
         const val = store.get(ref);
@@ -315,12 +315,12 @@ Deno.test("consolidate: rejects invalid level transitions (e.g. L3 source to cre
 
 Deno.test("consolidate: end-to-end automatic L0->L1->L2->L3 hierarchy with scope grouping and traversal", async () => {
   const store = new Map<number, string>();
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -439,8 +439,8 @@ Deno.test("consolidate: rejects promoting contradicted or superseded source memo
   store.set(1, `2026-10-15:{"level":"L0","type":"episode","summary":"Old refuted theory","lifecycle":"contradicted"}`);
   store.set(2, `2026-10-15:{"level":"L0","type":"episode","summary":"Obsolete approach","lifecycle":"superseded"}`);
 
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-r" && inv.args[1] === "-g") {
         const ref = Number(inv.args[2]);
         const val = store.get(ref);
@@ -477,12 +477,12 @@ Deno.test("consolidate: auto mode skips contradicted and superseded memories", a
   store.set(2, `2026-10-15:{"level":"L0","type":"episode","summary":"Refuted fix","lifecycle":"contradicted"}`);
   store.set(3, `2026-10-15:{"level":"L0","type":"episode","summary":"Superseded fix","lifecycle":"superseded"}`);
 
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -515,12 +515,12 @@ Deno.test("consolidate: auto mode skips contradicted and superseded memories", a
 
 Deno.test("consolidate: unrelated investigations in the same scope are NOT conjoined into invariants", async () => {
   const store = new Map<number, string>();
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -578,12 +578,12 @@ Deno.test("consolidate: rejects unsupported L3 generalizations (single source or
   // Unverified L2 in project-c
   store.set(4, `2026-10-15:{"level":"L2","type":"invariant","summary":"Unverified C1","lifecycle":"observed","context":{"project":"project-c"},"evidence":[13]}`);
 
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -631,12 +631,12 @@ Deno.test("consolidate: rejects unsupported L3 generalizations (single source or
 
 Deno.test("consolidate: investigations sharing vocabulary but expressing contradictory conclusions are NOT merged", async () => {
   const store = new Map<number, string>();
-  const memoryRunner: QmapRunner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+  const memoryRunner: CormRunner = {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-p") {
         const firstColon = inv.args[1].indexOf(":");
         const ref = Number(inv.args[1].slice(0, firstColon));
-        const payload = inv.args[1].slice(firstColon + 1);
+        const payload = inv.payloadBytes ? bytesToBinaryString(inv.payloadBytes) : inv.args[1].slice(firstColon + 1);
         store.set(ref, payload);
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }

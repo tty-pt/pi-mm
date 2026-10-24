@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildListInvocation, buildGetInvocation, buildStoreInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildListInvocation, buildGetInvocation, buildStoreInvocation } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
 import { decodePayload } from "../src/payload.ts";
 import {
@@ -21,8 +22,8 @@ import { advanceRefSeq } from "../src/tools/ref_allocator.ts";
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("technical_episodes: 1. Multi-turn flushes across turn_end boundaries are promoted to L1 at agent_settled", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-tech-multiturn-" });
@@ -36,11 +37,11 @@ Deno.test("technical_episodes: 1. Multi-turn flushes across turn_end boundaries 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -163,7 +164,7 @@ Deno.test("technical_episodes: 2. Conversational judge skip does NOT bypass alre
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Mock Jev judge that always returns SKIP
     const judgeServer = Deno.serve({ port: 0 }, (_req) => {
@@ -176,7 +177,7 @@ Deno.test("technical_episodes: 2. Conversational judge skip does NOT bypass alre
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -266,7 +267,7 @@ Deno.test("technical_episodes: 3. Unprocessed references survive batch limits an
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Store 4 technical L0 records in CORM
     for (let i = 1; i <= 4; i++) {
@@ -290,7 +291,7 @@ Deno.test("technical_episodes: 3. Unprocessed references survive batch limits an
     const BATCH_LIMIT = 2;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -343,9 +344,9 @@ Deno.test("technical_episodes: 4. Process restart restores pendingL0Refs from jo
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         return await daemonRunner.run(inv);
       },
@@ -369,7 +370,7 @@ Deno.test("technical_episodes: 4. Process restart restores pendingL0Refs from jo
     // Simulate fresh process start
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -412,11 +413,11 @@ Deno.test("technical_episodes: 5. Settlement idempotency: repeated lifecycle eve
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -487,11 +488,11 @@ Deno.test("technical_episodes: 6. Technical L1 memories can be found through nor
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -575,11 +576,11 @@ Deno.test("technical_episodes: 7. Scoped technical L1 enters dirtyScopes; unscop
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -650,11 +651,11 @@ Deno.test("technical_episodes: 8. Original defect reproduction - early turn_end 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -738,9 +739,9 @@ Deno.test("technical_episodes: 9. Event-level regression: zero list operations a
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         return await daemonRunner.run(inv);
       },
@@ -765,7 +766,7 @@ Deno.test("technical_episodes: 9. Event-level regression: zero list operations a
 
     const cfg: import("../src/config.ts").MmConfig = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -834,7 +835,7 @@ Deno.test("technical_episodes: 10. Multi-batch progression: preserves coherent e
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const RUN_ID = "run-multi-batch-task-1";
     // Seed 7 technical L0 records in CORM for the same agent run
@@ -871,7 +872,7 @@ Deno.test("technical_episodes: 10. Multi-batch progression: preserves coherent e
     const BATCH_LIMIT = 3;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -998,10 +999,10 @@ Deno.test("technical_episodes: 11. Outcome accuracy: decouples findings from suc
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1171,10 +1172,10 @@ Deno.test("technical_episodes: 12. Crash-window recovery across interrupted stag
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1365,11 +1366,11 @@ Deno.test("technical_episodes: 13. Fault injection: predecessor store failure du
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let failStoreRef: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (failStoreRef !== null && inv.args[0] === "-p" && typeof inv.args[1] === "string" && inv.args[1].startsWith(`${failStoreRef}:`)) {
           return { code: 1, stdout: "", stderr: "Injected disk write failure on predecessor update" };
         }
@@ -1379,7 +1380,7 @@ Deno.test("technical_episodes: 13. Fault injection: predecessor store failure du
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1487,11 +1488,11 @@ Deno.test("technical_episodes: 14. Fault injection: predecessor store failure du
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let failStoreRef: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (failStoreRef !== null && inv.args[0] === "-p" && typeof inv.args[1] === "string" && inv.args[1].startsWith(`${failStoreRef}:`)) {
           return { code: 1, stdout: "", stderr: "Injected disk write failure during reconcile store" };
         }
@@ -1501,7 +1502,7 @@ Deno.test("technical_episodes: 14. Fault injection: predecessor store failure du
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1589,11 +1590,11 @@ Deno.test("technical_episodes: 15. Fault injection: predecessor read failure dur
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let failGetRef: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (failGetRef !== null && inv.args[0] === "-r" && inv.args[1] === "-g" && inv.args[2] === String(failGetRef)) {
           return { code: 1, stdout: "", stderr: "Injected network timeout on predecessor get" };
         }
@@ -1603,7 +1604,7 @@ Deno.test("technical_episodes: 15. Fault injection: predecessor read failure dur
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1690,11 +1691,11 @@ Deno.test("technical_episodes: 16. Fault injection: transient nonzero successor 
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let failSuccRef: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (failSuccRef !== null && inv.args[0] === "-r" && inv.args[1] === "-g" && inv.args[2] === String(failSuccRef)) {
           return { code: 1, stdout: "", stderr: "Injected network timeout on successor get" };
         }
@@ -1704,7 +1705,7 @@ Deno.test("technical_episodes: 16. Fault injection: transient nonzero successor 
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1792,11 +1793,11 @@ Deno.test("technical_episodes: 17. Fault injection: empty or inconclusive succes
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let returnEmptySucc: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (returnEmptySucc !== null && inv.args[0] === "-r" && inv.args[1] === "-g" && inv.args[2] === String(returnEmptySucc)) {
           return { code: 0, stdout: "", stderr: "" }; // Empty stdout (inconclusive)
         }
@@ -1806,7 +1807,7 @@ Deno.test("technical_episodes: 17. Fault injection: empty or inconclusive succes
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1884,11 +1885,11 @@ Deno.test("technical_episodes: 18. Confirmed absent successor (-1 sentinel) clea
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -1954,11 +1955,11 @@ Deno.test("technical_episodes: 19. Successor record identity/evidence inconsiste
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -2092,11 +2093,11 @@ Deno.test("technical_episodes: 20. Restore dirty-scope registration during L1 tr
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     let failStoreRef: number | null = null;
     const instrumentedRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (failStoreRef !== null && inv.args[0] === "-p" && typeof inv.args[1] === "string" && inv.args[1].startsWith(`${failStoreRef}:`)) {
           return { code: 1, stdout: "", stderr: "Injected disk write failure" };
         }
@@ -2106,7 +2107,7 @@ Deno.test("technical_episodes: 20. Restore dirty-scope registration during L1 tr
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

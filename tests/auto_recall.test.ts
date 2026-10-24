@@ -4,11 +4,12 @@ import {
   formatCompactMemoryEntry,
   buildInjectedContext,
   handleBeforeAgentStart,
+  isDirectMemoryQuestion,
 } from "../src/hooks/auto_recall.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner, Invocation } from "../src/qmap.ts";
+import type { CormRunner, Invocation } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
 
 Deno.test("auto_recall: shouldTriggerAutoRecall filters greetings and short inputs", () => {
@@ -16,6 +17,8 @@ Deno.test("auto_recall: shouldTriggerAutoRecall filters greetings and short inpu
   assert.strictEqual(shouldTriggerAutoRecall("hi"), false);
   assert.strictEqual(shouldTriggerAutoRecall("hello!"), false);
   assert.strictEqual(shouldTriggerAutoRecall("thanks"), false);
+  assert.strictEqual(shouldTriggerAutoRecall("thanks!!!"), false);
+  assert.strictEqual(shouldTriggerAutoRecall("ok..."), false);
   assert.strictEqual(shouldTriggerAutoRecall("ok"), false);
   assert.strictEqual(shouldTriggerAutoRecall("yes"), false);
   assert.strictEqual(shouldTriggerAutoRecall("good morning"), false);
@@ -136,7 +139,37 @@ Deno.test("auto_recall: buildInjectedContext enforces character budget", () => {
   assert.ok(context.includes("[Persistent Memory Context]"));
 });
 
-function fakeRunner(results: PiExecResult[]): QmapRunner {
+Deno.test("auto_recall: prompt-adaptive compression omits guidance for direct memory questions", () => {
+  const candidates: FusedCandidate[] = [
+    {
+      ref: 1,
+      record: "2026-10-15:{}",
+      origin: "lemma",
+      rrfScore: 0.05,
+      envelope: {
+        level: "L1",
+        lifecycle: "supported",
+        summary: "I spoke to my grandfather under the cherry tree",
+      },
+    },
+  ];
+
+  // Direct question: guidance omitted to free space for memories
+  assert.strictEqual(isDirectMemoryQuestion("What do you remember?"), true);
+  assert.strictEqual(isDirectMemoryQuestion("what do you recall"), true);
+  assert.strictEqual(isDirectMemoryQuestion("tell me what you remember"), true);
+  const directContext = buildInjectedContext(candidates, 1000, undefined, "What do you remember?");
+  assert.ok(!directContext.includes("Usage guidelines:"), "Direct questions must omit guidance block");
+  assert.ok(directContext.includes("cherry tree"));
+
+  // Specific query or normal turn: guidance included
+  assert.strictEqual(isDirectMemoryQuestion("Do you remember what dog I adopted in the mountains?"), false);
+  assert.strictEqual(isDirectMemoryQuestion("Let's refactor the database connector"), false);
+  const normalContext = buildInjectedContext(candidates, 1000, undefined, "Let's refactor the database connector");
+  assert.ok(normalContext.includes("Usage guidelines:"), "Normal prompt must include guidance block");
+});
+
+function fakeRunner(results: PiExecResult[]): CormRunner {
   let idx = 0;
   return {
     run: (_inv: Invocation): Promise<PiExecResult> => {
@@ -165,7 +198,7 @@ Deno.test("auto_recall: handleBeforeAgentStart injects context for relevant user
     cfg: {
       ...DEFAULT_CONFIG,
       memDir: ".pi/mm",
-      qmapBin: "/usr/bin/qmap",
+      cormBin: "/usr/bin/corm",
       scanLimit: 5,
     },
   };
@@ -202,7 +235,7 @@ Deno.test("auto_recall: handleBeforeAgentStart populates systemPromptOptions.sec
     cfg: {
       ...DEFAULT_CONFIG,
       memDir: ".pi/mm",
-      qmapBin: "/usr/bin/qmap",
+      cormBin: "/usr/bin/corm",
       scanLimit: 5,
     },
   };
@@ -240,7 +273,7 @@ Deno.test("auto_recall: handleBeforeAgentStart returns null for greeting or cust
     cwd: "/tmp/fake-cwd",
     runner,
     nowProvider: () => new Date("2026-03-30"),
-    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", qmapBin: "/usr/bin/qmap", scanLimit: 5 },
+    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", cormBin: "/usr/bin/corm", scanLimit: 5 },
   };
   const envSource = () => Promise.resolve(env);
 
@@ -263,7 +296,7 @@ Deno.test("auto_recall: handleBeforeAgentStart returns null for greeting or cust
 
 Deno.test("auto_recall: fast success clears timers with zero redundant fallback queries", async () => {
   let invocationCount = 0;
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: (_inv) => {
       invocationCount++;
       const payload = "1 0.5 2026-03-30:" + JSON.stringify({
@@ -276,7 +309,7 @@ Deno.test("auto_recall: fast success clears timers with zero redundant fallback 
     cwd: "/tmp/fake-cwd",
     runner,
     nowProvider: () => new Date("2026-03-30"),
-    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", qmapBin: "/usr/bin/qmap", scanLimit: 5 },
+    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", cormBin: "/usr/bin/corm", scanLimit: 5 },
   };
 
   const res = await handleBeforeAgentStart(
@@ -296,7 +329,7 @@ Deno.test("auto_recall: fast success clears timers with zero redundant fallback 
 
 Deno.test("auto_recall: delayed semantic retrieval triggers bounded lexical fallback", async () => {
   const queryTypes: string[] = [];
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: async (inv) => {
       const hasSepal = inv.args.some((a) => a.includes("sepal"));
       if (hasSepal) {
@@ -319,7 +352,7 @@ Deno.test("auto_recall: delayed semantic retrieval triggers bounded lexical fall
     cfg: {
       ...DEFAULT_CONFIG,
       memDir: ".pi/mm",
-      qmapBin: "/usr/bin/qmap",
+      cormBin: "/usr/bin/corm",
       scanLimit: 5,
       embedUrl: "http://localhost:4242/v1/embeddings",
       embedModel: "nomic-embed-text",
@@ -339,7 +372,7 @@ Deno.test("auto_recall: delayed semantic retrieval triggers bounded lexical fall
 });
 
 Deno.test("auto_recall: stalled fallback does not exceed overall deadline", async () => {
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: async () => {
       // Simulate completely hung processes for both attempts
       await new Promise((r) => setTimeout(r, 500));
@@ -350,7 +383,7 @@ Deno.test("auto_recall: stalled fallback does not exceed overall deadline", asyn
     cwd: "/tmp/fake-cwd",
     runner,
     nowProvider: () => new Date("2026-03-30"),
-    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", qmapBin: "/usr/bin/qmap", scanLimit: 5 },
+    cfg: { ...DEFAULT_CONFIG, memDir: ".pi/mm", cormBin: "/usr/bin/corm", scanLimit: 5 },
   };
 
   const t0 = performance.now();

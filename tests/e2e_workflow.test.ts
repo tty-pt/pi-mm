@@ -4,9 +4,9 @@ import { makeReviewTool } from "../src/tools/review.ts";
 import { handleBeforeAgentStart } from "../src/hooks/auto_recall.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner, Invocation } from "../src/qmap.ts";
+import type { CormRunner, Invocation } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
-import { encodePayload } from "../src/payload.ts";
+import { encodePayload, decodePayload, bytesToBinaryString } from "../src/payload.ts";
 import type { MemoryEnvelope } from "../src/types.ts";
 
 /**
@@ -24,9 +24,10 @@ class InMemoryBackend {
   private items = new Map<number, string>();
   private nextId = 1;
 
-  public store(payload: string, explicitRef?: number): number {
+  public store(payload: string | Uint8Array, explicitRef?: number): number {
+    const pStr = payload instanceof Uint8Array ? bytesToBinaryString(payload) : payload;
     const id = explicitRef ?? this.nextId++;
-    this.items.set(id, payload);
+    this.items.set(id, pStr);
     if (id >= this.nextId) this.nextId = id + 1;
     try {
       Deno.mkdirSync("/tmp/mm-e2e/.pi/mm", { recursive: true });
@@ -48,13 +49,14 @@ class InMemoryBackend {
     const results: Array<{ ref: number; score: string; record: string }> = [];
 
     for (const [ref, payload] of this.items.entries()) {
-      const lower = payload.toLowerCase();
+      const { envelope } = decodePayload(payload);
+      const text = `${envelope.summary || ""} ${envelope.episode?.problem || ""}`.toLowerCase();
       let matchCount = 0;
       for (const tok of qTokens) {
-        if (lower.includes(tok)) matchCount++;
+        if (text.includes(tok)) matchCount++;
       }
       // If tokens match, or semantic keywords match
-      if (matchCount > 0 || (lower.includes("descriptor") && query.toLowerCase().includes("descriptor"))) {
+      if (matchCount > 0 || (text.includes("descriptor") && query.toLowerCase().includes("descriptor"))) {
         results.push({ ref, score: (matchCount * 0.5 + 0.5).toFixed(6), record: payload });
       }
     }
@@ -68,7 +70,7 @@ function createSimulator(): { env: ToolEnv; backend: InMemoryBackend } {
 
   const backend = new InMemoryBackend();
 
-  const runner: QmapRunner = {
+  const runner: CormRunner = {
     run: (inv: Invocation): Promise<PiExecResult> => {
       const args = inv.args;
       // List
@@ -107,7 +109,7 @@ function createSimulator(): { env: ToolEnv; backend: InMemoryBackend } {
     cwd: "/tmp/mm-e2e",
     runner,
     nowProvider: () => new Date("2026-03-30T12:00:00Z"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: ".pi/mm" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: ".pi/mm" },
   };
 
   return { env, backend };

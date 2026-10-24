@@ -1,8 +1,8 @@
 import assert from "node:assert";
-import { fuseRankingsRRF, computeRankingScore, filterAndEnrich } from "../src/tools/ranking.ts";
+import { fuseRankingsRRF, computeRankingScore, filterAndEnrich, adaptiveRrfK, isCodeOrDocArtifact } from "../src/tools/ranking.ts";
 import { executeHybridScan } from "../src/tools/scan.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import type { ResultLine } from "../src/qmap.ts";
+import type { ResultLine } from "../src/corm.ts";
 import type { MemoryEnvelope } from "../src/types.ts";
 
 Deno.test("hybrid: fuseRankingsRRF calculates accurate reciprocal rank scores", () => {
@@ -150,7 +150,7 @@ Deno.test("hybrid: filterAndEnrich preserves candidate origins and formats score
 Deno.test("hybrid: scan fallback preserves 2-letter tokens and filters stop words", async () => {
   const queriedTokens: string[] = [];
   const runner = {
-    run: (inv: import("../src/qmap.ts").Invocation) => {
+    run: (inv: import("../src/corm.ts").Invocation) => {
       for (const arg of inv.args) {
         if (arg.startsWith("--query=")) {
           queriedTokens.push(arg.slice("--query=".length));
@@ -164,7 +164,7 @@ Deno.test("hybrid: scan fallback preserves 2-letter tokens and filters stop word
     cwd: "/tmp/fake-cwd",
     runner,
     nowProvider: () => new Date("2026-10-15"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: ".pi/mm" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: ".pi/mm" },
   };
 
   await executeHybridScan(env, {
@@ -183,7 +183,7 @@ Deno.test("hybrid: scan fallback preserves 2-letter tokens and filters stop word
 Deno.test("hybrid: scan fallback on all-stop-words query degrades gracefully", async () => {
   const queriedTokens: string[] = [];
   const runner = {
-    run: (inv: import("../src/qmap.ts").Invocation) => {
+    run: (inv: import("../src/corm.ts").Invocation) => {
       for (const arg of inv.args) {
         if (arg.startsWith("--query=")) {
           queriedTokens.push(arg.slice("--query=".length));
@@ -197,7 +197,7 @@ Deno.test("hybrid: scan fallback on all-stop-words query degrades gracefully", a
     cwd: "/tmp/fake-cwd",
     runner,
     nowProvider: () => new Date("2026-10-15"),
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", memDir: ".pi/mm" },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", memDir: ".pi/mm" },
   };
 
   const res = await executeHybridScan(env, {
@@ -208,4 +208,35 @@ Deno.test("hybrid: scan fallback on all-stop-words query degrades gracefully", a
 
   assert.ok(Array.isArray(res.records));
   assert.ok(queriedTokens.length > 0, "All-stop-words query must fall back to non-empty tokens");
+});
+
+Deno.test("hybrid: adaptiveRrfK computes dynamic smoothing constant with safe edge cases", () => {
+  assert.strictEqual(adaptiveRrfK(0), 10);
+  assert.strictEqual(adaptiveRrfK(1), 10);
+  assert.strictEqual(adaptiveRrfK(2), 10);
+  assert.strictEqual(adaptiveRrfK(10), 20);
+  assert.strictEqual(adaptiveRrfK(25), 50);
+  assert.strictEqual(adaptiveRrfK(50), 60);
+  assert.strictEqual(adaptiveRrfK(100), 60);
+});
+
+Deno.test("hybrid: computeRankingScore penalizes code and syntax artifacts by 0.2 when L0 is not requested", () => {
+  const codeEnv: MemoryEnvelope = {
+    level: "L1",
+    lifecycle: "supported",
+    summary: "const isletFspec = `${cwd}/mem-islet.db@islet:a:s`;",
+  };
+  const cand = {
+    ref: 1,
+    record: "2026-10-15:code",
+    origin: "lemma" as const,
+    rrfScore: 0.1,
+    envelope: codeEnv,
+  };
+
+  const normalScore = computeRankingScore(cand, { limit: 5 });
+  const l0Score = computeRankingScore(cand, { limit: 5, mipmap: "L0" });
+
+  assert.ok(normalScore < l0Score);
+  assert.ok(Math.abs(normalScore - l0Score * 0.2) < 1e-6);
 });

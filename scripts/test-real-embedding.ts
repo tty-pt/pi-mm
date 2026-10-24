@@ -35,11 +35,11 @@ export async function runRealEmbeddingSmokeTest(_siteRoot?: string): Promise<{ s
     return { status: "SKIPPED", reason: msg };
   }
 
-  const embedUrl = Deno.env.get("CORM_SEPAL_EMBED_URL") || Deno.env.get("QMAP_SEPAL_EMBED_URL");
-  const embedModel = Deno.env.get("CORM_SEPAL_EMBED_MODEL") || Deno.env.get("QMAP_SEPAL_EMBED_MODEL") || "nomic-embed-text";
+  const embedUrl = Deno.env.get("CORM_SEPAL_EMBED_URL");
+  const embedModel = Deno.env.get("CORM_SEPAL_EMBED_MODEL") || "nomic-embed-text";
 
   if (!embedUrl) {
-    console.log("Status: SKIPPED (Real embedding endpoint not configured: CORM_SEPAL_EMBED_URL/QMAP_SEPAL_EMBED_URL unset)");
+    console.log("Status: SKIPPED (Real embedding endpoint not configured: CORM_SEPAL_EMBED_URL unset)");
     console.log("Note: Set CORM_SEPAL_EMBED_URL and CORM_SEPAL_EMBED_MODEL to run live semantic tests.");
     return { status: "SKIPPED", reason: "unconfigured" };
   }
@@ -90,7 +90,7 @@ export async function runRealEmbeddingSmokeTest(_siteRoot?: string): Promise<{ s
       nowProvider: () => new Date("2026-10-15T12:00:00Z"),
       cfg: {
         ...DEFAULT_CONFIG,
-        qmapBin: cormBin,
+        cormBin,
         axisLibs,
         memDir: tmpDir,
         embedUrl,

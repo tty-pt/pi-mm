@@ -1,10 +1,11 @@
 import { readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { MmConfig } from "../config.ts";
-import type { QmapRunner } from "../qmap.ts";
-import { buildListInvocation, buildGetInvocation } from "../qmap.ts";
+import type { CormRunner } from "../corm.ts";
+import { buildListInvocation, buildGetInvocation } from "../corm.ts";
 import { parseBareRefs } from "../resolve.ts";
 import { decodePayload } from "../payload.ts";
+import { debugLog } from "../debug.ts";
 import type { MemoryEnvelope } from "../types.ts";
 
 export interface DirtyScopeEntry {
@@ -82,8 +83,8 @@ export function journalFilePath(memDir: string): string {
 }
 
 export interface JournalRecoveryContext {
-  runner: QmapRunner;
-  qmapBin: string;
+  runner: CormRunner;
+  cormBin?: string;
   fspec: string;
   axes: string;
   eEnv?: Record<string, string>;
@@ -103,11 +104,12 @@ async function handleCorruptedJournal(
     await writeFile(corruptPath, rawContent, "utf8");
   } catch { /* best effort */ }
 
-  console.warn(`[pi-mm] Warning: corrupted consolidation journal detected (${reason}). Preserved at ${corruptPath}. Reconstructing pending work.`);
+  debugLog("consolidation", "Warning: corrupted consolidation journal detected", { reason, corruptPath });
 
   const journal = defaultJournal();
 
-  if (!recoveryCtx || !recoveryCtx.qmapBin) {
+  const bin = recoveryCtx?.cormBin;
+  if (!recoveryCtx || !bin) {
     journal.recoveryRequired = true;
     journal.recoveryError = `Corrupted journal (${reason}) preserved; waiting for recovery context`;
     await writeConsolidationJournal(memDir, journal).catch(() => {});
@@ -115,7 +117,7 @@ async function handleCorruptedJournal(
   }
 
   try {
-    const listRes = await recoveryCtx.runner.run(buildListInvocation(recoveryCtx.qmapBin, recoveryCtx.fspec, recoveryCtx.axes, memDir, recoveryCtx.eEnv));
+    const listRes = await recoveryCtx.runner.run(buildListInvocation(bin, recoveryCtx.fspec, recoveryCtx.axes, memDir, recoveryCtx.eEnv));
     if (listRes.code !== 0) {
       journal.recoveryRequired = true;
       journal.recoveryError = `Roster list failed during recovery: ${listRes.stderr || "exit " + listRes.code}`;
@@ -128,7 +130,7 @@ async function handleCorruptedJournal(
     let hadPartialReadError = false;
 
     for (const r of refs) {
-      const getRes = await recoveryCtx.runner.run(buildGetInvocation(recoveryCtx.qmapBin, recoveryCtx.fspec, r, recoveryCtx.axes, memDir, recoveryCtx.eEnv));
+      const getRes = await recoveryCtx.runner.run(buildGetInvocation(bin, recoveryCtx.fspec, r, recoveryCtx.axes, memDir, recoveryCtx.eEnv));
       if (getRes.code === 0 && getRes.stdout.trim()) {
         const { envelope } = decodePayload(getRes.stdout.trim());
         items.push({ ref: r, envelope });

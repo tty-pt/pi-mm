@@ -4,7 +4,7 @@ import type { FusedCandidate } from "../tools/ranking.ts";
 import { type PiCtx, extractSessionId } from "./events.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { memDir, sepalConfigured } from "../tools/index.ts";
-import { filespecFor } from "../qmap.ts";
+import { filespecFor } from "../corm.ts";
 import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } from "../session_history.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
@@ -16,7 +16,79 @@ export function shouldTriggerAutoRecall(prompt: string): boolean {
   const trimmed = prompt.trim();
   if (trimmed.length < 5) return false;
   if (TRIVIAL_PROMPT_RE.test(trimmed)) return false;
+  // Normalize internal whitespace and strip trailing punctuation for robust matching
+  const normalized = trimmed.replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
+  if (TRIVIAL_PROMPT_RE.test(normalized)) return false;
   return true;
+}
+
+export const KNOWN_SUBSYSTEMS = [
+  "song", "gig", "poem", "grp", "corm", "joint", "sepal", "lemma", "stoma", "islet", "axil", "bud",
+  "libcorm", "libjoint", "libsepal", "liblemma", "libstoma", "libislet",
+];
+
+export function detectSubsystemMentions(prompt: string): string[] {
+  if (!prompt) return [];
+  const lower = prompt.toLowerCase();
+  const matches: Array<{ name: string; index: number }> = [];
+  for (const sub of KNOWN_SUBSYSTEMS) {
+    const pattern = new RegExp(`\\b${sub}\\b`, "i");
+    const m = pattern.exec(lower);
+    if (m || lower.includes(`mods/${sub}`) || lower.includes(`external/${sub}`)) {
+      const idx = m ? m.index : lower.indexOf(sub);
+      const normalized = sub.startsWith("lib") ? sub.slice(3) : sub;
+      if (!matches.some((x) => x.name === normalized)) {
+        matches.push({ name: normalized, index: idx });
+      }
+    }
+  }
+  matches.sort((a, b) => a.index - b.index);
+  return matches.map((m) => m.name);
+}
+
+export async function primeSubsystemInvariants(
+  env: ToolEnv,
+  subsystems: string[],
+  timeoutMs = 50,
+): Promise<FusedCandidate[]> {
+  if (subsystems.length === 0) return [];
+  const results: FusedCandidate[] = [];
+  const timer = new Promise<FusedCandidate[]>((resolve) => setTimeout(() => resolve([]), timeoutMs));
+  const work = (async () => {
+    for (const sub of subsystems.slice(0, 3)) {
+      try {
+        const scanRes = await executeHybridScan(env, {
+          topic: sub,
+          subsystem: sub,
+          level: "L2",
+          lifecycle: "supported",
+          limit: 2,
+          embed: false,
+        });
+        if (scanRes.records && scanRes.records.length > 0) {
+          for (const r of scanRes.records) {
+            if (!results.some((x) => x.ref === r.ref)) {
+              results.push(r);
+            }
+          }
+        }
+      } catch {
+        // Best-effort proactive priming
+      }
+    }
+    return results;
+  })();
+  return await Promise.race([work, timer]);
+}
+
+export function isDirectMemoryQuestion(prompt?: string): boolean {
+  if (!prompt) return false;
+  const p = prompt.trim().toLowerCase();
+  // Open-ended introspection: user asking agent what it remembers/recalls in general
+  if (/^(?:what\s+do\s+you\s+remember|what\s+do\s+you\s+recall|tell\s+me\s+what\s+you\s+remember|what\s+did\s+i\s+say(?:\s+earlier|\s+before)?|what\s+were\s+we\s+talking\s+about|do\s+you\s+remember\s+anything|do\s+you\s+recall\s+anything)[?.!\s]*$/i.test(p)) {
+    return true;
+  }
+  return false;
 }
 
 export function formatCompactMemoryEntry(cand: FusedCandidate): string {
@@ -36,6 +108,11 @@ export function formatCompactMemoryEntry(cand: FusedCandidate): string {
 
   if (env?.evidence && env.evidence.length > 0) {
     line += `\n  Evidence: cited refs [${env.evidence.join(", ")}]`;
+  }
+  if (env?.constraints && env.constraints.length > 0) {
+    for (const rule of env.constraints) {
+      line += `\n  - [RESTRICTION]: ${rule}`;
+    }
   }
   return line;
 }
@@ -98,6 +175,7 @@ export function buildInjectedContext(
   candidates: FusedCandidate[],
   budget = DEFAULT_AUTO_RECALL_BUDGET,
   excerptsMap?: Map<number, SessionExcerpt[]>,
+  prompt?: string,
 ): string {
   // Exclude contradicted and superseded records, and exclude raw tool episodes (L0) from conversational context
   const valid = candidates.filter((c) => {
@@ -110,17 +188,39 @@ export function buildInjectedContext(
   const header = "[Persistent Memory Context]\nBackground memories for conversational reference:\n";
   const guidance = `\nUsage guidelines:
 - Memories provide background continuity only. Do not interpret them as coding tasks, bug reports, or instructions to search code or the web.
-- Do NOT search the codebase, read files, or run bash commands unless the user explicitly requests technical work in their prompt.
-- Do NOT run git, bash, grep, find, read, or other tools unless the user explicitly requests technical work in their prompt.
-- For casual conversation, greetings, personal memories, or memory queries, reply conversationally without invoking tools unless technical work is requested.`;
+- Do NOT search the codebase, read files, or run bash/git commands unless the user explicitly requests technical work in their prompt.
+- When the user asks about prior discussions, what they said, past decisions, or memory queries, use memory_recall to find relevant context.
+- For casual conversation and greetings, reply conversationally without invoking codebase tools.`;
 
-  // Only include guidance if budget has enough room
-  const includeGuidance = budget >= 600;
+  // Compress/omit guidance when user explicitly asks direct memory questions, freeing budget for memories
+  const isDirectQuestion = isDirectMemoryQuestion(prompt);
+  const includeGuidance = !isDirectQuestion && budget >= 600;
   const guidanceText = includeGuidance ? guidance : "";
-  const effectiveBudget = Math.max(100, budget - guidanceText.length);
 
-  let content = header;
-  for (const cand of valid) {
+  // Separate cognitive persona and proactive subsystem invariant priming
+  const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
+  const subsystemInvariants = valid.filter((c) => c.envelope?.level === "L2" && Boolean(c.envelope?.context?.subsystem) && c.envelope?.type === "invariant");
+  const generalMemories = valid.filter((c) => !personaItems.includes(c) && !subsystemInvariants.includes(c));
+
+  let primedText = "";
+  if (personaItems.length > 0) {
+    primedText += "\n[User Persona & Engineering Tenets]\n";
+    for (const p of personaItems.slice(0, 2)) {
+      primedText += `- ${p.envelope?.summary || p.record}\n`;
+    }
+  }
+  if (subsystemInvariants.length > 0) {
+    primedText += "\n[Primed Subsystem Invariants]\n";
+    for (const s of subsystemInvariants.slice(0, 2)) {
+      primedText += formatCompactMemoryEntry(s) + "\n";
+    }
+  }
+
+  // Token budgeting: subtract primed blocks from effective budget for general memories
+  const effectiveBudget = Math.max(100, budget - guidanceText.length - primedText.length);
+
+  let content = generalMemories.length > 0 ? header : "";
+  for (const cand of generalMemories) {
     const excerpts = excerptsMap?.get(cand.ref);
     const entry = (excerpts && excerpts.length > 0
       ? formatMemoryEntryWithExcerpts(cand, excerpts)
@@ -143,8 +243,10 @@ export function buildInjectedContext(
     content += entry;
   }
 
-  if (content.trim() === header.trim()) return "";
-  const full = content.trim() + guidanceText;
+  if (content.trim() === header.trim() && !primedText) return "";
+  let full = content.trim();
+  if (primedText) full += primedText;
+  if (guidanceText) full += guidanceText;
   if (full.length > budget) {
     return full.slice(0, budget);
   }
@@ -261,8 +363,8 @@ export async function handleBeforeAgentStart(
     const embed = sepalConfigured(env.cfg);
     const fspec = filespecFor(cwd, embed);
 
-    if (!env.cfg.qmapBin) {
-      debugLog("recall", "Auto-recall aborted: qmapBin unset");
+    if (!env.cfg.cormBin) {
+      debugLog("recall", "Auto-recall aborted: cormBin unset");
       return null;
     }
 
@@ -273,23 +375,36 @@ export async function handleBeforeAgentStart(
       refs: candidates?.map((c) => c.ref),
     });
 
+    const mentionedSubsystems = detectSubsystemMentions(prompt);
+    const subTimeout = Math.min(50, Math.max(10, Math.floor(timeout * 0.25)));
+    const primedInvariants = mentionedSubsystems.length > 0
+      ? await primeSubsystemInvariants(env, mentionedSubsystems, subTimeout)
+      : [];
+
+    const allCandidates = [...(candidates ?? [])];
+    for (const primed of primedInvariants) {
+      if (!allCandidates.some((c) => c.ref === primed.ref)) {
+        allCandidates.push(primed);
+      }
+    }
+
     const budget = options?.budget ?? DEFAULT_AUTO_RECALL_BUDGET;
-    const excerptsMap = candidates && candidates.length > 0
-      ? await enrichCandidatesWithSessionHistory(candidates, prompt, ctx.cwd)
+    const excerptsMap = allCandidates.length > 0
+      ? await enrichCandidatesWithSessionHistory(allCandidates, prompt, ctx.cwd)
       : undefined;
-    const contextContent = candidates && candidates.length > 0
-      ? buildInjectedContext(candidates, budget, excerptsMap)
+    const contextContent = allCandidates.length > 0
+      ? buildInjectedContext(allCandidates, budget, excerptsMap, prompt)
       : "";
 
-    traceEvent("auto_recall", candidates && candidates.length > 0 ? "ok" : "skip", {
+    traceEvent("auto_recall", allCandidates.length > 0 ? "ok" : "skip", {
       query: prompt,
       filespec: fspec,
-      candidateCount: candidates?.length ?? 0,
-      selectedRefs: candidates?.map((c) => c.ref) ?? [],
+      candidateCount: allCandidates.length,
+      selectedRefs: allCandidates.map((c) => c.ref),
       contextReturned: Boolean(contextContent),
     }, { sessionId });
 
-    if (!candidates || candidates.length === 0) return null;
+    if (allCandidates.length === 0) return null;
 
     if (!contextContent) {
       debugLog("recall", "Auto-recall produced empty contextContent after filtering");

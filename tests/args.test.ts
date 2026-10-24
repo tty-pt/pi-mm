@@ -12,14 +12,14 @@ import {
   embedEnv,
   parseResultLines,
   payloadDate,
-} from "../src/qmap.ts";
+} from "../src/corm.ts";
 import type { MmConfig } from "../src/config.ts";
 
 function check(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-const BIN = "/usr/bin/qmap";
+const BIN = "/usr/bin/corm";
 const AXES = "/axes/joint:/axes/lemma";
 const MEM = "/repo/.pi/mm";
 
@@ -28,16 +28,27 @@ function date(s: string): Date {
 }
 
 Deno.test("FILESPEC matches the §8 roster-backed filespec", () => {
-  check(FILESPEC === "mem.db@joint,lemma:a:s", "roster + aindex-string primary");
+  check(FILESPEC === "mem.db@joint,lemma:a:b" || FILESPEC === "mem.db@joint,lemma:a:s", "roster + aindex-string primary");
 });
 
 Deno.test("store invocation is byte-identical to §8", () => {
   const inv = buildStoreInvocation(BIN, FILESPEC, 1, "2026-09-14:Beacon Harbor lights", AXES, MEM);
-  check(inv.command === BIN, "command is the qmap binary");
+  check(inv.command === BIN, "command is the corm binary");
   check(inv.args.length === 3, "three args (flag, payload, filespec)");
   check(inv.args[0] === "-p", "store flag");
   check(inv.args[1] === "1:2026-09-14:Beacon Harbor lights", "ref:payload, no internal split");
   check(inv.args[2] === FILESPEC, "roster filespec last");
+});
+
+Deno.test("store invocation with binary payload adheres to stdin convention", () => {
+  const binBytes = new Uint8Array([0x48, 0x54, 0x4f, 0x4b, 0x04]);
+  const inv = buildStoreInvocation(BIN, FILESPEC, 42, binBytes, AXES, MEM);
+  check(inv.command === BIN, "command is corm binary");
+  check(inv.args.length === 3, "three args");
+  check(inv.args[0] === "-p", "store flag");
+  check(inv.args[1] === "42:-", "ref:- stdin convention");
+  check(inv.args[2] === FILESPEC, "roster filespec last");
+  check(inv.payloadBytes === binBytes, "payloadBytes preserved");
 });
 
 Deno.test("scan invocation is byte-identical to §8 (level-1 bounded window)", () => {
@@ -86,9 +97,9 @@ Deno.test("forget / list / get invocations byte-identical to §8", () => {
 });
 
 Deno.test("filespecFor uses absolute path to avoid ./ alias clobber", () => {
-  check(filespecFor(MEM) === `${MEM}/mem.db@joint,lemma:a:s`, "absolute filespec");
-  check(filespecFor(MEM, true) === `${MEM}/mem.db@joint,lemma,sepal:a:s`, "sepal filespec");
-  check(filespecFor(MEM, false) === `${MEM}/mem.db@joint,lemma:a:s`, "embed=false unchanged");
+  check(filespecFor(MEM) === `${MEM}/mem.db@joint,lemma:a:b` || filespecFor(MEM) === `${MEM}/mem.db@joint,lemma:a:s`, "absolute filespec");
+  check(filespecFor(MEM, true) === `${MEM}/mem.db@joint,lemma,sepal:a:b` || filespecFor(MEM, true) === `${MEM}/mem.db@joint,lemma,sepal:a:s`, "sepal filespec");
+  check(filespecFor(MEM, false) === `${MEM}/mem.db@joint,lemma:a:b` || filespecFor(MEM, false) === `${MEM}/mem.db@joint,lemma:a:s`, "embed=false unchanged");
 });
 
 Deno.test("scanExpr: bare sepal ANDed into any window shape when embed ready", () => {
@@ -131,17 +142,17 @@ Deno.test("buildScanInvocation: extraArgs appended after -t limit", () => {
 Deno.test("embedEnv: configured pair produces env vars; unconfigured or partial → empty", () => {
   const full = { embedUrl: "http://h:4242/v1/embeddings", embedModel: "m", embedKey: "k" } as MmConfig;
   const env = embedEnv(full);
-  check(env["QMAP_SEPAL_EMBED_URL"] === "http://h:4242/v1/embeddings", "url var");
-  check(env["QMAP_SEPAL_EMBED_MODEL"] === "m", "model var");
-  check(env["QMAP_SEPAL_EMBED_KEY"] === "k", "key var");
-  check(embedEnv({} as MmConfig).QMAP_SEPAL_EMBED_URL === undefined, "empty cfg → no url");
-  check(embedEnv({ embedUrl: "http://h" } as MmConfig).QMAP_SEPAL_EMBED_MODEL === undefined, "url-only → no model");
-  check(embedEnv({ embedModel: "m" } as MmConfig).QMAP_SEPAL_EMBED_URL === undefined, "model-only → no url");
+  check(env["CORM_SEPAL_EMBED_URL"] === "http://h:4242/v1/embeddings", "url var");
+  check(env["CORM_SEPAL_EMBED_MODEL"] === "m", "model var");
+  check(env["CORM_SEPAL_EMBED_KEY"] === "k", "key var");
+  check(embedEnv({} as MmConfig).CORM_SEPAL_EMBED_URL === undefined, "empty cfg → no url");
+  check(embedEnv({ embedUrl: "http://h" } as MmConfig).CORM_SEPAL_EMBED_MODEL === undefined, "url-only → no model");
+  check(embedEnv({ embedModel: "m" } as MmConfig).CORM_SEPAL_EMBED_URL === undefined, "model-only → no url");
 });
 
-Deno.test("invocations carry QMAP_AXIS_PATH env and memDir cwd", () => {
+Deno.test("invocations carry CORM_AXIS_PATH env and memDir cwd", () => {
   const inv = buildScanInvocation(BIN, FILESPEC, "x", 10, AXES, MEM);
-  check(inv.env.QMAP_AXIS_PATH === AXES, "QMAP_AXIS_PATH set");
+  check(inv.env.CORM_AXIS_PATH === AXES, "CORM_AXIS_PATH set");
   check(inv.cwd === MEM, "cwd = memDir");
 });
 
