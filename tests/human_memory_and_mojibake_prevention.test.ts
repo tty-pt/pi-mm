@@ -171,15 +171,53 @@ Deno.test("human_memory: unprompted conversational and planning turns yield zero
     },
   };
 
-  // 1. "Review the above work, compared to my prompt." -> ZERO INJECTION
-  const reviewContext = buildInjectedContext([episodicCand], 1000, undefined, "Review the above work, compared to my prompt.");
-  assert.strictEqual(reviewContext, "", "Review turn must not be spammed with episodic memory");
+  // L2 invariant candidate
+  const invariantCand: FusedCandidate = {
+    ref: 10,
+    record: "2026-10-24:{}",
+    origin: "lemma",
+    rrfScore: 0.09,
+    envelope: {
+      level: "L2",
+      type: "invariant",
+      lifecycle: "supported",
+      summary: "Invariant: corm_open must alias live handles",
+      context: { project: "site", subsystem: "libcorm" },
+    },
+  };
+
+  // Active hypothesis candidate
+  const hypothesisCand: FusedCandidate = {
+    ref: 15,
+    record: "2026-10-24:{}",
+    origin: "lemma",
+    rrfScore: 0.08,
+    envelope: {
+      level: "L1",
+      type: "investigation",
+      lifecycle: "hypothesized",
+      summary: "Hypothesis: socket handles may also require aliasing table",
+      context: { project: "site", subsystem: "song" },
+    },
+  };
+
+  const pool = [episodicCand, invariantCand, hypothesisCand];
+
+  // 1. "Review the above work, compared to my prompt." -> ZERO INJECTION (even with L2 and hypothesis in pool!)
+  const reviewContext = buildInjectedContext(pool, 1000, undefined, "Review the above work, compared to my prompt.");
+  assert.strictEqual(reviewContext, "", "Review turn must not be spammed with episodic memory or invariants without subsystem mentions");
 
   // 2. "Ok. Glad you saw that. So plan a fix for the reamining." -> ZERO INJECTION
-  const planContext = buildInjectedContext([episodicCand], 1000, undefined, "Ok. Glad you saw that. So plan a fix for the reamining.");
-  assert.strictEqual(planContext, "", "Planning turn must not be spammed with episodic memory");
+  const planContext = buildInjectedContext(pool, 1000, undefined, "Ok. Glad you saw that. So plan a fix for the reamining.");
+  assert.strictEqual(planContext, "", "Planning turn must not be spammed with episodic memory or invariants without subsystem mentions");
 
-  // 3. Explicit memory question -> INJECTED
-  const explicitContext = buildInjectedContext([episodicCand], 1000, undefined, "What did I say about the plan in my initial request?");
+  // 3. Technical prompt mentioning "libcorm" -> ONLY libcorm invariant is primed, no episodic spam or song hypothesis
+  const technicalContext = buildInjectedContext(pool, 1000, undefined, "Fix the handle leak in libcorm");
+  assert.ok(technicalContext.includes("corm_open must alias live handles"), "Mentioned libcorm subsystem invariant must be primed");
+  assert.strictEqual(technicalContext.includes("socket handles may also require aliasing table"), false, "Unmentioned song hypothesis must be excluded");
+  assert.strictEqual(technicalContext.includes("Look at the plan"), false, "Unprompted episodic note must be excluded");
+
+  // 4. Explicit memory question -> INJECTED
+  const explicitContext = buildInjectedContext(pool, 1000, undefined, "What did I say about the plan in my initial request?");
   assert.ok(explicitContext.includes("Look at the plan"), "Explicit query must recall the memory");
 });

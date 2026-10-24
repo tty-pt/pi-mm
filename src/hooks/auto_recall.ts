@@ -48,6 +48,13 @@ export function detectSubsystemMentions(prompt: string): string[] {
       }
     }
   }
+  // Recognize database / db as libcorm subsystem alias
+  if (/\b(?:database|corm_open)\b/i.test(lower)) {
+    if (!matches.some((x) => x.name === "corm" || x.name === "libcorm")) {
+      const idx = lower.indexOf("database") >= 0 ? lower.indexOf("database") : lower.indexOf("corm_open");
+      matches.push({ name: "corm", index: idx });
+    }
+  }
   matches.sort((a, b) => a.index - b.index);
   return matches.map((m) => m.name);
 }
@@ -225,23 +232,59 @@ export function buildInjectedContext(
   const guidanceText = includeGuidance ? guidance : "";
 
   // True Mipmap LOD separation:
-  // L2 architectural knowledge, invariants, and active hypotheses are eligible for proactive priming.
-  // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent or subsystem tasks.
+  // L2 architectural knowledge, invariants, and active hypotheses are eligible for proactive priming on mentioned subsystems.
+  // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent.
   const isKnowledgeQuery = isDirectQuestion || isExplicitRecall;
-  const hasSubsystem = typeof prompt === "string" && detectSubsystemMentions(prompt).length > 0;
+  const mentionedSubsystems = typeof prompt === "string" ? detectSubsystemMentions(prompt) : [];
+  const hasSubsystem = mentionedSubsystems.length > 0;
   const isUnprompted = typeof prompt === "string" && !isKnowledgeQuery && !hasSubsystem;
 
+  // Requirement R3: Prompts lacking recall cues and subsystem mentions yield zero context injection
+  if (isUnprompted) {
+    return "";
+  }
+
   const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
-  const architecturalItems = valid.filter((c) =>
-    (c.envelope?.level === "L2" || c.envelope?.type === "invariant" || c.envelope?.lifecycle === "hypothesized") &&
-    !personaItems.includes(c)
-  );
-  const subsystemInvariants = architecturalItems.filter((c) =>
-    Boolean(c.envelope?.context?.subsystem) && c.envelope?.type === "invariant"
-  );
-  const generalMemories = isUnprompted
-    ? []
-    : valid.filter((c) => !personaItems.includes(c) && !subsystemInvariants.includes(c));
+
+  // Requirement R2: Proactive priming bounded strictly to mentioned subsystems
+  const subsystemInvariants = valid.filter((c) => {
+    if (c.envelope?.level !== "L2" && c.envelope?.type !== "invariant") return false;
+    if (personaItems.includes(c)) return false;
+    const sub = c.envelope?.context?.subsystem;
+    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+    if (hasSubsystem) {
+      return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
+    }
+    return true;
+  });
+
+  const activeHypotheses = valid.filter((c) => {
+    if (c.envelope?.lifecycle !== "hypothesized") return false;
+    if (personaItems.includes(c)) return false;
+    const sub = c.envelope?.context?.subsystem;
+    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+    if (hasSubsystem) {
+      return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
+    }
+    return true;
+  });
+
+  const generalMemories = valid.filter((c) => {
+    if (personaItems.includes(c) || subsystemInvariants.includes(c) || activeHypotheses.includes(c)) {
+      return false;
+    }
+    const sub = c.envelope?.context?.subsystem;
+    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+    // Exclude items belonging to unmentioned subsystems
+    if (hasSubsystem && normSub && !mentionedSubsystems.includes(normSub) && !mentionedSubsystems.includes(`lib${normSub}`)) {
+      return false;
+    }
+    // On technical turns without explicit recall intent, exclude conversational chat notes
+    if (hasSubsystem && !isKnowledgeQuery && c.envelope?.level === "L1" && c.envelope?.type === "note") {
+      return false;
+    }
+    return true;
+  });
 
   let primedText = "";
   if (personaItems.length > 0) {
@@ -257,22 +300,21 @@ export function buildInjectedContext(
     }
   }
 
-  // Token budgeting: subtract primed blocks from effective budget for general memories
+  // Token budgeting: subtract primed blocks from effective budget for memories
   const effectiveBudget = Math.max(100, budget - guidanceText.length - primedText.length);
 
-  const activeGeneral = [...architecturalItems.filter((c) => !subsystemInvariants.includes(c)), ...generalMemories];
-  // Deduplicate by ref
+  const itemsForContent = [...activeHypotheses, ...generalMemories];
   const seenRefs = new Set<number>();
-  const dedupedGeneral: FusedCandidate[] = [];
-  for (const c of activeGeneral) {
-    if (!seenRefs.has(c.ref)) {
-      seenRefs.add(c.ref);
-      dedupedGeneral.push(c);
+  const dedupedItems: FusedCandidate[] = [];
+  for (const item of itemsForContent) {
+    if (!seenRefs.has(item.ref)) {
+      seenRefs.add(item.ref);
+      dedupedItems.push(item);
     }
   }
 
-  let content = dedupedGeneral.length > 0 ? header : "";
-  for (const cand of dedupedGeneral) {
+  let content = dedupedItems.length > 0 ? header : "";
+  for (const cand of dedupedItems) {
     const excerpts = excerptsMap?.get(cand.ref);
     const entry = (excerpts && excerpts.length > 0
       ? formatMemoryEntryWithExcerpts(cand, excerpts)
