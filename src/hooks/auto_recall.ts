@@ -225,14 +225,20 @@ export function buildInjectedContext(
   const guidanceText = includeGuidance ? guidance : "";
 
   // True Mipmap LOD separation:
-  // L2 invariants and architectural knowledge are eligible for proactive priming.
+  // L2 architectural knowledge, invariants, and active hypotheses are eligible for proactive priming.
   // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent or subsystem tasks.
   const isKnowledgeQuery = isDirectQuestion || isExplicitRecall;
   const hasSubsystem = typeof prompt === "string" && detectSubsystemMentions(prompt).length > 0;
   const isUnprompted = typeof prompt === "string" && !isKnowledgeQuery && !hasSubsystem;
 
   const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
-  const subsystemInvariants = valid.filter((c) => (c.envelope?.level === "L2" || c.envelope?.type === "invariant") && (Boolean(c.envelope?.context?.subsystem) || c.envelope?.type === "invariant"));
+  const architecturalItems = valid.filter((c) =>
+    (c.envelope?.level === "L2" || c.envelope?.type === "invariant" || c.envelope?.lifecycle === "hypothesized") &&
+    !personaItems.includes(c)
+  );
+  const subsystemInvariants = architecturalItems.filter((c) =>
+    Boolean(c.envelope?.context?.subsystem) && c.envelope?.type === "invariant"
+  );
   const generalMemories = isUnprompted
     ? []
     : valid.filter((c) => !personaItems.includes(c) && !subsystemInvariants.includes(c));
@@ -254,15 +260,25 @@ export function buildInjectedContext(
   // Token budgeting: subtract primed blocks from effective budget for general memories
   const effectiveBudget = Math.max(100, budget - guidanceText.length - primedText.length);
 
-  let content = generalMemories.length > 0 ? header : "";
-  for (const cand of generalMemories) {
+  const activeGeneral = [...architecturalItems.filter((c) => !subsystemInvariants.includes(c)), ...generalMemories];
+  // Deduplicate by ref
+  const seenRefs = new Set<number>();
+  const dedupedGeneral: FusedCandidate[] = [];
+  for (const c of activeGeneral) {
+    if (!seenRefs.has(c.ref)) {
+      seenRefs.add(c.ref);
+      dedupedGeneral.push(c);
+    }
+  }
+
+  let content = dedupedGeneral.length > 0 ? header : "";
+  for (const cand of dedupedGeneral) {
     const excerpts = excerptsMap?.get(cand.ref);
     const entry = (excerpts && excerpts.length > 0
       ? formatMemoryEntryWithExcerpts(cand, excerpts)
       : formatCompactMemoryEntry(cand)) + "\n";
 
     if (content.length + entry.length > effectiveBudget) {
-      // If entry with excerpts exceeds budget, fall back to compact entry without excerpts
       if (excerpts && excerpts.length > 0) {
         const compactEntry = formatCompactMemoryEntry(cand) + "\n";
         if (content.length + compactEntry.length <= effectiveBudget) {
