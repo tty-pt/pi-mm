@@ -48,11 +48,10 @@ export function detectSubsystemMentions(prompt: string): string[] {
       }
     }
   }
-  // Recognize database / db as libcorm subsystem alias
-  if (/\b(?:database|corm_open)\b/i.test(lower)) {
+  // Recognize corm_open symbol as corm subsystem alias
+  if (/\bcorm_open\b/i.test(lower)) {
     if (!matches.some((x) => x.name === "corm" || x.name === "libcorm")) {
-      const idx = lower.indexOf("database") >= 0 ? lower.indexOf("database") : lower.indexOf("corm_open");
-      matches.push({ name: "corm", index: idx });
+      matches.push({ name: "corm", index: lower.indexOf("corm_open") });
     }
   }
   matches.sort((a, b) => a.index - b.index);
@@ -247,27 +246,25 @@ export function buildInjectedContext(
   const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
 
   // Requirement R2: Proactive priming bounded strictly to mentioned subsystems
-  const subsystemInvariants = valid.filter((c) => {
-    if (c.envelope?.level !== "L2" && c.envelope?.type !== "invariant") return false;
-    if (personaItems.includes(c)) return false;
-    const sub = c.envelope?.context?.subsystem;
-    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
-    if (hasSubsystem) {
-      return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
-    }
-    return true;
-  });
+  const subsystemInvariants = hasSubsystem
+    ? valid.filter((c) => {
+        if (c.envelope?.level !== "L2" && c.envelope?.type !== "invariant") return false;
+        if (personaItems.includes(c)) return false;
+        const sub = c.envelope?.context?.subsystem;
+        const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+        return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
+      })
+    : [];
 
-  const activeHypotheses = valid.filter((c) => {
-    if (c.envelope?.lifecycle !== "hypothesized") return false;
-    if (personaItems.includes(c)) return false;
-    const sub = c.envelope?.context?.subsystem;
-    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
-    if (hasSubsystem) {
-      return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
-    }
-    return true;
-  });
+  const activeHypotheses = hasSubsystem
+    ? valid.filter((c) => {
+        if (c.envelope?.lifecycle !== "hypothesized") return false;
+        if (personaItems.includes(c)) return false;
+        const sub = c.envelope?.context?.subsystem;
+        const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+        return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
+      })
+    : [];
 
   const generalMemories = valid.filter((c) => {
     if (personaItems.includes(c) || subsystemInvariants.includes(c) || activeHypotheses.includes(c)) {
