@@ -93,7 +93,10 @@ export function isMemoryRecallPrompt(prompt?: string): boolean {
   if (/^(?:do\s+you\s+(?:remember|recall)|what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+(?:i|we)\s+(?:say|tell|mention|decide|discuss)|did\s+i\s+(?:mention|tell|say)|can\s+you\s+(?:remember|recall)|remind\s+me|have\s+we\s+discussed|did\s+we\s+talk\s+about)\b/i.test(p)) {
     return true;
   }
-  if (/\b(?:did\s+(?:i|we|he|she|they)\s+(?:mention|say|discuss|talk\s+about|fly|agree)|were\s+we\s+(?:talking|discussing)\s+about)\b/i.test(p)) {
+  if (/\b(?:did\s+(?:i|we|he|she|they)\s+(?:\w+\s+)?(?:mention|say|discuss|talk\s+about|fly|agree|use|mean|decide)|were\s+we\s+(?:talking|discussing)\s+about)\b/i.test(p)) {
+    return true;
+  }
+  if (/^(?:what\s+(?:standard|rule|policy|convention|format|approach|method)\s+(?:applies|is\s+used|do\s+we\s+use))\b/i.test(p)) {
     return true;
   }
   return false;
@@ -223,18 +226,16 @@ export function buildInjectedContext(
 
   // True Mipmap LOD separation:
   // L2 invariants and architectural knowledge are eligible for proactive priming.
-  // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent.
-  const isUnprompted = typeof prompt === "string" && !isDirectQuestion && !isExplicitRecall;
-  const personaItems = typeof prompt === "string"
-    ? valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user")
-    : [];
-  const invariantItems = valid.filter((c) =>
-    (c.envelope?.level === "L2" || c.envelope?.type === "invariant") ||
-    (Boolean(c.envelope?.context?.subsystem) && c.envelope?.lifecycle === "hypothesized")
-  );
+  // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent or subsystem tasks.
+  const isKnowledgeQuery = isDirectQuestion || isExplicitRecall;
+  const hasSubsystem = typeof prompt === "string" && detectSubsystemMentions(prompt).length > 0;
+  const isUnprompted = typeof prompt === "string" && !isKnowledgeQuery && !hasSubsystem;
+
+  const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
+  const subsystemInvariants = valid.filter((c) => (c.envelope?.level === "L2" || c.envelope?.type === "invariant") && (Boolean(c.envelope?.context?.subsystem) || c.envelope?.type === "invariant"));
   const generalMemories = isUnprompted
     ? []
-    : valid.filter((c) => !personaItems.includes(c) && !invariantItems.includes(c));
+    : valid.filter((c) => !personaItems.includes(c) && !subsystemInvariants.includes(c));
 
   let primedText = "";
   if (personaItems.length > 0) {
@@ -243,13 +244,18 @@ export function buildInjectedContext(
       primedText += `- ${p.envelope?.summary || p.record}\n`;
     }
   }
+  if (subsystemInvariants.length > 0) {
+    primedText += "\n[Primed Subsystem Invariants]\n";
+    for (const s of subsystemInvariants.slice(0, 2)) {
+      primedText += formatCompactMemoryEntry(s) + "\n";
+    }
+  }
 
-  // Token budgeting: subtract primed blocks from effective budget for memories
+  // Token budgeting: subtract primed blocks from effective budget for general memories
   const effectiveBudget = Math.max(100, budget - guidanceText.length - primedText.length);
 
-  const activeMemories = [...invariantItems, ...generalMemories];
-  let content = activeMemories.length > 0 ? header : "";
-  for (const cand of activeMemories) {
+  let content = generalMemories.length > 0 ? header : "";
+  for (const cand of generalMemories) {
     const excerpts = excerptsMap?.get(cand.ref);
     const entry = (excerpts && excerpts.length > 0
       ? formatMemoryEntryWithExcerpts(cand, excerpts)
