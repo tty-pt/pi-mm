@@ -90,7 +90,13 @@ export async function primeSubsystemInvariants(
 export function isMemoryRecallPrompt(prompt?: string): boolean {
   if (!prompt) return false;
   const p = prompt.trim().toLowerCase();
-  return /^(?:do\s+you\s+(?:remember|recall)|what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+(?:i|we)\s+(?:say|tell|mention|decide|discuss)|did\s+i\s+(?:mention|tell|say)|can\s+you\s+(?:remember|recall)|remind\s+me|have\s+we\s+discussed|did\s+we\s+talk\s+about)\b/i.test(p);
+  if (/^(?:do\s+you\s+(?:remember|recall)|what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+(?:i|we)\s+(?:say|tell|mention|decide|discuss)|did\s+i\s+(?:mention|tell|say)|can\s+you\s+(?:remember|recall)|remind\s+me|have\s+we\s+discussed|did\s+we\s+talk\s+about)\b/i.test(p)) {
+    return true;
+  }
+  if (/\b(?:did\s+(?:i|we|he|she|they)\s+(?:mention|say|discuss|talk\s+about|fly|agree)|were\s+we\s+(?:talking|discussing)\s+about)\b/i.test(p)) {
+    return true;
+  }
+  return false;
 }
 
 export function isDirectMemoryQuestion(prompt?: string): boolean {
@@ -215,10 +221,20 @@ export function buildInjectedContext(
   const includeGuidance = !isDirectQuestion && budget >= 600;
   const guidanceText = includeGuidance ? guidance : "";
 
-  // Separate cognitive persona and proactive subsystem invariant priming
-  const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
-  const subsystemInvariants = valid.filter((c) => c.envelope?.level === "L2" && Boolean(c.envelope?.context?.subsystem) && c.envelope?.type === "invariant");
-  const generalMemories = valid.filter((c) => !personaItems.includes(c) && !subsystemInvariants.includes(c));
+  // True Mipmap LOD separation:
+  // L2 invariants and architectural knowledge are eligible for proactive priming.
+  // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent.
+  const isUnprompted = typeof prompt === "string" && !isDirectQuestion && !isExplicitRecall;
+  const personaItems = typeof prompt === "string"
+    ? valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user")
+    : [];
+  const invariantItems = valid.filter((c) =>
+    (c.envelope?.level === "L2" || c.envelope?.type === "invariant") ||
+    (Boolean(c.envelope?.context?.subsystem) && c.envelope?.lifecycle === "hypothesized")
+  );
+  const generalMemories = isUnprompted
+    ? []
+    : valid.filter((c) => !personaItems.includes(c) && !invariantItems.includes(c));
 
   let primedText = "";
   if (personaItems.length > 0) {
@@ -227,18 +243,13 @@ export function buildInjectedContext(
       primedText += `- ${p.envelope?.summary || p.record}\n`;
     }
   }
-  if (subsystemInvariants.length > 0) {
-    primedText += "\n[Primed Subsystem Invariants]\n";
-    for (const s of subsystemInvariants.slice(0, 2)) {
-      primedText += formatCompactMemoryEntry(s) + "\n";
-    }
-  }
 
-  // Token budgeting: subtract primed blocks from effective budget for general memories
+  // Token budgeting: subtract primed blocks from effective budget for memories
   const effectiveBudget = Math.max(100, budget - guidanceText.length - primedText.length);
 
-  let content = generalMemories.length > 0 ? header : "";
-  for (const cand of generalMemories) {
+  const activeMemories = [...invariantItems, ...generalMemories];
+  let content = activeMemories.length > 0 ? header : "";
+  for (const cand of activeMemories) {
     const excerpts = excerptsMap?.get(cand.ref);
     const entry = (excerpts && excerpts.length > 0
       ? formatMemoryEntryWithExcerpts(cand, excerpts)
@@ -261,9 +272,11 @@ export function buildInjectedContext(
     content += entry;
   }
 
-  if (content.trim() === header.trim() && !primedText) return "";
+  const hasMemories = (content.trim() !== "" && content.trim() !== header.trim()) || primedText.trim() !== "";
+  if (!hasMemories) return "";
+
   let full = content.trim();
-  if (primedText) full += primedText;
+  if (primedText) full = (full ? full + "\n" : "") + primedText.trim();
   if (guidanceText) full += guidanceText;
   if (full.length > budget) {
     return full.slice(0, budget);

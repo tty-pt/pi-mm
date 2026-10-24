@@ -162,11 +162,16 @@ Deno.test("auto_recall: prompt-adaptive compression omits guidance for direct me
   assert.ok(!directContext.includes("Usage guidelines:"), "Direct questions must omit guidance block");
   assert.ok(directContext.includes("cherry tree"));
 
-  // Specific query or normal turn: guidance included
+  // Specific recall query includes guidance block with memories
   assert.strictEqual(isDirectMemoryQuestion("Do you remember what dog I adopted in the mountains?"), false);
+  const specificContext = buildInjectedContext(candidates, 1000, undefined, "Do you remember what dog I adopted in the mountains?");
+  assert.ok(specificContext.includes("Usage guidelines:"), "Specific recall prompt must include guidance block");
+  assert.ok(specificContext.includes("cherry tree"));
+
+  // Normal coding/conversational prompt without explicit recall returns empty context
   assert.strictEqual(isDirectMemoryQuestion("Let's refactor the database connector"), false);
   const normalContext = buildInjectedContext(candidates, 1000, undefined, "Let's refactor the database connector");
-  assert.ok(normalContext.includes("Usage guidelines:"), "Normal prompt must include guidance block");
+  assert.strictEqual(normalContext, "", "Normal unprompted prompt must inject zero memory context");
 });
 
 function fakeRunner(results: PiExecResult[]): CormRunner {

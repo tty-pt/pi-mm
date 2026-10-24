@@ -155,3 +155,31 @@ Deno.test("human_memory: buildInjectedContext suppresses question-memories and c
   const contextFromValid = buildInjectedContext([validCand], 1000, undefined, "Do you remember me mentioning my grandfather?");
   assert.ok(contextFromValid.includes("cherry tree"), "Valid relevant memory must be injected on explicit recall");
 });
+
+Deno.test("human_memory: unprompted conversational and planning turns yield zero context injection", () => {
+  // L1 episodic candidate (like Ref 4: "Look at the plan and my initial request...")
+  const episodicCand: FusedCandidate = {
+    ref: 4,
+    record: "2026-10-24:{}",
+    origin: "lemma",
+    rrfScore: 0.1,
+    envelope: {
+      level: "L1",
+      type: "note",
+      lifecycle: "observed",
+      summary: "Look at the plan and my initial request. That's not exactly what I asked for...",
+    },
+  };
+
+  // 1. "Review the above work, compared to my prompt." -> ZERO INJECTION
+  const reviewContext = buildInjectedContext([episodicCand], 1000, undefined, "Review the above work, compared to my prompt.");
+  assert.strictEqual(reviewContext, "", "Review turn must not be spammed with episodic memory");
+
+  // 2. "Ok. Glad you saw that. So plan a fix for the reamining." -> ZERO INJECTION
+  const planContext = buildInjectedContext([episodicCand], 1000, undefined, "Ok. Glad you saw that. So plan a fix for the reamining.");
+  assert.strictEqual(planContext, "", "Planning turn must not be spammed with episodic memory");
+
+  // 3. Explicit memory question -> INJECTED
+  const explicitContext = buildInjectedContext([episodicCand], 1000, undefined, "What did I say about the plan in my initial request?");
+  assert.ok(explicitContext.includes("Look at the plan"), "Explicit query must recall the memory");
+});
