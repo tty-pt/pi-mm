@@ -1,4 +1,4 @@
-import { loadConfig, resolveCormBin, resolveAxisPath } from "../src/config.ts";
+import { readMmConfig, resolveCormBin, resolveAxisPath } from "../src/config.ts";
 import { DaemonCormRunner } from "../src/daemon.ts";
 import { ShellCormRunner, buildListInvocation, buildGetInvocation, buildStoreInvocation, filespecFor, embedEnv } from "../src/corm.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
@@ -7,23 +7,10 @@ import { join, isAbsolute } from "node:path";
 
 async function compactDatabase() {
   const cwd = Deno.cwd();
-  const settingsPath = join(cwd, ".pi", "settings.json");
-  let rawMm: Record<string, unknown> = {};
-  try {
-    const rawText = await Deno.readTextFile(settingsPath);
-    const raw = JSON.parse(rawText);
-    rawMm = (raw && typeof raw === "object" && (raw["pi-mm"] || raw["mm"])) || {};
-  } catch {
-    /* ignore fallback defaults */
-  }
-
-  const rawMemDir = (rawMm["memDir"] as string | undefined) || join(cwd, ".pi", "mm");
+  const cfg = await readMmConfig(cwd);
+  const rawMemDir = cfg.memDir || join(cwd, ".pi", "mm");
   const memDir = isAbsolute(rawMemDir) ? rawMemDir : join(cwd, rawMemDir);
-
-  const cfg = loadConfig({
-    memDir,
-    ...rawMm,
-  });
+  cfg.memDir = memDir;
 
   const pathDirs = (Deno.env.get("PATH") || "").split(":");
   const resolved = resolveCormBin(cfg, cwd, pathDirs, (p) => {

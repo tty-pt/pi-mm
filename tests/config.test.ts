@@ -105,6 +105,135 @@ Deno.test("readMmConfig: no settings file → defaults", async () => {
   check(cfg.memDir === ".pi/mm", "defaults on missing settings");
 });
 
+Deno.test("readMmConfig: applies global settings when project settings is absent", async () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({
+        "pi-mm": {
+          embedUrl: "http://127.0.0.1:11434/v1/embeddings",
+          embedModel: "nomic-embed-text",
+          embedKey: "global-secret",
+        },
+      }),
+    );
+
+    const cfg = await readMmConfig(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(cfg.embedUrl === "http://127.0.0.1:11434/v1/embeddings", "embedUrl inherited from global");
+    check(cfg.embedModel === "nomic-embed-text", "embedModel inherited from global");
+    check(cfg.embedKey === "global-secret", "embedKey inherited from global");
+    check(sepalConfigured(cfg) === true, "sepalConfigured is true from global settings");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
+  }
+});
+
+Deno.test("readMmConfig: project settings override global settings", async () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({
+        "pi-mm": {
+          embedUrl: "http://global-host:11434/v1/embeddings",
+          embedModel: "global-model",
+          scanLimit: 5,
+        },
+      }),
+    );
+
+    const projectPiDir = join(fakeCwd, ".pi");
+    Deno.mkdirSync(projectPiDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(projectPiDir, "settings.json"),
+      JSON.stringify({
+        "pi-mm": {
+          embedUrl: "http://project-host:11434/v1/embeddings",
+          scanLimit: 20,
+        },
+      }),
+    );
+
+    const cfg = await readMmConfig(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(cfg.embedUrl === "http://project-host:11434/v1/embeddings", "project embedUrl overrides global");
+    check(cfg.embedModel === "global-model", "global embedModel preserved when unset in project");
+    check(cfg.scanLimit === 20, "project scanLimit overrides global");
+    check(sepalConfigured(cfg) === true, "sepalConfigured is true");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
+  }
+});
+
+Deno.test("readMmConfig: project settings without pi-mm preserves global settings", async () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({
+        "pi-mm": {
+          embedUrl: "http://127.0.0.1:11434/v1/embeddings",
+          embedModel: "bge-m3",
+        },
+      }),
+    );
+
+    const projectPiDir = join(fakeCwd, ".pi");
+    Deno.mkdirSync(projectPiDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(projectPiDir, "settings.json"),
+      JSON.stringify({
+        "theme": "tokyo-night",
+      }),
+    );
+
+    const cfg = await readMmConfig(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(cfg.embedUrl === "http://127.0.0.1:11434/v1/embeddings", "global embedUrl used");
+    check(cfg.embedModel === "bge-m3", "global embedModel used");
+    check(sepalConfigured(cfg) === true, "sepalConfigured is true");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
+  }
+});
+
+Deno.test("readMmConfig: supports mm key in global settings", async () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({
+        "mm": {
+          embedUrl: "http://127.0.0.1:11434/v1/embeddings",
+          embedModel: "all-minilm",
+        },
+      }),
+    );
+
+    const cfg = await readMmConfig(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(cfg.embedUrl === "http://127.0.0.1:11434/v1/embeddings", "mm key embedUrl used");
+    check(cfg.embedModel === "all-minilm", "mm key embedModel used");
+    check(sepalConfigured(cfg) === true, "sepalConfigured is true");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
+  }
+});
+
 Deno.test("resolveMemDir: handles both absolute and relative directories without double-rooting", () => {
   const rel = resolveMemDir("/home/user/project", ".pi/mm");
   check(rel === "/home/user/project/.pi/mm", "relative resolves under cwd");
@@ -119,6 +248,51 @@ Deno.test("resolveAdvancedTools: defaults to false when unconfigured", () => {
     check(resolveAdvancedTools(dir) === false, "defaults to false");
   } finally {
     Deno.removeSync(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveAdvancedTools: falls back to global settings when project settings is absent", () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({ "pi-mm": { advancedTools: true } }),
+    );
+
+    const adv = resolveAdvancedTools(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(adv === true, "reads advancedTools true from global settings");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
+  }
+});
+
+Deno.test("resolveAdvancedTools: project setting overrides global setting", () => {
+  const fakeHome = Deno.makeTempDirSync({ prefix: "mm-global-home-" });
+  const fakeCwd = Deno.makeTempDirSync({ prefix: "mm-project-cwd-" });
+  try {
+    const globalAgentDir = join(fakeHome, ".pi", "agent");
+    Deno.mkdirSync(globalAgentDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(globalAgentDir, "settings.json"),
+      JSON.stringify({ "pi-mm": { advancedTools: true } }),
+    );
+
+    const projectPiDir = join(fakeCwd, ".pi");
+    Deno.mkdirSync(projectPiDir, { recursive: true });
+    Deno.writeTextFileSync(
+      join(projectPiDir, "settings.json"),
+      JSON.stringify({ "pi-mm": { advancedTools: false } }),
+    );
+
+    const adv = resolveAdvancedTools(fakeCwd, { HOME: fakeHome, PI_SETTINGS_PATH: "", PI_CODING_AGENT_DIR: "" });
+    check(adv === false, "project false overrides global true");
+  } finally {
+    Deno.removeSync(fakeHome, { recursive: true });
+    Deno.removeSync(fakeCwd, { recursive: true });
   }
 });
 

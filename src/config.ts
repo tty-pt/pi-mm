@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 export type CaptureMode = "all" | "keyword" | "judge" | "off";
 export type JudgeMode = "auto" | "heuristic" | "off";
@@ -432,33 +433,133 @@ export function runtimeEnv(): Record<string, string | undefined> {
   return env;
 }
 
-export async function readMmConfig(cwd: string, env: Record<string, string | undefined> = {}): Promise<MmConfig> {
-  let raw: unknown;
-  try {
-    const text = await readFile(join(cwd, ".pi", "settings.json"), "utf8");
-    const parsed: unknown = JSON.parse(text);
-    raw = typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)["pi-mm"]
-      : undefined;
-  } catch {
-    raw = undefined;
-  }
-  return applyEnv(loadConfig(raw), { ...runtimeEnv(), ...env });
+/**
+ * Extract pi-mm or mm configuration object from parsed JSON.
+ */
+export function extractMmRaw(parsed: unknown): Record<string, unknown> | undefined {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const rec = parsed as Record<string, unknown>;
+  const raw = rec["pi-mm"] ?? rec["mm"];
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : undefined;
 }
 
-export function resolveAdvancedTools(cwd = "."): boolean {
-  const env = runtimeEnv();
+/**
+ * Merge two raw config objects with override precedence (overrides win).
+ */
+export function mergeRawConfigs(
+  base?: Record<string, unknown>,
+  overrides?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!base && !overrides) return undefined;
+  if (!base) return overrides;
+  if (!overrides) return base;
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, val] of Object.entries(overrides)) {
+    if (val !== undefined) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+/**
+ * Candidate file paths for global settings.
+ * Checks in precedence order:
+ * 1. PI_SETTINGS_PATH (if set)
+ * 2. PI_CODING_AGENT_DIR/settings.json (if PI_CODING_AGENT_DIR set)
+ * 3. ~/.pi/agent/settings.json (standard global settings)
+ * 4. ~/.pi/settings.json (fallback user settings)
+ */
+export function resolveGlobalSettingsPaths(env: Record<string, string | undefined> = runtimeEnv()): string[] {
+  const paths: string[] = [];
+  if (env["PI_SETTINGS_PATH"]) {
+    paths.push(env["PI_SETTINGS_PATH"]);
+  }
+  const agentDir = env["PI_CODING_AGENT_DIR"];
+  if (agentDir) {
+    paths.push(join(agentDir, "settings.json"));
+  }
+  try {
+    const home = env["HOME"] || env["USERPROFILE"] || homedir();
+    if (home) {
+      paths.push(join(home, ".pi", "agent", "settings.json"));
+      paths.push(join(home, ".pi", "settings.json"));
+    }
+  } catch {
+    const home = env["HOME"] || env["USERPROFILE"] || "";
+    if (home) {
+      paths.push(join(home, ".pi", "agent", "settings.json"));
+      paths.push(join(home, ".pi", "settings.json"));
+    }
+  }
+  return Array.from(new Set(paths));
+}
+
+export async function readSettingsFile(filePath: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const text = await readFile(filePath, "utf8");
+    const parsed: unknown = JSON.parse(text);
+    return extractMmRaw(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+export function readSettingsFileSync(filePath: string): Record<string, unknown> | undefined {
+  try {
+    const text = readFileSync(filePath, "utf8");
+    const parsed: unknown = JSON.parse(text);
+    return extractMmRaw(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function readMmConfig(cwd: string, env: Record<string, string | undefined> = {}): Promise<MmConfig> {
+  const mergedEnv = { ...runtimeEnv(), ...env };
+  const projectSettingsPath = join(cwd, ".pi", "settings.json");
+  const projectRaw = await readSettingsFile(projectSettingsPath);
+
+  let globalRaw: Record<string, unknown> | undefined;
+  const globalCandidates = resolveGlobalSettingsPaths(mergedEnv);
+  for (let i = globalCandidates.length - 1; i >= 0; i--) {
+    const candidate = globalCandidates[i];
+    if (candidate === projectSettingsPath) continue;
+    const raw = await readSettingsFile(candidate);
+    if (raw) {
+      globalRaw = mergeRawConfigs(globalRaw, raw);
+    }
+  }
+
+  const effectiveRaw = mergeRawConfigs(globalRaw, projectRaw);
+  return applyEnv(loadConfig(effectiveRaw), mergedEnv);
+}
+
+export function resolveAdvancedTools(
+  cwd = ".",
+  env: Record<string, string | undefined> = runtimeEnv(),
+): boolean {
   const envAdv = env["PI_MM_ADVANCED_TOOLS"];
   if (typeof envAdv === "string") {
     return envAdv === "1" || envAdv === "true";
   }
-  try {
-    const text = readFileSync(join(cwd, ".pi", "settings.json"), "utf8");
-    const parsed = JSON.parse(text);
-    const mm = parsed?.["pi-mm"] ?? parsed?.["mm"];
-    if (typeof mm?.advancedTools === "boolean") return mm.advancedTools;
-  } catch {
-    // Non-blocking fallback
+
+  const projectSettingsPath = join(cwd, ".pi", "settings.json");
+  const projectRaw = readSettingsFileSync(projectSettingsPath);
+  if (typeof projectRaw?.["advancedTools"] === "boolean") {
+    return projectRaw["advancedTools"] as boolean;
   }
+
+  const globalCandidates = resolveGlobalSettingsPaths(env);
+  for (const candidate of globalCandidates) {
+    if (candidate === projectSettingsPath) continue;
+    const globalRaw = readSettingsFileSync(candidate);
+    if (typeof globalRaw?.["advancedTools"] === "boolean") {
+      return globalRaw["advancedTools"] as boolean;
+    }
+  }
+
   return false;
 }
