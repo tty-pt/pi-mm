@@ -384,7 +384,7 @@ async function runRealBackendBenchmark(_siteRoot?: string): Promise<void> {
     nowProvider: () => new Date("2026-10-15T12:00:00Z"),
     cfg: {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin,
       axisLibs,
       memDir: tmpDir,
     },

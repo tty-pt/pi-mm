@@ -2,13 +2,13 @@ import assert from "node:assert";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { DaemonQmapRunner } from "../src/daemon.ts";
-import { buildScanInvocation, type Invocation } from "../src/qmap.ts";
+import { DaemonCormRunner } from "../src/daemon.ts";
+import { buildScanInvocation, type Invocation } from "../src/corm.ts";
 
 const home = Deno.env.get("HOME") || "";
 const cormAxisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 function spawnCormd(dbFilespec: string, sockPath: string) {
   const env: Record<string, string> = {
@@ -51,7 +51,7 @@ Deno.test("forwarding 1: CLI PUT, DELETE, and DELETE ALL execute through residen
   }
 
   try {
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -125,7 +125,7 @@ Deno.test("forwarding 2: forwarded mutations persist cleanly across daemon resta
       await new Promise((r) => setTimeout(r, 50));
     }
 
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 
@@ -212,7 +212,7 @@ Deno.test("forwarding 5: database mismatch is rejected explicitly by cormd", asy
   try {
     const otherDb = join(tmpDir, "other.db@joint,lemma:a:s");
     // Forwarding request with mismatching target db must be rejected by cormd
-    const runner = new DaemonQmapRunner(sockPath, {
+    const runner = new DaemonCormRunner(sockPath, {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
     });
 

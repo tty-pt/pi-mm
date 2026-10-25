@@ -3,13 +3,13 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { DaemonQmapRunner, isDaemonLockHeld } from "../src/daemon.ts";
-import { buildStoreInvocation, buildScanInvocation, type Invocation } from "../src/qmap.ts";
+import { DaemonCormRunner, isDaemonLockHeld } from "../src/daemon.ts";
+import { buildStoreInvocation, buildScanInvocation, type Invocation } from "../src/corm.ts";
 
 const home = Deno.env.get("HOME") || "";
 const cormAxisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 function spawnCormd(dbFilespec: string, sockPath: string, envOverrides: Record<string, string> = {}) {
   const env: Record<string, string> = {
@@ -88,7 +88,7 @@ Deno.test("regression 2: QUERY error recovery cleanly unwinds without double-fre
     const fallback = {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 })
     };
-    const runner = new DaemonQmapRunner(sockPath, fallback);
+    const runner = new DaemonCormRunner(sockPath, fallback);
 
     // 1. Seed a record
     const putRes = await runner.run(buildStoreInvocation("corm", fspec, 1, "2026-10-15:query error recovery test", cormAxisPath, tmpDir));
@@ -227,7 +227,7 @@ Deno.test("regression 5: secondary index failure is detected and returned as exp
     const fallback = {
       run: (_inv: Invocation) => Promise.resolve({ stdout: "", stderr: "", code: 0 })
     };
-    const runner = new DaemonQmapRunner(sockPath, fallback);
+    const runner = new DaemonCormRunner(sockPath, fallback);
 
     // Storing a payload without a valid date/timestamp prefix causes libjoint to reject the store
     // cormd must detect nfail > 0 from corm_fanout_store and return an ERR response!

@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, sepalConfigured } from "./index.ts";
-import { filespecFor, buildGetInvocation, buildListInvocation, embedEnv } from "../qmap.ts";
+import { filespecFor, buildGetInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { decodePayload } from "../payload.ts";
 import { parseBareRefs } from "../resolve.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord } from "../types.ts";
@@ -27,7 +27,8 @@ export async function fetchEnvelope(
   eEnv: Record<string, string>,
   ref: number,
 ): Promise<{ date: string; envelope: MemoryEnvelope } | null> {
-  const res = await env.runner.run(buildGetInvocation(env.cfg.qmapBin, fspec, ref, axes, cwd, eEnv));
+  const bin = env.cfg.cormBin;
+  const res = await env.runner.run(buildGetInvocation(bin, fspec, ref, axes, cwd, eEnv));
   if (res.code !== 0 || !res.stdout.trim()) return null;
   return decodePayload(res.stdout.trim());
 }
@@ -152,11 +153,12 @@ export function makeTraverseTool(envSource: EnvSource): PiToolSpec {
         const direction = (params["direction"] as "down" | "up") || "down";
         const maxDepth = Math.min(Math.max(Number(params["depth"]) || 2, 1), 5);
 
+        const bin = env.cfg.cormBin;
         if (!Number.isInteger(ref) || ref < 0) {
           return { content: [{ type: "text", text: "mm traverse: invalid ref" }], details: { error: "invalid-ref" } };
         }
-        if (env.cfg.qmapBin === "") {
-          return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap" } };
+        if (!bin) {
+          return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
         }
 
         const embed = sepalConfigured(env.cfg);
@@ -170,7 +172,7 @@ export function makeTraverseTool(envSource: EnvSource): PiToolSpec {
         if (direction === "down") {
           tree = await traverseDown(env, fspec, axes, cwd, eEnv, ref, 0, maxDepth, visited);
         } else {
-          const listRes = await env.runner.run(buildListInvocation(env.cfg.qmapBin, fspec, axes, cwd, eEnv));
+          const listRes = await env.runner.run(buildListInvocation(bin, fspec, axes, cwd, eEnv));
           const allRefs = parseBareRefs(listRes.stdout);
           tree = await traverseUp(env, fspec, axes, cwd, eEnv, ref, 0, maxDepth, visited, allRefs);
         }

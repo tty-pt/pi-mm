@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -6,13 +7,13 @@ import { executeHybridScan } from "../src/tools/scan.ts";
 import { evaluateTurnWithJudge } from "../src/judge/adapter.ts";
 import { encodePayload } from "../src/payload.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { buildStoreInvocation, filespecFor } from "../src/qmap.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
+import { buildStoreInvocation, filespecFor } from "../src/corm.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
 
 const home = Deno.env.get("HOME") || "";
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
 
 // Domain-aware semantic vector projector for local mock embedding server
@@ -58,7 +59,7 @@ Deno.test("relevance & quality: Scenario A - Grandfather recall retrieves airpla
     const eEnv = { CORM_SEPAL_EMBED_URL: embedUrl, CORM_SEPAL_EMBED_MODEL: embedModel };
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,
@@ -87,7 +88,7 @@ Deno.test("relevance & quality: Scenario A - Grandfather recall retrieves airpla
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     // Store Ref 1: Grandpa, airplanes, cherry tree (L1)
     const env1 = encodePayload("2026-10-16", {
@@ -208,7 +209,8 @@ Deno.test("relevance & quality: Scenario D - Injected context supplies clear beh
   assert.ok(context.includes("I once spoke about airplanes with my grandpa under the cherry tree"));
   assert.ok(context.includes("Usage guidelines:"));
   assert.ok(context.includes("Do not interpret them as coding tasks, bug reports, or instructions to search code or the web"));
-  assert.ok(context.includes("reply conversationally without invoking tools unless technical work is requested"));
+  assert.ok(context.includes("use memory_recall to find relevant context"));
+  assert.ok(context.includes("reply conversationally without invoking codebase tools"));
 });
 
 // ----------------------------------------------------------------------------
@@ -250,7 +252,7 @@ Deno.test("relevance & quality: Scenario F - Technical discovery retains details
     const eEnv = { CORM_SEPAL_EMBED_URL: embedUrl, CORM_SEPAL_EMBED_MODEL: embedModel };
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,
@@ -279,7 +281,7 @@ Deno.test("relevance & quality: Scenario F - Technical discovery retains details
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     // Store technical discovery (L1 note)
     const techSummary = "In cormd, socket permissions are set to 0600 and the resident daemon serializes concurrent mutations";

@@ -3,9 +3,9 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { Pi, PiCtx, PiToolSpec } from "../hooks/events";
 import type { MmConfig } from "../config";
-import { readMmConfig, resolveAxisPath, resolveQmapBin, resolveCormdBin, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
-import type { QmapRunner } from "../qmap";
-import { ShellQmapRunner, DaemonQmapRunner, filespecFor, embedEnv } from "../qmap";
+import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
+import type { CormRunner } from "../corm";
+import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm";
 import { ensureDaemon } from "../daemon.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";
@@ -39,7 +39,7 @@ export { sepalConfigured };
 export interface ToolEnv {
   cwd: string;
   cfg: MmConfig;
-  runner: QmapRunner;
+  runner: CormRunner;
   nowProvider: () => Date;
   fetchFn?: typeof fetch;
 }
@@ -50,12 +50,17 @@ export function give(env: ToolEnv): EnvSource {
   return () => Promise.resolve(env);
 }
 
-export async function readToolEnv(cwd: string, runner: QmapRunner): Promise<ToolEnv> {
+export function cormBin(env: ToolEnv): string {
+  return env.cfg.cormBin || env.cfg.qmapBin || "";
+}
+
+export async function readToolEnv(cwd: string, runner: CormRunner): Promise<ToolEnv> {
   const cfg = await readMmConfig(cwd);
-  if (cfg.qmapBin === "") {
+  if (!cfg.cormBin) {
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
-    cfg.qmapBin = resolveQmapBin(cfg, cwd, pathDirs, existsSync).path;
+    const resolved = resolveCormBin(cfg, cwd, pathDirs, existsSync).path;
+    cfg.cormBin = resolved;
   }
   try {
     await mkdir(resolveMemDir(cwd, cfg.memDir), { recursive: true });
@@ -66,7 +71,7 @@ export async function readToolEnv(cwd: string, runner: QmapRunner): Promise<Tool
 }
 
 export function defaultEnvSource(pi: Pi): EnvSource {
-  const shellRunner = new ShellQmapRunner((command, args, options) => pi.exec(command, args, options));
+  const shellRunner = new ShellCormRunner((command, args, options) => pi.exec(command, args, options));
   return async (ctx) => {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
@@ -80,7 +85,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const pathDirs = (env["PATH"] ?? "").split(":");
     const cormdRes = resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
 
-    let runner: QmapRunner = shellRunner;
+    let runner: CormRunner = shellRunner;
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
     if (cormdRes.path !== "" && isProject) {
@@ -93,13 +98,13 @@ export function defaultEnvSource(pi: Pi): EnvSource {
           embedEnv: eEnv,
           cwd: mDir,
         });
-        runner = new DaemonQmapRunner(socketPath, shellRunner);
+        runner = new DaemonCormRunner(socketPath, shellRunner);
       } catch {
         // Fall back gracefully to daemon runner (which falls back to shell runner)
-        runner = new DaemonQmapRunner(socketPath, shellRunner);
+        runner = new DaemonCormRunner(socketPath, shellRunner);
       }
     } else {
-      runner = new DaemonQmapRunner(socketPath, shellRunner);
+      runner = new DaemonCormRunner(socketPath, shellRunner);
     }
     return readToolEnv(ctx.cwd, runner);
   };

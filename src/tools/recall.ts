@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, sepalConfigured } from "./index.ts";
-import { filespecFor, embedEnv } from "../qmap.ts";
+import { filespecFor, embedEnv } from "../corm.ts";
 import { executeHybridScan } from "./scan.ts";
 import { traverseDown, renderTree } from "./traverse.ts";
 import type { FusedCandidate } from "./ranking.ts";
@@ -86,8 +86,9 @@ async function executeRecall(
     if (!query) {
       return { content: [{ type: "text", text: "mm recall: empty query" }], details: { results: [] } };
     }
-    if (env.cfg.qmapBin === "") {
-      return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap", results: [] } };
+    const bin = env.cfg.cormBin;
+    if (!bin) {
+      return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm", results: [] } };
     }
 
     const limit = Math.min(Math.max(Number(params["limit"]) || 5, 1), 20);

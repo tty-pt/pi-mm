@@ -1,9 +1,10 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
-import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/qmap.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
+import { filespecFor, buildGetInvocation, buildStoreInvocation } from "../src/corm.ts";
 import { decodePayload, encodePayload } from "../src/payload.ts";
 import { installSessionHooks, activeConversationTurn, type PiCtx } from "../src/hooks/events.ts";
 import {
@@ -16,8 +17,8 @@ import {
 
 const home = Deno.env.get("HOME") || "";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("turn_capture_queue_safety: 1. Ordinary conversational turn performs ZERO list calls and remains O(1) bounded as DB grows", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-turn-capture-" });
@@ -35,9 +36,9 @@ Deno.test("turn_capture_queue_safety: 1. Ordinary conversational turn performs Z
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
     const testRunner = {
-      run: async (inv: import("../src/qmap.ts").Invocation) => {
+      run: async (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") listCount++;
         if (inv.args[0] === "-r" && inv.args[1] === "-g") getCount++;
         if (inv.args[0] === "-p") storeCount++;
@@ -47,7 +48,7 @@ Deno.test("turn_capture_queue_safety: 1. Ordinary conversational turn performs Z
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -129,7 +130,7 @@ Deno.test("turn_capture_queue_safety: 2. L2 consolidation prunes only cited L1 e
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     // Mock synthesizer: receives evidence, but cites ONLY refs 1 and 2
     const synthServer = Deno.serve({ port: 0 }, (_req) => {
@@ -148,7 +149,7 @@ Deno.test("turn_capture_queue_safety: 2. L2 consolidation prunes only cited L1 e
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -216,11 +217,11 @@ Deno.test("turn_capture_queue_safety: 3. L3 successor reconciliation repairs pre
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -293,7 +294,7 @@ Deno.test("turn_capture_queue_safety: 4. Failed journal recovery writes recovery
     await ensureDaemon({ cormdBin, filespec: fspec, socketPath: sockPath, axisPath, cwd: tmpDir });
     // Failing runner that simulates roster listing failure (e.g. exit code 1)
     const failingRunner = {
-      run: (inv: import("../src/qmap.ts").Invocation) => {
+      run: (inv: import("../src/corm.ts").Invocation) => {
         if (inv.args[0] === "-g" && inv.args[1] === ".") {
           return Promise.resolve({ code: 1, stdout: "", stderr: "Simulated roster list I/O failure" });
         }
@@ -308,7 +309,7 @@ Deno.test("turn_capture_queue_safety: 4. Failed journal recovery writes recovery
     // Read journal with failing recovery context
     const recovered = await readConsolidationJournal(tmpDir, {
       runner: failingRunner,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       fspec,
       axes: axisPath,
     });
@@ -348,7 +349,7 @@ Deno.test("turn_capture_queue_safety: 5. Actual execution-level operations never
       const out = await p.output();
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
 
     const synthServer = Deno.serve({ port: 0 }, async (req) => {
       synthCount++;
@@ -371,7 +372,7 @@ Deno.test("turn_capture_queue_safety: 5. Actual execution-level operations never
     const BATCH_LIMIT = 6;
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,

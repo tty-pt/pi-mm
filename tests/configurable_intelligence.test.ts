@@ -1,18 +1,19 @@
+import { existsSync } from "node:fs";
 import assert from "node:assert";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { DEFAULT_CONFIG, loadConfig, applyEnv, sepalConfigured, judgeConfigured, describeCapabilities } from "../src/config.ts";
-import { evaluateTurnWithJudge } from "../src/judge/adapter.ts";
+import { evaluateTurnWithJudge, checkMmHealth } from "../src/judge/adapter.ts";
 import { installSessionHooks, type Pi, type PiCtx } from "../src/hooks/events.ts";
 import { queryLexicalPath, querySemanticPath } from "../src/tools/scan.ts";
 import { handleBeforeAgentStart } from "../src/hooks/auto_recall.ts";
-import { DaemonQmapRunner, buildStoreInvocation, buildListInvocation, filespecFor } from "../src/qmap.ts";
+import { DaemonCormRunner, buildStoreInvocation, buildListInvocation, filespecFor, embedEnv } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
 import { ensureDaemon } from "../src/daemon.ts";
 
 const home = Deno.env.get("HOME") || "";
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
 
 function computeMockVector(text: string): number[] {
@@ -34,7 +35,7 @@ Deno.test("configurable intelligence: 1. No inference services starts normally, 
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -71,7 +72,7 @@ Deno.test("configurable intelligence: 1. No inference services starts normally, 
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const envSource = (_ctx: PiCtx) => Promise.resolve({
       cfg,
       runner: daemonRunner,
@@ -280,7 +281,7 @@ Deno.test("configurable intelligence: 2c. End-to-end Jev decision persistence an
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -309,7 +310,7 @@ Deno.test("configurable intelligence: 2c. End-to-end Jev decision persistence an
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const envSource = (_ctx: PiCtx) => Promise.resolve({
       cfg,
       runner: daemonRunner,
@@ -407,7 +408,7 @@ Deno.test("configurable intelligence: 3. [synthetic/mock] Semantic search only g
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -445,7 +446,7 @@ Deno.test("configurable intelligence: 3. [synthetic/mock] Semantic search only g
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const envSource = (_ctx: PiCtx) => Promise.resolve({
       cfg,
       runner: daemonRunner,
@@ -500,6 +501,132 @@ Deno.test("configurable intelligence: 3. [synthetic/mock] Semantic search only g
 });
 
 // ----------------------------------------------------------------------------
+// Test 3b: Ephemeral Sepal mode (ephemeralSepal=true: 0 bytes disk footprint for mem.db-sepal)
+// ----------------------------------------------------------------------------
+Deno.test("configurable intelligence: 3b. [ephemeral sepal] Semantic search in ephemeral mode stores zero bytes on disk for mem.db-sepal and rebuilds in-memory", async () => {
+  const tmpDir = Deno.makeTempDirSync({ prefix: "ci-sem-ephem-" });
+  const sockPath = join(tmpDir, "cormd.sock");
+
+  let embedFetchCount = 0;
+  const embedServer = Deno.serve({ port: 0 }, async (req) => {
+    embedFetchCount++;
+    const body = await req.json();
+    const vec = computeMockVector(typeof body.input === "string" ? body.input : "");
+    return new Response(JSON.stringify({
+      data: [{ embedding: vec, index: 0, object: "embedding" }],
+      model: "mock-embed",
+      object: "list",
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+
+  const embedUrl = `http://127.0.0.1:${embedServer.addr.port}/v1/embeddings`;
+
+  try {
+    const cfg = {
+      ...DEFAULT_CONFIG,
+      cormBin: cormBin,
+      cormdBin,
+      memDir: tmpDir,
+      axisLibs: axisPath,
+      judgeMode: "heuristic" as const,
+      semanticSearch: true,
+      ephemeralSepal: true,
+      embedUrl,
+      embedModel: "mock-embed",
+    };
+
+    assert.strictEqual(judgeConfigured(cfg), false);
+    assert.strictEqual(sepalConfigured(cfg), true);
+    assert.strictEqual(cfg.ephemeralSepal, true);
+
+    const fspec = filespecFor(tmpDir, true);
+    const eEnv = embedEnv(cfg);
+    assert.strictEqual(eEnv.CORM_SEPAL_EPHEMERAL, "1", "CORM_SEPAL_EPHEMERAL must be set to 1 in eEnv");
+
+    await ensureDaemon({
+      cormdBin,
+      filespec: fspec,
+      socketPath: sockPath,
+      axisPath,
+      embedEnv: eEnv,
+      cwd: tmpDir,
+    });
+
+    const shellExec = async (cmd: string, args: string[], opts?: { cwd?: string; env?: Record<string, string> }) => {
+      const p = new Deno.Command(cmd, {
+        args,
+        cwd: opts?.cwd ?? tmpDir,
+        env: { ...(opts?.env ?? {}), ...eEnv, CORM_AXIS_PATH: axisPath },
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const out = await p.output();
+      return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
+    };
+
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const envSource = (_ctx: PiCtx) => Promise.resolve({
+      cfg,
+      runner: daemonRunner,
+      nowProvider: () => new Date("2026-10-16T12:00:00Z"),
+      cwd: tmpDir,
+      sessionId: "sess-sem-ephem-001",
+      sessionFile: "/tmp/sess.json",
+    });
+
+    const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
+    const mockPi: Pi = {
+      on(event: string, handler: (...args: unknown[]) => unknown) {
+        if (!handlers.has(event)) handlers.set(event, []);
+        handlers.get(event)?.push(handler);
+      },
+      registerTool() {},
+      exec: shellExec,
+    };
+
+    installSessionHooks(mockPi, envSource);
+    const emit = async (event: string, ...args: unknown[]) => {
+      for (const h of handlers.get(event) ?? []) await h(...args);
+    };
+
+    const ctx: PiCtx = {
+      cwd: tmpDir,
+      hasUI: false,
+      mode: "agent",
+      sessionId: "sess-sem-ephem-001",
+      sessionManager: { getSessionId: () => "sess-sem-ephem-001", getSessionFile: () => "/tmp/sess.json", getLeafId: () => "leaf_1" },
+    };
+
+    await emit("session_start", null, ctx);
+
+    // Capture memory rule
+    await emit("before_agent_start", { messageType: "user", prompt: "Our rule is all acoustic audio tracks must use lossless FLAC format" }, ctx);
+    await emit("message_end", { message: { role: "assistant", content: "Understood, storing audio tracks as FLAC." } });
+    await emit("agent_settled", null, ctx);
+
+    // Verify: mem.db-sepal MUST NOT exist on physical disk!
+    const sepalFileOnDisk = join(tmpDir, "mem.db-sepal");
+    assert.strictEqual(existsSync(sepalFileOnDisk), false, "mem.db-sepal MUST NOT exist on physical disk in ephemeral mode");
+
+    // Verify: sepal-embed-cache.bin exists on disk
+    const cacheFile = join(tmpDir, "sepal-embed-cache.bin");
+    assert.strictEqual(existsSync(cacheFile), true, "sepal-embed-cache.bin MUST exist for offline rebuild");
+
+    // Semantic retrieval using paraphrase
+    const toolEnv = await envSource(ctx);
+    const semRes = await querySemanticPath(toolEnv, tmpDir, axisPath, 0, new Date(), undefined, "sound recording standards", 5);
+    assert(semRes.lines.length > 0, "Sepal semantic query must retrieve audio record from ephemeral in-memory index");
+
+    // Clean up daemon
+    const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
+    process.kill(lockData.pid, "SIGTERM");
+  } finally {
+    await embedServer.shutdown();
+    try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  }
+});
+
+// ----------------------------------------------------------------------------
 // Test 4: Both enabled (judgeMode=auto + semanticSearch=true)
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end-to-end with hybrid recall", async () => {
@@ -538,7 +665,7 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -576,7 +703,7 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const envSource = (_ctx: PiCtx) => Promise.resolve({
       cfg,
       runner: daemonRunner,
@@ -755,6 +882,37 @@ Deno.test("configurable intelligence: 5b. Local inference configuration with no 
 });
 
 // ----------------------------------------------------------------------------
+// Test 5c: Assistant response clipping in callJevJudge
+// ----------------------------------------------------------------------------
+Deno.test("configurable intelligence: 5c. Long assistant response is clipped to 500 characters in judge payload", async () => {
+  let receivedState = "";
+  const mockServer = Deno.serve({ port: 0 }, async (req) => {
+    const body = await req.json();
+    receivedState = body.state || "";
+    return new Response(JSON.stringify({
+      answers: {
+        memory_action: { type: "choice", choice: "skip", confidence: 0.95 },
+      },
+    }), { headers: { "Content-Type": "application/json" } });
+  });
+
+  try {
+    const cfg = {
+      ...DEFAULT_CONFIG,
+      judgeMode: "auto" as const,
+      judgeUrl: `http://127.0.0.1:${mockServer.addr.port}`,
+    };
+    const longResponse = "A".repeat(1200);
+    const result = await evaluateTurnWithJudge("User message", longResponse, cfg);
+    assert.strictEqual(result.source, "llm");
+    assert.ok(receivedState.includes("A".repeat(500) + "..."));
+    assert.ok(!receivedState.includes("A".repeat(501)));
+  } finally {
+    await mockServer.shutdown();
+  }
+});
+
+// ----------------------------------------------------------------------------
 // Test 6: Real live Jev integration test (opt-in; truthfully reports SKIP or FAIL)
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 6. Real live Jev integration test", async () => {
@@ -862,7 +1020,7 @@ Deno.test("configurable intelligence: 6b. Real embedding endpoint and Sepal sema
   try {
     const liveCfg = {
       ...rawCfg,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -899,7 +1057,7 @@ Deno.test("configurable intelligence: 6b. Real embedding endpoint and Sepal sema
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const envSource = (_ctx: PiCtx) => Promise.resolve({
       cfg: liveCfg,
       runner: daemonRunner,
@@ -956,7 +1114,7 @@ Deno.test("configurable intelligence: 7. [synthetic/mock] Cross-session recall o
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
@@ -990,7 +1148,7 @@ Deno.test("configurable intelligence: 7. [synthetic/mock] Cross-session recall o
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
     const createEnv = (sessId: string) => ({
       cfg,
       runner: daemonRunner,
@@ -1077,7 +1235,7 @@ Deno.test("configurable intelligence: 7. [synthetic/mock] Cross-session recall o
 Deno.test("configurable intelligence: 8. Compatibility with existing configuration and daemon locking", () => {
   // Legacy settings parsing
   const legacyRaw = {
-    qmapBin: "/usr/bin/corm",
+    cormBin: "/usr/bin/corm",
     cormdBin: "/usr/bin/cormd",
     memDir: "custom/mem",
     scanLimit: 25,
@@ -1086,7 +1244,7 @@ Deno.test("configurable intelligence: 8. Compatibility with existing configurati
   };
 
   const loaded = loadConfig(legacyRaw);
-  assert.strictEqual(loaded.qmapBin, "/usr/bin/corm");
+  assert.strictEqual(loaded.cormBin, "/usr/bin/corm");
   assert.strictEqual(loaded.cormdBin, "/usr/bin/cormd");
   assert.strictEqual(loaded.memDir, "custom/mem");
   assert.strictEqual(loaded.scanLimit, 25);
@@ -1104,4 +1262,64 @@ Deno.test("configurable intelligence: 8. Compatibility with existing configurati
   assert.strictEqual(applied.semanticSearch, false);
   assert.strictEqual(sepalConfigured(applied), false);
   assert.strictEqual(judgeConfigured(applied), false);
+});
+
+// ----------------------------------------------------------------------------
+// Test 9: checkMmHealth reports judge and embedding health with mock servers
+// ----------------------------------------------------------------------------
+Deno.test("configurable intelligence: 9. checkMmHealth reports judge and embedding health with mock servers", async () => {
+  // 1. Mock judge server
+  const judgeServer = Deno.serve({ port: 0 }, (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/models") {
+      return new Response(JSON.stringify({
+        object: "list",
+        data: [{ id: "qwen" }, { id: "bge-small" }],
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
+  // 2. Mock embed server
+  const embedServer = Deno.serve({ port: 0 }, (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/embeddings") {
+      return new Response(JSON.stringify({
+        object: "list",
+        data: [{ embedding: [0.1, 0.2, 0.3] }],
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("Not found", { status: 404 });
+  });
+
+  try {
+    const cfg = {
+      ...DEFAULT_CONFIG,
+      judgeUrl: `http://127.0.0.1:${judgeServer.addr.port}`,
+      embedUrl: `http://127.0.0.1:${embedServer.addr.port}/v1/embeddings`,
+      embedModel: "bge-small",
+    };
+
+    const report = await checkMmHealth(cfg);
+    assert.strictEqual(report.judgeOk, true);
+    assert.strictEqual(report.judgeModels?.includes("qwen"), true);
+    assert.strictEqual(report.embedOk, true);
+    assert.strictEqual(report.judgeError, undefined);
+    assert.strictEqual(report.embedError, undefined);
+
+    // Test offline report
+    const offlineCfg = {
+      ...DEFAULT_CONFIG,
+      judgeUrl: "http://127.0.0.1:59997",
+      embedUrl: "http://127.0.0.1:59997/v1/embeddings",
+      embedModel: "bge-small",
+    };
+    const offlineReport = await checkMmHealth(offlineCfg);
+    assert.strictEqual(offlineReport.judgeOk, false);
+    assert.strictEqual(offlineReport.embedOk, false);
+    assert(offlineReport.judgeError !== undefined);
+  } finally {
+    await judgeServer.shutdown();
+    await embedServer.shutdown();
+  }
 });

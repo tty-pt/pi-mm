@@ -30,6 +30,7 @@ export interface L2SynthesisOutcome {
   summary?: string;
   explanation?: string;
   citedRefs?: number[];
+  constraints?: string[];
   reason?: string;
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { existsSync } from "node:fs";
-import { formatProtocolCommand, DaemonQmapRunner, isDaemonLockHeld } from "../src/daemon.ts";
-import { buildListInvocation, buildGetInvocation, buildStoreInvocation, buildForgetInvocation, buildScanInvocation, ShellQmapRunner, type Invocation } from "../src/qmap.ts";
+import { formatProtocolCommand, DaemonCormRunner, isDaemonLockHeld } from "../src/daemon.ts";
+import { buildListInvocation, buildGetInvocation, buildStoreInvocation, buildForgetInvocation, buildScanInvocation, ShellCormRunner, type Invocation } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -34,6 +34,19 @@ Deno.test("daemon protocol formatting: maps all 5 invocation types", () => {
   assert.strictEqual(putCmd?.body, payload);
   assert.strictEqual(putCmd?.isMutation, true);
 
+  // 3b. PUT with raw binary payloadBytes
+  const binBytes = new Uint8Array([0x48, 0x54, 0x4f, 0x4b, 0x04, 0x01, 0x02]);
+  const putBinInv = buildStoreInvocation(bin, fspec, 99, binBytes, axes, cwd);
+  assert.strictEqual(putBinInv.ref, 99);
+  assert.strictEqual(putBinInv.filespec, fspec);
+  assert.strictEqual(putBinInv.payloadBytes, binBytes);
+  assert.deepStrictEqual(putBinInv.args, ["-p", "99:-", fspec]);
+  const putBinCmd = formatProtocolCommand(putBinInv, "103b");
+  assert.strictEqual(putBinCmd?.header, `PUT 103b ${fspec} 99 ${binBytes.length}`);
+  assert.strictEqual(putBinCmd?.body, "");
+  assert.strictEqual(putBinCmd?.bodyBytes, binBytes);
+  assert.strictEqual(putBinCmd?.isMutation, true);
+
   // 4. DEL
   const delInv = buildForgetInvocation(bin, fspec, 42, axes, cwd);
   const delCmd = formatProtocolCommand(delInv, "104");
@@ -58,7 +71,7 @@ Deno.test("daemon fallback: absent socket falls back immediately to shell runner
     }
   };
 
-  const runner = new DaemonQmapRunner("/tmp/nonexistent-socket.sock", mockFallback);
+  const runner = new DaemonCormRunner("/tmp/nonexistent-socket.sock", mockFallback);
   const inv = buildListInvocation("corm", "/tmp/mem.db:a:s", "", "/tmp");
   const res = await runner.run(inv);
   assert.strictEqual(fallbackRan, true);
@@ -91,7 +104,7 @@ Deno.test("daemon fail-closed: mutation error on live connection does not blindl
   };
 
   try {
-    const runner = new DaemonQmapRunner(testSock, mockFallback, 500);
+    const runner = new DaemonCormRunner(testSock, mockFallback, 500);
     const putInv = buildStoreInvocation("corm", "/tmp/mem.db:a:s", 1, "test-data", "", "/tmp");
     const res = await runner.run(putInv);
 
@@ -125,7 +138,7 @@ Deno.test("daemon lease protection: direct CLI mutation rejected when .cormd.loc
     assert.strictEqual(isHeld, true);
 
     let cliExecuted = false;
-    const shellRunner = new ShellQmapRunner((_cmd, _args, _opts) => {
+    const shellRunner = new ShellCormRunner((_cmd, _args, _opts) => {
       cliExecuted = true;
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
     });
@@ -156,7 +169,8 @@ Deno.test("daemon live integration: end-to-end round trip against real cormd", a
     LD_LIBRARY_PATH: `${home}/.local/lib:/usr/lib:${Deno.env.get("LD_LIBRARY_PATH") ?? ""}`,
   };
 
-  const proc = spawn("/usr/bin/cormd", ["-d", fspec, "-s", sockPath], {
+  const cormdPath = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
+  const proc = spawn(cormdPath, ["-d", fspec, "-s", sockPath], {
     env,
     stdio: "pipe",
   });
@@ -168,7 +182,7 @@ Deno.test("daemon live integration: end-to-end round trip against real cormd", a
   }
 
   try {
-    const shellRunner = new ShellQmapRunner((cmd, args, opts) => {
+    const shellRunner = new ShellCormRunner((cmd, args, opts) => {
       return new Promise((resolve) => {
         const c = spawn(cmd, args, { ...opts, env: { ...opts?.env, ...env } });
         let out = "";
@@ -179,7 +193,7 @@ Deno.test("daemon live integration: end-to-end round trip against real cormd", a
       });
     });
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, shellRunner);
+    const daemonRunner = new DaemonCormRunner(sockPath, shellRunner);
 
     // 1. LIST initially empty
     const listRes1 = await daemonRunner.run(buildListInvocation("corm", fspec, axesPath, tmpDir));

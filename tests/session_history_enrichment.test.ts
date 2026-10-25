@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -15,16 +16,16 @@ import {
   extractTextFromMessage,
   parseSessionFileMessages,
 } from "../src/session_history.ts";
-import { encodePayload, decodePayload } from "../src/payload.ts";
+import { encodePayload, decodePayload, isHtokPayload } from "../src/payload.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { buildListInvocation, buildStoreInvocation, buildGetInvocation, filespecFor } from "../src/qmap.ts";
+import { buildListInvocation, buildStoreInvocation, buildGetInvocation, filespecFor } from "../src/corm.ts";
 import { parseBareRefs } from "../src/resolve.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
 
 const home = Deno.env.get("HOME") || "";
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
 
 function computeSemanticVector(text: string): number[] {
@@ -214,7 +215,7 @@ Deno.test("session_history: End-to-End Multi-Turn Aircraft Recall across Session
     const eEnv = { CORM_SEPAL_EMBED_URL: embedUrl, CORM_SEPAL_EMBED_MODEL: embedModel };
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,
@@ -243,7 +244,7 @@ Deno.test("session_history: End-to-End Multi-Turn Aircraft Recall across Session
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     const createEnv = (sessId: string, sessFile: string) => ({
       cfg,
@@ -309,7 +310,7 @@ Deno.test("session_history: End-to-End Multi-Turn Aircraft Recall across Session
     await daemonRunner.run(buildStoreInvocation(cormBin, fspec, 1, envPayload, axisPath, tmpDir, eEnv));
 
     // Verify CORM only stored the compact memory (transcript was NOT duplicated in CORM)
-    assert.ok(envPayload.startsWith("2026-10-16:{\"_v\":1,"), "encodePayload must emit compact v1 format");
+    assert.ok(isHtokPayload(envPayload), "encodePayload must emit HTOK binary container");
     const listRes = await daemonRunner.run(buildListInvocation(cormBin, fspec, axisPath, tmpDir, eEnv));
     const refs = parseBareRefs(listRes.stdout);
     assert.strictEqual(refs.length, 1, "CORM must contain only 1 compact memory record");
@@ -431,7 +432,7 @@ Deno.test("session_history: Section 4 Scenario - Boeing 787 and Lisbon-Madeira r
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     // Session A transcript:
     // Turn 1: grandfather / airplanes under cherry tree
@@ -533,7 +534,7 @@ Deno.test("session_history: Section 4 Scenario - Boeing 787 and Lisbon-Madeira r
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,
@@ -684,7 +685,7 @@ Deno.test("session_history: Boeing 747 short turn recovery, superseded exclusion
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     // Session A transcript:
     // Turn 1: "I once spoke with my grandpa about airplanes under the cherry tree."
@@ -791,7 +792,7 @@ Deno.test("session_history: Boeing 747 short turn recovery, superseded exclusion
 
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,

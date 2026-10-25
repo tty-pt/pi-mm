@@ -14,22 +14,22 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 
 const home = Deno.env.get("HOME") || "";
 const cormAxisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 
 Deno.test("validation 1: successful automated episode without evidence remains tested, never supported", async () => {
   activeSessionBuffer.clear();
   const tmpDir = Deno.makeTempDirSync({ prefix: "mm-val-tested-" });
   activeSessionBuffer.setJournalDir(tmpDir);
 
-  const capturedPayloads: string[] = [];
+  const capturedPayloads: Array<string | Uint8Array> = [];
   const runner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
       if (inv.args[0] === "-p") {
-        capturedPayloads.push(inv.args[1]);
+        capturedPayloads.push(inv.payloadBytes ?? inv.args[1]);
         return Promise.resolve({ stdout: "1", stderr: "", code: 0 });
       }
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
@@ -37,7 +37,7 @@ Deno.test("validation 1: successful automated episode without evidence remains t
   };
 
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: cormBin, memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: cormBin, memDir: tmpDir },
     runner,
     nowProvider: () => new Date("2026-10-16T12:00:00Z"),
     cwd: tmpDir,
@@ -58,7 +58,7 @@ Deno.test("validation 1: successful automated episode without evidence remains t
   assert.strictEqual(ref, 1);
   assert.strictEqual(capturedPayloads.length, 1);
 
-  const payload = capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
+  const payload = capturedPayloads[0] instanceof Uint8Array ? capturedPayloads[0] : capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
   const { envelope } = decodePayload(payload);
 
   // Must be 'tested', NEVER 'supported' without verified external evidence!
@@ -87,9 +87,9 @@ Deno.test("validation 1b: automated episode with valid evidence ref advances to 
     summary: "Verified root cause of corm_open leak",
   });
 
-  const capturedPayloads: string[] = [];
+  const capturedPayloads: Array<string | Uint8Array> = [];
   const runner = {
-    run(inv: import("../src/qmap.ts").Invocation) {
+    run(inv: import("../src/corm.ts").Invocation) {
       if (inv.args[0] === "-g" && inv.args[1] === ".") {
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       }
@@ -97,7 +97,7 @@ Deno.test("validation 1b: automated episode with valid evidence ref advances to 
         return Promise.resolve({ stdout: validEvidenceRecord, stderr: "", code: 0 });
       }
       if (inv.args[0] === "-p") {
-        capturedPayloads.push(inv.args[1]);
+        capturedPayloads.push(inv.payloadBytes ?? inv.args[1]);
         return Promise.resolve({ stdout: "1", stderr: "", code: 0 });
       }
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
@@ -105,7 +105,7 @@ Deno.test("validation 1b: automated episode with valid evidence ref advances to 
   };
 
   const envSource = () => Promise.resolve({
-    cfg: { ...DEFAULT_CONFIG, qmapBin: cormBin, memDir: tmpDir },
+    cfg: { ...DEFAULT_CONFIG, cormBin: cormBin, memDir: tmpDir },
     runner,
     nowProvider: () => new Date("2026-10-16T12:00:00Z"),
     cwd: tmpDir,
@@ -127,7 +127,7 @@ Deno.test("validation 1b: automated episode with valid evidence ref advances to 
   assert.strictEqual(ref, 1);
   assert.strictEqual(capturedPayloads.length, 1);
 
-  const payload = capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
+  const payload = capturedPayloads[0] instanceof Uint8Array ? capturedPayloads[0] : capturedPayloads[0].slice(capturedPayloads[0].indexOf(":") + 1);
   const { envelope } = decodePayload(payload);
 
   // Valid evidence confirms advancement to 'supported'

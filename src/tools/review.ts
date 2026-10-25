@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, sepalConfigured } from "./index.ts";
-import { filespecFor, embedEnv } from "../qmap.ts";
+import { filespecFor, embedEnv } from "../corm.ts";
 import { fetchEnvelope, traverseDown, renderTree } from "./traverse.ts";
 import { executeLifecycle } from "./lifecycle.ts";
 

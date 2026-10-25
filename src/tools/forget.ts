@@ -1,7 +1,7 @@
 import type { PiCtx, PiToolSpec } from "../hooks/events";
 import type { EnvSource } from "./index";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index";
-import { filespecFor, buildForgetInvocation, embedEnv } from "../qmap";
+import { filespecFor, buildForgetInvocation, embedEnv } from "../corm";
 import { isNumericRef } from "../resolve";
 import { scanTopRef } from "./scan";
 
@@ -22,8 +22,9 @@ export function makeForgetTool(envSource: EnvSource): PiToolSpec {
       try {
         const env = await envSource(ctx as PiCtx);
         const key = typeof params["key"] === "string" ? params["key"].trim() : "";
+        const bin = env.cfg.cormBin;
         if (key === "") return { content: [{ type: "text", text: "mm forget: empty key (degradation: soft)" }], details: { error: "empty-key" } };
-        if (env.cfg.qmapBin === "") return { content: [{ type: "text", text: "mm unavailable: qmap binary not found" }], details: { error: "no-qmap" } };
+        if (!bin) return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
 
         const ref = isNumericRef(key)
           ? Number(key)
@@ -31,7 +32,7 @@ export function makeForgetTool(envSource: EnvSource): PiToolSpec {
         if (ref === null) return { content: [{ type: "text", text: `mm forget: no memory matches ${key}` }], details: { error: "no-match" } };
 
         const embed = sepalConfigured(env.cfg);
-        const result = await env.runner.run(buildForgetInvocation(env.cfg.qmapBin, filespecFor(memDir(env), embed), ref, axisPath(env), memDir(env), embedEnv(env.cfg)));
+        const result = await env.runner.run(buildForgetInvocation(bin, filespecFor(memDir(env), embed), ref, axisPath(env), memDir(env), embedEnv(env.cfg)));
         if (result.code !== 0) {
           return { content: [{ type: "text", text: `mm forget: ${ref} reported (exit ${result.code}): ${result.stderr || result.stdout}` }], details: { ref, removed: true, error: result.stderr || result.stdout } };
         }

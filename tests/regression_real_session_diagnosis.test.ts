@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import { rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -10,14 +11,14 @@ import {
 } from "../src/hooks/auto_recall.ts";
 import { encodePayload, decodePayload } from "../src/payload.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { buildStoreInvocation, buildGetInvocation, buildScanInvocation, filespecFor } from "../src/qmap.ts";
-import { DaemonQmapRunner, ensureDaemon } from "../src/daemon.ts";
+import { buildStoreInvocation, buildGetInvocation, buildScanInvocation, filespecFor, parseResultLines } from "../src/corm.ts";
+import { DaemonCormRunner, ensureDaemon } from "../src/daemon.ts";
 import { executeHybridScan } from "../src/tools/scan.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
 
 const home = Deno.env.get("HOME") || "";
-const cormBin = "/usr/bin/corm";
-const cormdBin = "/usr/bin/cormd";
+const cormBin = existsSync("/home/quirinpa/.local/bin/corm") ? "/home/quirinpa/.local/bin/corm" : "/usr/bin/corm";
+const cormdBin = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
 const axisPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
 
 function computeSemanticVector(text: string): number[] {
@@ -102,7 +103,7 @@ Deno.test("regression: Two-session test with fresh unique statement", async () =
     const eEnv = { CORM_SEPAL_EMBED_URL: embedUrl, CORM_SEPAL_EMBED_MODEL: embedModel };
     const cfg = {
       ...DEFAULT_CONFIG,
-      qmapBin: cormBin,
+      cormBin: cormBin,
       cormdBin,
       axisLibs: axisPath,
       memDir: tmpDir,
@@ -131,7 +132,7 @@ Deno.test("regression: Two-session test with fresh unique statement", async () =
       return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
     };
 
-    const daemonRunner = new DaemonQmapRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args, inv) });
 
     // 1. Session A: Direct storage of conversational memory
     const uniqueFact = "I adopted a rescue border collie named Barnaby in the mountains";
@@ -162,7 +163,10 @@ Deno.test("regression: Two-session test with fresh unique statement", async () =
     const stomaInv = buildScanInvocation(cormBin, fspec, "lemma", 5, axisPath, tmpDir, eEnv, ["--query=Barnaby"]);
     const stomaRes = await daemonRunner.run(stomaInv);
     assert.strictEqual(stomaRes.code, 0, "Stoma query must succeed");
-    assert.ok(stomaRes.stdout.includes("Barnaby"), "Stoma scan must locate Ref 1 by keyword");
+    const stomaLines = parseResultLines(stomaRes.stdout);
+    assert.ok(stomaLines.length > 0, "Stoma scan must locate Ref 1 by keyword");
+    const stomaDecoded = decodePayload(stomaLines[0].record);
+    assert.ok(stomaDecoded.envelope.summary.includes("Barnaby"), "Stoma scan must locate Ref 1 by keyword");
 
     // 3. Direct Hybrid Scan
     const hybridRes = await executeHybridScan({

@@ -1,30 +1,31 @@
 import { join } from "node:path";
 import { makeStoreTool, makeScanTool, makeThinkTool, makeForgetTool, makeResetTool, type ToolEnv } from "../src/tools/index.ts";
-import type { QmapRunner } from "../src/qmap.ts";
+import { filespecFor, type CormRunner } from "../src/corm.ts";
 import { give } from "../src/tools/index.ts";
-import { fakeRunner, runTool, okResult } from "./fake-qmap.ts";
+import { fakeRunner, runTool, okResult } from "./fake-corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
+import { decodePayload } from "../src/payload.ts";
 
 function check(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
 const CWD = await Deno.makeTempDir({ prefix: "mm-tools-cwd-" });
-const FS = `${CWD}/.pi/mm/mem.db@joint,lemma:a:s`;
-const FS_SEPAL = `${CWD}/.pi/mm/mem.db@joint,lemma,sepal:a:s`;
+const FS = filespecFor(join(CWD, ".pi", "mm"));
+const FS_SEPAL = filespecFor(join(CWD, ".pi", "mm"), true);
 
 function now(): Date {
   return new Date("2026-09-15T10:00:00");
 }
 
-function env(runner: QmapRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
+function env(runner: CormRunner, cfg: Partial<MmConfig> = {}): ToolEnv {
   try { Deno.removeSync(join(CWD, ".ref_seq")); } catch { /* ignore */ }
   try { Deno.removeSync(join(CWD, ".pi", "mm", ".ref_seq")); } catch { /* ignore */ }
   return {
     cwd: CWD,
     runner,
     nowProvider: now,
-    cfg: { ...DEFAULT_CONFIG, qmapBin: "/usr/bin/qmap", ...cfg },
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", ...cfg },
   };
 }
 
@@ -43,7 +44,11 @@ Deno.test("memory_store: lists refs, picks nextRef, stores ref:payload, returns 
   const res = await runTool(tool, { text: "hello world" }, ctx);
   check(runner.invocations.length === 2, `two invocations, got ${runner.invocations.length}`);
   check(runner.invocations[0].args.join(" ") === `-g . ${FS}`, "list first");
-  check(runner.invocations[1].args[0] === "-p" && runner.invocations[1].args[1] === "4:2026-09-15:hello world" && runner.invocations[1].args[2] === FS, "store nextRef + date + text");
+  check(runner.invocations[1].args[0] === "-p" && runner.invocations[1].args[1].startsWith("4:") && runner.invocations[1].args[2] === FS, "store nextRef flag and target");
+  const p1 = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1].slice(2);
+  const d1 = decodePayload(p1);
+  check(d1.date === "2026-09-15", "store date 2026-09-15");
+  check(d1.envelope.summary === "hello world", "store text hello world");
   const details = res.details as { ref: number; key: string };
   check(details.ref === 4, "returned ref 4");
   check(details.key === "@2026-09-15", "key is @date");
@@ -53,7 +58,10 @@ Deno.test("memory_store: explicit timestamp prefix wins over now", async () => {
   const runner = fakeRunner([okResult(""), okResult("ok\n")]);
   const tool = makeStoreTool(give(env(runner)));
   await runTool(tool, { text: "memo", timestamp: "2026-09-14T09:00:00" }, ctx);
-  check(runner.invocations[1].args[1].startsWith("1:2026-09-14:"), "timestamp kept");
+  check(runner.invocations[1].args[1].startsWith("1:"), "store ref 1");
+  const p2 = runner.invocations[1].payloadBytes ?? runner.invocations[1].args[1].slice(2);
+  const d2 = decodePayload(p2);
+  check(d2.date === "2026-09-14", "timestamp kept");
 });
 
 Deno.test("memory_store: empty text is a graceful non-error", async () => {
@@ -186,9 +194,9 @@ Deno.test("memory_reset: idempotent — empty listing forgets nothing", async ()
   check(runner.invocations.length === 1, "only list ran");
 });
 
-Deno.test("degradation: no qmap binary → every tool returns a non-error diagnostic", async () => {
+Deno.test("degradation: no corm binary → every tool returns a non-error diagnostic", async () => {
   const runner = fakeRunner();
-  const badEnv = { ...env(runner), cfg: { ...DEFAULT_CONFIG, qmapBin: "" } };
+  const badEnv = { ...env(runner), cfg: { ...DEFAULT_CONFIG, cormBin: "" } };
   for (const tool of [
     makeStoreTool(give(badEnv)),
     makeScanTool(give(badEnv)),
@@ -227,7 +235,7 @@ Deno.test("memory_scan: embed=true with sepal configured → independent lexical
   check(semArgs.includes("--query=beacon"), `semantic query carries text; got ${semArgs}`);
   check(semArgs.includes("--min-sim=0.2"), `--min-sim flag carries the floor; got ${semArgs}`);
   check(runner.invocations[1].args[4] === FS_SEPAL, `sepal aware filespec; got ${runner.invocations[1].args[4]}`);
-  check(runner.invocations[1].env["QMAP_SEPAL_EMBED_URL"] === "http://localhost:4242/v1/embeddings", "embed url env var");
+  check(runner.invocations[1].env["CORM_SEPAL_EMBED_URL"] === "http://localhost:4242/v1/embeddings", "embed url env var");
   const d = res.details as { records: Array<{ ref: number; origin?: string }>; embed?: string };
   check(d.records.length === 1, "records returned");
   check(d.records[0].origin === "both", "fused origin is both");
@@ -251,7 +259,7 @@ Deno.test("memory_store/memory_think/memory_forget/memory_reset: sepal-aware fil
   const res = await runTool(makeStoreTool(give(env(runner, { ...embedEnvCfg() }))), { text: "memo" }, ctx);
   check(runner.invocations[0].args[2] === FS_SEPAL, "store list sepal filespec");
   check(runner.invocations[1].args[2] === FS_SEPAL, "store write sepal filespec");
-  check(runner.invocations[1].env["QMAP_SEPAL_EMBED_MODEL"] === "nomic-embed-text", "store embed env");
+  check(runner.invocations[1].env["CORM_SEPAL_EMBED_MODEL"] === "nomic-embed-text", "store embed env");
   check((res.details as { ref: number }).ref === 1, "store ok");
 
   const runner2 = fakeRunner([okResult("2026-09-14T20:00:00:Beacon Harbor lights\n")]);

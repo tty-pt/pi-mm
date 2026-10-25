@@ -33,6 +33,7 @@ export interface EpisodeRecord {
   toolCallId?: string;
   principle?: string;
   applicability?: string;
+  constraints?: string[];
 }
 
 export interface SpatialGrid {
@@ -79,4 +80,6 @@ export interface MemoryEnvelope {
   history?: LifecycleTransition[];
   utility?: UtilityFeedback;
   tags?: string[];
+  constraints?: string[];
+  isAnchor?: boolean;
 }

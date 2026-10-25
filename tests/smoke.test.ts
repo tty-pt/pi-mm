@@ -76,3 +76,56 @@ Deno.test("installer registers all 12 tools when advancedTools is enabled", () =
     Deno.env.delete("PI_MM_ADVANCED_TOOLS");
   }
 });
+
+Deno.test("installer registers mm-report entry renderer and dispatches via /mm doctor", async () => {
+  let registeredRendererType: string | null = null;
+  // deno-lint-ignore no-explicit-any
+  let registeredRendererFn: any = null;
+  const commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }>();
+  const appendedEntries: { type: string; data: unknown }[] = [];
+
+  const fakeFullPi = {
+    ...fakePi(),
+    registerEntryRenderer(type: string, renderer: unknown) {
+      registeredRendererType = type;
+      registeredRendererFn = renderer;
+    },
+    registerCommand(name: string, spec: { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }) {
+      commands.set(name, spec);
+    },
+    appendEntry(type: string, data: unknown) {
+      appendedEntries.push({ type, data });
+    },
+  };
+
+  // deno-lint-ignore no-explicit-any
+  install(fakeFullPi as any);
+
+  // 1. Verify renderer registration
+  check(registeredRendererType === "mm-report", "must register 'mm-report' entry renderer");
+  check(typeof registeredRendererFn === "function", "renderer function must be provided");
+
+  // 2. Verify command registration
+  check(commands.has("mm"), "must register '/mm' slash command");
+
+  // 3. Execute /mm doctor
+  const cmd = commands.get("mm")!;
+  await cmd.handler("doctor", { cwd: "." });
+
+  check(appendedEntries.length === 1, "must append exactly one entry for /mm doctor");
+  check(appendedEntries[0].type === "mm-report", "appended entry type must be 'mm-report'");
+  // deno-lint-ignore no-explicit-any
+  const data = appendedEntries[0].data as any;
+  check(data.title.includes("Doctor"), "report title must mention Doctor");
+  check(Array.isArray(data.lines) && data.lines.length >= 3, "report must include status lines");
+
+  // 4. Test createMmReportComponent formatting
+  const comp = registeredRendererFn({ data }, {}, {
+    fg: (_color: string, text: string) => `[STYLE]${text}[/STYLE]`,
+    bold: (text: string) => `[BOLD]${text}[/BOLD]`,
+  });
+  const lines = comp.render(80);
+  check(lines.length > 5, "component must render styled lines");
+  check(lines[0].includes("─"), "must include top border");
+  check(lines[lines.length - 1].includes("─"), "must include bottom border");
+});

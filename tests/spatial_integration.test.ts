@@ -1,13 +1,17 @@
 import assert from "node:assert";
 import { makeStoreTool } from "../src/tools/store.ts";
 import { makeScanTool } from "../src/tools/scan.ts";
-import { ShellQmapRunner } from "../src/qmap.ts";
+import { ShellCormRunner } from "../src/corm.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
 
+const cormBinPath = (await Deno.stat("/home/quirinpa/.local/bin/corm").then(() => true, () => false))
+  ? "/home/quirinpa/.local/bin/corm"
+  : "/usr/bin/corm";
+
 const hasCorm = await (async () => {
   try {
-    const s = await Deno.stat("/usr/bin/corm");
+    const s = await Deno.stat(cormBinPath);
     return s.isFile;
   } catch {
     return false;
@@ -20,15 +24,25 @@ Deno.test({
   fn: async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "mm-spatial-test-" });
 
-    const runner = new ShellQmapRunner(async (cmd, args, options) => {
+    const runner = new ShellCormRunner(async (cmd, args, options) => {
       const p = new Deno.Command(cmd, {
         args,
         cwd: options?.cwd,
         env: options?.env,
+        stdin: options?.stdin ? "piped" : "null",
         stdout: "piped",
         stderr: "piped",
       });
-      const out = await p.output();
+      let out;
+      if (options?.stdin) {
+        const child = p.spawn();
+        const w = child.stdin.getWriter();
+        await w.write(options.stdin);
+        await w.close();
+        out = await child.output();
+      } else {
+        out = await p.output();
+      }
       const dec = new TextDecoder();
       return {
         stdout: dec.decode(out.stdout),
@@ -46,7 +60,7 @@ Deno.test({
 
     const cfg: MmConfig = {
       ...DEFAULT_CONFIG,
-      qmapBin: "/usr/bin/corm",
+      cormBin: cormBinPath,
       axisLibs,
       memDir: ".pi/mm",
     };

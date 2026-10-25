@@ -3,8 +3,10 @@ import { join, dirname, isAbsolute } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import type { PiExecResult } from "./hooks/events.ts";
-import type { Invocation, QmapRunner } from "./qmap.ts";
+import type { Invocation, CormRunner } from "./corm.ts";
 import { runtimeEnv } from "./config.ts";
+import { bytesToBinaryString } from "./payload.ts";
+import { debugLog } from "./debug.ts";
 
 /**
  * Extracts the target database filespec from an Invocation's argument list
@@ -131,11 +133,14 @@ export async function isDaemonLockHeld(lockPath: string): Promise<boolean> {
   }
 }
 
+export { DaemonCormRunner as DaemonQmapRunner };
+
 export interface FormattedCommand {
   reqId: string;
   isMutation: boolean;
   header: string;
   body: string;
+  bodyBytes?: Uint8Array;
 }
 
 /**
@@ -171,17 +176,37 @@ export function formatProtocolCommand(inv: Invocation, reqId: string = "1"): For
 
   // 3. PUT: -p <ref>:<payload> <filespec>
   if (args.length >= 3 && args[0] === "-p") {
+    // Fast-path: structured binary payload and ref provided directly on invocation
+    if (inv.payloadBytes !== undefined && inv.ref !== undefined && inv.filespec) {
+      const ref = String(inv.ref);
+      const filespec = inv.filespec;
+      const bodyBytes = inv.payloadBytes;
+      return {
+        reqId,
+        isMutation: true,
+        header: `PUT ${reqId} ${filespec} ${ref} ${bodyBytes.length}`,
+        body: "",
+        bodyBytes,
+      };
+    }
+
+    // Fallback: colon-parsing for legacy or shell-constructed arguments
     const colonIdx = args[1].indexOf(":");
     if (colonIdx <= 0) return null;
     const ref = args[1].slice(0, colonIdx);
-    const payload = args[1].slice(colonIdx + 1);
     const filespec = args[2];
-    const bodyBytes = new TextEncoder().encode(payload);
+    const rawPayload = args[1].slice(colonIdx + 1);
+    if (rawPayload === "-" && !inv.payloadBytes) {
+      debugLog("persistence", "Malformed PUT command: stdin marker '-' without payloadBytes");
+      return null;
+    }
+    const bodyBytes = inv.payloadBytes ?? new TextEncoder().encode(rawPayload);
     return {
       reqId,
       isMutation: true,
       header: `PUT ${reqId} ${filespec} ${ref} ${bodyBytes.length}`,
-      body: payload,
+      body: inv.payloadBytes ? "" : rawPayload,
+      bodyBytes,
     };
   }
 
@@ -232,12 +257,12 @@ export function formatProtocolCommand(inv: Invocation, reqId: string = "1"): For
  * Communicates with the cormd daemon over a Unix Domain Socket with strict timeout,
  * distinguishing pre-send connection failures from in-flight/mutation drops.
  */
-export class DaemonQmapRunner implements QmapRunner {
+export class DaemonCormRunner implements CormRunner {
   private reqCounter = 0;
 
   constructor(
     readonly socketPath: string,
-    readonly fallback: QmapRunner,
+    readonly fallback: CormRunner,
     readonly timeoutMs: number = 1000,
   ) {}
 
@@ -272,7 +297,7 @@ export class DaemonQmapRunner implements QmapRunner {
       });
 
       if (response.status === "OK") {
-        return { stdout: response.body, stderr: "", code: 0 };
+        return { stdout: response.body, stderr: "", code: 0, stdoutBytes: response.bodyBytes };
       } else {
         if (response.body.includes("reconciliation required") && !cmd.header.startsWith("RECONCILE")) {
           const rawFspec = extractFilespec(inv);
@@ -331,7 +356,7 @@ export class DaemonQmapRunner implements QmapRunner {
   private sendUdsRequest(
     cmd: FormattedCommand,
     onSent: () => void,
-  ): Promise<{ status: string; reqId: string; body: string }> {
+  ): Promise<{ status: string; reqId: string; body: string; bodyBytes?: Uint8Array }> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const client = net.createConnection({ path: this.socketPath });
@@ -356,7 +381,7 @@ export class DaemonQmapRunner implements QmapRunner {
       });
 
       client.on("connect", () => {
-        const payloadBytes = new TextEncoder().encode(cmd.body);
+        const payloadBytes = cmd.bodyBytes ?? new TextEncoder().encode(cmd.body);
         const header = `${cmd.header}\n`;
         const headerBytes = new TextEncoder().encode(header);
         const full = new Uint8Array(headerBytes.length + payloadBytes.length);
@@ -405,9 +430,9 @@ export class DaemonQmapRunner implements QmapRunner {
         if (inBuffer.length >= headerByteLen + bodyLen) {
           settled = true;
           const bodyBytes = inBuffer.slice(headerByteLen, headerByteLen + bodyLen);
-          const body = new TextDecoder().decode(bodyBytes);
+          const body = bytesToBinaryString(bodyBytes);
           cleanup();
-          resolve({ status, reqId, body });
+          resolve({ status, reqId, body, bodyBytes });
         }
       });
 
@@ -563,7 +588,6 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
       ...(runtimeEnv() as Record<string, string>),
       CORM_AXIS_PATH: options.axisPath ?? "",
       CORM_AXIS_LIBS: options.axisPath ?? "",
-      QMAP_AXIS_PATH: options.axisPath ?? "",
       ...(options.embedEnv ?? {}),
     };
 
