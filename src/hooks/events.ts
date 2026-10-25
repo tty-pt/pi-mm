@@ -635,6 +635,7 @@ export interface ConversationalClassification {
   findings?: string[];
   evidence?: number[];
   context?: MemoryContext;
+  isAnchor?: boolean;
 }
 
 export async function persistConversationalMemory(
@@ -683,6 +684,7 @@ export async function persistConversationalMemory(
       evidence: classification.evidence,
       context,
       episode,
+      isAnchor: Boolean(classification.isAnchor || classification.summary.includes("@remember") || classification.summary.toLowerCase().startsWith("remember:") || context?.project === "user") || undefined,
     };
 
     const date = env.nowProvider().toISOString().slice(0, 10);
@@ -1215,6 +1217,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           }
 
           if (shouldStoreConversational) {
+            const isDirective = prompt.toLowerCase().includes("@remember") || prompt.toLowerCase().startsWith("remember:");
             const l0Classification: ConversationalClassification = {
               meaningful: true,
               type: "note",
@@ -1223,6 +1226,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
               problem: contentToStore,
               findings: [contentToStore],
               context: activeConversationTurn.topicSubject ? { subject: activeConversationTurn.topicSubject } : undefined,
+              isAnchor: isDirective || undefined,
             };
             const l0Ref = await persistConversationalMemory(l0Classification, envSource, ctx);
             debugLog("capture", "Captured L0 experience record", { l0Ref, summary: l0Classification.summary });

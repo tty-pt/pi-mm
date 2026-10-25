@@ -4,6 +4,10 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 
 ## [0.3.1]
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
+</p>
+
 ### Added
 - **Latent Human-Like Mipmap Recall & LOD Gating (`src/hooks/auto_recall.ts`)**:
   - Gated proactive context injection on conversational turns: unprompted conversational and task prompts lacking subsystem mentions yield zero context injection.
