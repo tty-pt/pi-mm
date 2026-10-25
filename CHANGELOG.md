@@ -2,6 +2,15 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.3.2]
+
+### Fixed
+- **Global Settings Fallback (`src/config.ts`)**:
+  - `readMmConfig()` and `resolveAdvancedTools()` now check global settings candidates (`PI_SETTINGS_PATH`, `${PI_CODING_AGENT_DIR}/settings.json`, `~/.pi/agent/settings.json`, and `~/.pi/settings.json`) when `<cwd>/.pi/settings.json` is missing or does not configure `pi-mm`.
+  - Project-level settings continue to override global settings field-by-field.
+  - Added support for `"mm"` key alongside `"pi-mm"`.
+  - Updated database compaction script (`scripts/compact_db.ts`) to use `readMmConfig()`.
+
 ## [0.3.1]
 
 <p align="center">
