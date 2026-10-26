@@ -1,9 +1,9 @@
-import type { PiCtx, PiToolSpec } from "../hooks/events";
-import type { EnvSource } from "./index";
-import { axisPath, memDir, exportDetail, sepalConfigured } from "./index";
-import { filespecFor, buildForgetInvocation, embedEnv } from "../corm";
-import { isNumericRef } from "../resolve";
-import { scanTopRef } from "./scan";
+import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
+import type { EnvSource } from "./index.ts";
+import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
+import { filespecFor, buildForgetInvocation, embedEnv } from "../corm.ts";
+import { isNumericRef } from "../resolve.ts";
+import { scanTopRef } from "./scan.ts";
 
 export function makeForgetTool(envSource: EnvSource): PiToolSpec {
   return {

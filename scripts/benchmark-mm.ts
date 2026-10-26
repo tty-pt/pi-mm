@@ -183,9 +183,14 @@ const TASKS: BenchmarkTask[] = [
   },
 ];
 
-function scoreLexical(itemText: string, query: string): number {
+function scoreLexical(itemText: unknown, query: string): number {
   const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const textLower = itemText.toLowerCase();
+  const textStr = typeof itemText === "string"
+    ? itemText
+    : (itemText instanceof Uint8Array
+      ? new TextDecoder().decode(itemText)
+      : (typeof itemText === "object" && itemText !== null ? JSON.stringify(itemText) : String(itemText || "")));
+  const textLower = textStr.toLowerCase();
   let hits = 0;
   for (const token of queryTokens) {
     if (textLower.includes(token)) hits++;

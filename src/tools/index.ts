@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import type { Pi, PiCtx, PiToolSpec } from "../hooks/events";
-import type { MmConfig } from "../config";
-import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
-import type { CormRunner } from "../corm";
-import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm";
+import type { Pi, PiCtx, PiToolSpec } from "../hooks/events.ts";
+import type { MmConfig } from "../config.ts";
+import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config.ts";
+import type { CormRunner } from "../corm.ts";
+import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm.ts";
 import { ensureDaemon } from "../daemon.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";

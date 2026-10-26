@@ -1,8 +1,8 @@
-import type { PiCtx, PiToolSpec } from "../hooks/events";
-import type { EnvSource } from "./index";
-import { axisPath, memDir, exportDetail, sepalConfigured } from "./index";
-import { filespecFor, buildListInvocation, buildForgetInvocation, embedEnv } from "../corm";
-import { parseBareRefs } from "../resolve";
+import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
+import type { EnvSource } from "./index.ts";
+import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
+import { filespecFor, buildListInvocation, buildForgetInvocation, embedEnv } from "../corm.ts";
+import { parseBareRefs } from "../resolve.ts";
 
 export function makeResetTool(envSource: EnvSource): PiToolSpec {
   return {
