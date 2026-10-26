@@ -4,6 +4,22 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 
 ## [0.3.2]
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
+</p>
+
+### Added
+- **Decoupled Socket Runtime Path & DrvFs Auto-Fallback (`src/config.ts`, `src/tools/index.ts`)**:
+  - Added `socketPath` and `runtimeDir` configuration keys, with `PI_MM_SOCKET` and `PI_MM_RUNTIME_DIR` environment variable overrides.
+  - Added automatic detection and routing of `cormd.sock` to `$XDG_RUNTIME_DIR/pi-mm/cormd-<hash>.sock` or `/tmp/pi-mm/cormd-<hash>.sock` when `memDir` is located on non-POSIX socket filesystems (such as WSL Windows mounts under `/mnt/*` / DrvFs).
+  - Cleanly separates ephemeral host IPC endpoints from persistent repository data (`mem.db`, vector indexes, crash journals).
+
+### Changed
+- **System-Wide Axis Library Resolution (`src/config.ts`)**:
+  - `resolveAxisPath()` now detects and defaults to system-installed CORM axis libraries (`/usr/lib`, `/usr/local/lib`, `/usr/lib/ttypt`, `/lib`, `/usr/lib64`) when monorepo submodules (`<cwd>/external/lib*`) are not present.
+  - Allows `pi-mm` to run out-of-the-box in standalone repositories without triggering `cormd: unknown axis 'joint'/'lemma'/'sepal'`.
+  - Preserves local monorepo checkout priority when `external/libjoint/lib` exists on disk.
+
 ### Fixed
 - **Global Settings Fallback (`src/config.ts`)**:
   - `readMmConfig()` and `resolveAdvancedTools()` now check global settings candidates (`PI_SETTINGS_PATH`, `${PI_CODING_AGENT_DIR}/settings.json`, `~/.pi/agent/settings.json`, and `~/.pi/settings.json`) when `<cwd>/.pi/settings.json` is missing or does not configure `pi-mm`.
@@ -12,10 +28,6 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - Updated database compaction script (`scripts/compact_db.ts`) to use `readMmConfig()`.
 
 ## [0.3.1]
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
-</p>
 
 ### Added
 - **Latent Human-Like Mipmap Recall & LOD Gating (`src/hooks/auto_recall.ts`)**:

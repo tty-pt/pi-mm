@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -11,6 +12,8 @@ export interface MmConfig {
   cormBin: string;
   qmapBin?: string;
   cormdBin?: string;
+  socketPath?: string;
+  runtimeDir?: string;
   axisLibs: string | null;
   memDir: string;
   scanLimit: number;
@@ -50,6 +53,8 @@ export const DEFAULT_CAPTURE_KEYWORDS: string[] = [
 export const DEFAULT_CONFIG: MmConfig = {
   cormBin: "",
   cormdBin: undefined,
+  socketPath: undefined,
+  runtimeDir: undefined,
   axisLibs: null,
   memDir: ".pi/mm",
   scanLimit: 10,
@@ -83,6 +88,10 @@ export function loadConfig(raw: unknown): MmConfig {
   const record = raw as Record<string, unknown>;
   const bin = record["cormBin"] ?? record["qmapBin"];
   const cormd = record["cormdBin"];
+  const rawSocket = record["socketPath"];
+  const socketPath = typeof rawSocket === "string" && rawSocket.trim() !== "" ? rawSocket.trim() : undefined;
+  const rawRuntime = record["runtimeDir"];
+  const runtimeDir = typeof rawRuntime === "string" && rawRuntime.trim() !== "" ? rawRuntime.trim() : undefined;
   const libs = record["axisLibs"];
   const dir = record["memDir"];
   const limit = record["scanLimit"];
@@ -144,6 +153,8 @@ export function loadConfig(raw: unknown): MmConfig {
   return {
     cormBin: effectiveBin,
     cormdBin: typeof cormd === "string" && cormd.trim() !== "" ? cormd.trim() : undefined,
+    socketPath,
+    runtimeDir,
     axisLibs: typeof libs === "string" && libs.trim() !== "" ? libs.trim() : DEFAULT_CONFIG.axisLibs,
     memDir: typeof dir === "string" && dir.trim() !== "" ? dir.trim() : DEFAULT_CONFIG.memDir,
     scanLimit: typeof limit === "number" && Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_CONFIG.scanLimit,
@@ -176,6 +187,8 @@ export function loadConfig(raw: unknown): MmConfig {
 export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>): MmConfig {
   const envBin = env["CORM_BIN"];
   const envCormd = env["CORMD_BIN"];
+  const envSocket = env["PI_MM_SOCKET"] ?? env["MM_SOCKET"];
+  const envRuntimeDir = env["PI_MM_RUNTIME_DIR"] ?? env["MM_RUNTIME_DIR"];
   const envLibs = env["CORM_AXIS_PATH"];
 
   // Independent embedding settings
@@ -299,6 +312,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   return {
     cormBin: resolvedBin,
     cormdBin: cfg.cormdBin ?? (typeof envCormd === "string" && envCormd.trim() !== "" ? envCormd.trim() : undefined),
+    socketPath: cfg.socketPath ?? (typeof envSocket === "string" && envSocket.trim() !== "" ? envSocket.trim() : undefined),
+    runtimeDir: cfg.runtimeDir ?? (typeof envRuntimeDir === "string" && envRuntimeDir.trim() !== "" ? envRuntimeDir.trim() : undefined),
     axisLibs: cfg.axisLibs === null && typeof envLibs === "string" && envLibs.trim() !== "" ? envLibs.trim() : cfg.axisLibs,
     memDir: cfg.memDir,
     scanLimit: cfg.scanLimit,
@@ -410,8 +425,73 @@ export function resolveCormdBin(
   return { source: "none", path: "" };
 }
 
-export function resolveAxisPath(cfg: MmConfig, cwd: string): string {
+export function resolveSocketPath(cfg: MmConfig, memDir: string): string {
+  // 1. Explicit socket path (setting or env)
+  if (cfg.socketPath && cfg.socketPath.trim() !== "") {
+    return cfg.socketPath.trim();
+  }
+
+  // 2. Explicit runtime directory (setting or env)
+  if (cfg.runtimeDir && cfg.runtimeDir.trim() !== "") {
+    const hash = createHash("sha256").update(memDir).digest("hex").slice(0, 12);
+    return join(cfg.runtimeDir.trim(), `cormd-${hash}.sock`);
+  }
+
+  // 3. Auto-fallback for filesystems lacking AF_UNIX support (e.g. WSL DrvFs /mnt/*)
+  if (memDir.startsWith("/mnt/")) {
+    const env = runtimeEnv();
+    const fallbackBase = env["XDG_RUNTIME_DIR"] || "/tmp";
+    const hash = createHash("sha256").update(memDir).digest("hex").slice(0, 12);
+    return join(fallbackBase, "pi-mm", `cormd-${hash}.sock`);
+  }
+
+  // 4. Default: inside memDir
+  return join(memDir, "cormd.sock");
+}
+
+export function resolveAxisPath(
+  cfg: MmConfig,
+  cwd: string,
+  probe: (p: string) => boolean = existsSync,
+): string {
   if (cfg.axisLibs !== null) return cfg.axisLibs;
+
+  const env = runtimeEnv();
+  const envAxis = env["CORM_AXIS_PATH"] ?? env["CORM_AXIS_LIBS"];
+  if (envAxis && envAxis.trim() !== "") return envAxis.trim();
+
+  // 1. If project has local monorepo external/lib* checkouts, prefer them
+  const localJoint = join(cwd, "external", "libjoint", "lib");
+  if (probe(localJoint)) {
+    const lemma = join(cwd, "external", "liblemma", "lib");
+    const islet = join(cwd, "external", "libislet", "lib");
+    let base = `${localJoint}:${lemma}:${islet}`;
+    if (sepalConfigured(cfg)) {
+      base += `:${join(cwd, "external", "libsepal", "lib")}`;
+    }
+    return base;
+  }
+
+  // 2. System-wide library directories (standard system installation)
+  const systemCandidates = [
+    "/usr/lib/ttypt",
+    "/usr/local/lib/ttypt",
+    "/usr/lib",
+    "/usr/local/lib",
+    "/lib",
+    "/usr/lib64",
+  ];
+  for (const dir of systemCandidates) {
+    if (
+      probe(join(dir, "libjoint.so")) ||
+      probe(join(dir, "libjoint.dylib")) ||
+      probe(join(dir, "libjoint.dll"))
+    ) {
+      return dir;
+    }
+  }
+
+  // 3. Fallback: if nothing exists, default to local monorepo path
   const joint = join(cwd, "external", "libjoint", "lib");
   const lemma = join(cwd, "external", "liblemma", "lib");
   const islet = join(cwd, "external", "libislet", "lib");

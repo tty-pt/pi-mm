@@ -1,5 +1,5 @@
 import type { EnvSource } from "../tools/index.ts";
-import { axisPath, memDir, sepalConfigured } from "../tools/index.ts";
+import { axisPath, memDir, sepalConfigured, socketPath } from "../tools/index.ts";
 import { describeCapabilities } from "../config.ts";
 import { evaluateTurnWithJudge } from "../judge/adapter.ts";
 import type { JudgeDecision } from "../judge/types.ts";
@@ -1021,7 +1021,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           filespec: fspec,
           axisRoster: axes.split(":"),
           cormdRunning: isDaemonLockHeld(cwd),
-          cormdSocket: `${cwd}/cormd.sock`,
+          cormdSocket: socketPath(env),
           judgeMode: env.cfg.judgeMode,
           judgeUrl: env.cfg.judgeUrl,
           judgeModel: env.cfg.judgeModel,

@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { Pi, PiCtx, PiToolSpec } from "../hooks/events";
 import type { MmConfig } from "../config";
-import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
+import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
 import type { CormRunner } from "../corm";
 import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm";
 import { ensureDaemon } from "../daemon.ts";
@@ -75,7 +75,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
   return async (ctx) => {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
-    const socketPath = join(mDir, "cormd.sock");
+    const socketPath = resolveSocketPath(cfg, mDir);
     const axes = resolveAxisPath(cfg, ctx.cwd);
     const embed = sepalConfigured(cfg);
     const fspec = filespecFor(mDir, embed);
@@ -112,6 +112,10 @@ export function defaultEnvSource(pi: Pi): EnvSource {
 
 export function axisPath(env: ToolEnv): string {
   return resolveAxisPath(env.cfg, env.cwd);
+}
+
+export function socketPath(env: ToolEnv): string {
+  return resolveSocketPath(env.cfg, memDir(env));
 }
 
 export function resolveMemDir(cwd: string, dir: string): string {

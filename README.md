@@ -141,6 +141,9 @@ pi --extension .pi/extensions/pi-mm
 | `embedKey` | `CORM_SEPAL_EMBED_KEY` | *(none)* | Optional Bearer token for remote embeddings. |
 | `semanticSearch` | `PI_MM_SEMANTIC_SEARCH` | `false` | Enable dense vector indexing with `libsepal` (`true` / `false`). |
 | `memDir` | `PI_MM_DIR` | `".pi/mm"` | Directory where memory databases and logs are stored. |
+| `socketPath` | `PI_MM_SOCKET` | *(auto)* | Path to the `cormd` Unix domain socket. Defaults to `<memDir>/cormd.sock`, with automatic routing to `$XDG_RUNTIME_DIR/pi-mm/` or `/tmp/pi-mm/` on filesystems that don't support sockets (such as WSL Windows mounts under `/mnt/*` / DrvFs). |
+| `runtimeDir` | `PI_MM_RUNTIME_DIR` | *(auto)* | Custom runtime directory for sockets and ephemeral IPC endpoints. |
+| `axisLibs` | `CORM_AXIS_PATH` | *(auto)* | Path or colon-separated list of directories for CORM axis libraries (`libjoint`, `liblemma`, `libislet`, `libsepal`). Defaults to local `<cwd>/external/lib*/lib` if present, with automatic fallback to system-installed libraries (`/usr/lib`, `/usr/local/lib`). |
 | `scanLimit` | `PI_MM_SCAN_LIMIT` | `10` | Maximum candidate results returned per recall query. |
 | `advancedTools` | `PI_MM_ADVANCED_TOOLS` | `false` | Expose 9 low-level diagnostic tools (`memory_store`, `memory_think`, etc.). |
 | *(diagnostics)* | `PI_MM_DEBUG_MEMORY` | `0` | Set `1` to enable structured lifecycle diagnostics and JSONL tracing to stderr. |
