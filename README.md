@@ -65,7 +65,14 @@ AUREN_CHAT_MODEL="qwen" \
 AUREN_CHAT_PATH=~/.models/qwen2.5-0.5b-instruct.gguf \
 AUREN_EMBED_MODEL="bge-small" \
 AUREN_EMBED_PATH=~/.models/bge-small-en-v1.5.gguf \
-axil -A -d -p 4242 -m $HOME/auren/lib/libaxil-auren
+axil -A -d -p 4242 -m libaxil-auren
+```
+
+Verify that the local inference and embedding endpoint answers:
+```bash
+curl -s http://127.0.0.1:4242/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"bge-small","input":"health check"}'
 ```
 
 ### 3. Enable in Pi
@@ -105,35 +112,116 @@ When you talk to Pi, `pi-mm` will automatically classify technical decisions wit
 | **`liblemma`** | Diacritic-preserving full-text search tokenizer (`pão ≠ pao`) and memory-mapped inverted lexical index. | [liblemma Installation & Build](https://github.com/tty-pt/liblemma#installation--build) |
 | **`axil-auren`** | Local LLM inference, OpenAI-compatible embeddings, and Jev-compatible System One decision judge. | [axil-auren Installation & Build](https://github.com/tty-pt/axil-auren#installation--build) |
 
-### Prebuilt Packages
-Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD are distributed via the [tty.pt package repository](https://github.com/tty-pt/ci/blob/main/docs/install.md). Use `libcorm`, `libsepal`, `libjoint`, `liblemma`, or `libauren` (or `axil-auren`) as package names.
+### Prebuilt Package Installation & Updates
+
+Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD are distributed via the [tty.pt package repository](https://github.com/tty-pt/ci/blob/main/docs/install.md).
+
+#### Debian / Ubuntu / WSL2 (APT)
+Configure the `tty.pt` APT repository and signing key:
+```bash
+sudo mkdir -p /etc/apt/keyrings
+wget -qO- https://tty.pt/apt/keyrings/archive-key.gpg | sudo tee /etc/apt/keyrings/ttypt.asc > /dev/null
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/ttypt.asc] https://tty.pt/deb stable main" | sudo tee /etc/apt/sources.list.d/ttypt.list
+```
+
+Install or update all required engines:
+```bash
+sudo apt update
+sudo apt install -y axil axil-auren libsepal liblemma libjoint libcorm
+```
+
+To update existing installations specifically:
+```bash
+sudo apt update
+sudo apt --only-upgrade install -y axil axil-auren libsepal liblemma libjoint libcorm
+```
+
+#### macOS (Homebrew)
+```bash
+brew tap tty-pt/tap https://github.com/tty-pt/tap.git
+brew install axil axil-auren libsepal liblemma libjoint libcorm
+# To update:
+brew upgrade axil axil-auren libsepal liblemma libjoint libcorm
+```
+
+#### Arch Linux (pacman)
+```bash
+sudo pacman-key --add <(wget -qO- https://tty.pt/pacman/key-ttypt.pub)
+echo -e "\n[ttypt]\nSigLevel = Required DatabaseOptional\nServer = https://tty.pt/pacman/\$arch" | sudo tee -a /etc/pacman.conf
+sudo pacman -Sy ttypt/axil ttypt/axil-auren ttypt/libsepal ttypt/liblemma ttypt/libjoint ttypt/libcorm
+```
+
+#### Fedora / RHEL (dnf)
+```bash
+curl -O https://tty.pt/rpm/ttypt.repo && sudo mv ttypt.repo /etc/yum.repos.d/
+sudo rpm --import https://tty.pt/rpm/RPM-GPG-KEY-ttypt
+sudo dnf install -y axil axil-auren libsepal liblemma libjoint libcorm
+```
+
+### Build & Update from Source
+
+If compiling directly from source repositories:
+```bash
+# Prerequisites on Debian/Ubuntu:
+sudo apt update && sudo apt install -y build-essential git pkg-config libcurl4-openssl-dev
+
+# Clone or update and build each repository:
+for repo in axil libcorm libjoint liblemma libsepal axil-auren; do
+  if [ -d "$repo" ]; then
+    echo "Updating $repo..."
+    (cd "$repo" && git pull && make clean && make && sudo make install)
+  else
+    echo "Cloning and building $repo..."
+    git clone "https://github.com/tty-pt/${repo}.git"
+    (cd "$repo" && make && sudo make install)
+  fi
+done
+sudo ldconfig
+```
 
 ---
 
 ## Installation & Setup
 
-`pi-mm` can be installed like any standard Pi extension:
+`pi-mm` can be installed and updated like any standard Pi extension:
 
-### Package Installation (Recommended)
-Install via npm / Pi extension registry:
+### Option A: Pi Extension Registry (Recommended)
+Install or update via npm / Pi extension registry:
 ```bash
+# Initial install:
+pi install npm:@tty-pt/pi-mm
+
+# Update to latest release:
 pi install npm:@tty-pt/pi-mm
 ```
 
-### Project-Specific Clone
+### Option B: Project-Specific Extension (Submodule or Directory)
 Place or clone the extension into your repository's `.pi/extensions/` directory:
 ```bash
+# Clone directly:
 git clone https://github.com/tty-pt/pi-mm.git .pi/extensions/pi-mm
+
+# Or add as git submodule:
+git submodule add https://github.com/tty-pt/pi-mm.git .pi/extensions/pi-mm
+
+# Update an existing clone or submodule:
+git submodule update --remote .pi/extensions/pi-mm
+# or:
+cd .pi/extensions/pi-mm && git pull origin main
 ```
 
-### Global User Extension
+### Option C: Global User Extension (Available across all projects)
 Place or clone the extension into your global Pi agent directory:
 ```bash
+# Initial install:
 git clone https://github.com/tty-pt/pi-mm.git ~/.pi/agent/extensions/pi-mm
+
+# Update to latest:
+cd ~/.pi/agent/extensions/pi-mm && git pull origin main
 ```
 
-### Direct CLI Flag
-Run directly during development:
+### Option D: Direct CLI Flag (Development)
+Run directly against local source:
 ```bash
 pi --extension .pi/extensions/pi-mm
 ```
