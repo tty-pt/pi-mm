@@ -216,9 +216,11 @@ Project-level settings always override global settings on a key-by-key basis.
 
 ---
 
-## Diagnostic Commands (`/mm doctor` & `/mm status`)
+## Diagnostic & Timeline Commands (`/mm doctor`, `/mm overview`, `/mm timeline`)
 
-Run `/mm doctor`, `/mm status`, or `/mm` in Pi to inspect real-time memory health and storage metrics:
+Run `/mm doctor`, `/mm status`, `/mm overview`, `/mm timeline`, or `/mm` in Pi to inspect real-time memory health, storage metrics, and operational history:
+
+### 1. Health Diagnostics (`/mm doctor` or `/mm status`)
 ```text
 /mm doctor
 ```
@@ -231,6 +233,17 @@ Reports:
 * **Secondary Axis Modes**: Joint temporal axis (persistent vs ephemeral in-memory), Sepal vector axis (ephemeral zero-disk mode vs persistent file), and embed cache binary size.
 * **Epistemic Roster**: Total indexed record count across memory tiers.
 
+### 2. All-Time Timeline Overview (`/mm overview` or `/mm timeline`)
+```text
+/mm overview
+```
+Reports:
+* **Operational Span**: Earliest to latest active operational dates across recorded sessions.
+* **Tier Distribution**: Counts of principles (L3), invariants (L2), task milestones (L1), and raw observations (L0).
+* **Universal Principles (L3)**: High-level architectural heuristics and lessons learned.
+* **Invariants & Decisions (L2)**: Active system-wide architectural rules and project constraints.
+* **Timeline Epochs**: Chronological grouping of memory activity by date/epoch with key highlights.
+
 ---
 
 ## Agent Tools
@@ -240,11 +253,14 @@ Reports:
 By default, `pi-mm` exposes only 3 high-level tools to keep the model's context window clean and avoid tool ambiguity:
 
 ### 1. `memory_recall`
-Performs hybrid search fusing keyword matches ([libstoma](https://github.com/tty-pt/site/tree/main/external/libstoma)) and vector similarity ([libsepal](https://github.com/tty-pt/site/tree/main/external/libsepal)) via Reciprocal Rank Fusion ($k=60$).
-- **`query`**: Natural-language question, topic, error message, or symbol.
+Multi-resolution memory retrieval: search semantically across topics, generate all-time high-level overviews, or zoom in to inspect specific memory investigations, approaches, diffs, and evidence trees.
+- **`query`**: Natural-language question, topic, error message, or symbol. Omit or pass `"overview"` to generate an all-time high-level memory overview. Inline shorthand queries like `ref:42` or `zoom:42` automatically delegate to vertical zoom-in.
+- **`overview`**: When `true`, synthesizes a structured timeline and hierarchical overview of active principles (L3), invariants (L2), milestones (L1), and chronological epochs across all operational time.
+- **`zoomRef`**: Reference number of a specific memory to drill down into vertically. Returns full problem description, attempted approaches (worked/failed/abandoned), diffs, findings, outcomes, and full upward/downward evidence trees.
 - **`project`** / **`subsystem`**: Optional scope filters to boost matching memories.
 - **`level`**: Optional resolution filter (`'L0'`, `'L1'`, `'L2'`, `'L3'`).
 - **`includeEvidence`**: When `true`, automatically fetches and attaches the full underlying evidence tree (diffs, shell commands, prior investigations).
+- **`limit`**: Maximum number of memories to return (default 5 for search, 15 for overview, max 30).
 
 ### 2. `memory_record`
 Explicitly records a resolved task, bug fix, or project invariant.

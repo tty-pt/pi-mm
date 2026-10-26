@@ -570,6 +570,7 @@ function runRegressionFixtures(): void {
 
   const taskWithoutTarget: BenchmarkTask = {
     query: "test query",
+    queryType: "exact_identifier",
     expectedRef: 10,
     obsoleteCandidateRefs: [20],
   };

@@ -18,7 +18,9 @@ import {
   extractBatchDiffs,
   extractReliableProjectContext,
   type ToolResultEvent,
+  type SignificantEvent,
 } from "../src/episode.ts";
+import type { PiCtx } from "../src/hooks/events.ts";
 
 function printUsage(): void {
   console.log(`Usage: deno run --allow-all scripts/replay_session.ts <session-transcript.jsonl>
@@ -50,7 +52,7 @@ function main(): void {
   let totalEvents = 0;
   let informativeEvents = 0;
   let droppedEvents = 0;
-  const simulatedEvents: ToolResultEvent[] = [];
+  const simulatedEvents: SignificantEvent[] = [];
 
   for (const line of rawLines) {
     let entry: Record<string, unknown>;
@@ -66,18 +68,23 @@ function main(): void {
       const toolEvent: ToolResultEvent = {
         toolName: String(entry.toolName || entry.name || "unknown"),
         input: (entry.input as Record<string, unknown>) || {},
-        result: entry.result,
-        error: entry.error as Error | undefined,
+        args: (entry.args as Record<string, unknown>) || undefined,
+        content: Array.isArray(entry.content)
+          ? entry.content
+          : (typeof entry.result === "string" ? [{ type: "text", text: entry.result }] : undefined),
+        details: entry.result ?? entry.details,
         isError: Boolean(entry.isError || entry.error),
       };
 
       const isInformative = isInformativeExecution(toolEvent);
       if (isInformative) {
         informativeEvents++;
-        simulatedEvents.push(toolEvent);
-        if (verbose) {
-          const approach = summarizeToolEvent(toolEvent);
-          console.log(`[PASS] ${toolEvent.toolName}: ${approach.approach} -> ${approach.outcome}`);
+        const sig = summarizeToolEvent(toolEvent);
+        if (sig) {
+          simulatedEvents.push(sig);
+          if (verbose) {
+            console.log(`[PASS] ${toolEvent.toolName}: ${sig.approach || sig.summary} -> ${sig.outcome || "neutral"}`);
+          }
         }
       } else {
         droppedEvents++;
@@ -88,9 +95,10 @@ function main(): void {
     }
   }
 
+  const fakeCtx: PiCtx = { cwd: Deno.cwd(), hasUI: false, mode: "headless" };
   const approaches = extractBatchApproaches(simulatedEvents);
   const diffs = extractBatchDiffs(simulatedEvents);
-  const context = extractReliableProjectContext(simulatedEvents);
+  const context = extractReliableProjectContext(fakeCtx, simulatedEvents);
 
   console.log(`--- Simulation Metrics ---`);
   console.log(`Total Tool Events:       ${totalEvents}`);
@@ -113,7 +121,7 @@ function main(): void {
     }
   }
 
-  if (context.project || context.subsystem) {
+  if (context && (context.project || context.subsystem)) {
     console.log(`\n--- Inferred Context ---`);
     if (context.project) console.log(`  Project:   ${context.project}`);
     if (context.subsystem) console.log(`  Subsystem: ${context.subsystem}`);
