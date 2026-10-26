@@ -38,9 +38,9 @@ It combines native C database speed (`libcorm`) with intelligent decision judgin
 
 ## Quickstart: Pair with Local `axil-auren` (60 Seconds)
 
-You can pair `pi-mm` with [axil-auren](https://github.com/tty-pt/auren) (or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
+You can pair `pi-mm` with [axil-auren](https://github.com/tty-pt/axil-auren) (or any compatible OpenAI / Jev System One endpoint) for private, zero-cost, local inference and embeddings.
 
-> 📖 **Full axil-auren Documentation**: See [auren README](https://github.com/tty-pt/auren) (or local [auren/README.md](../../../auren/README.md)) for installation and multi-model configuration details.
+> 📖 **Full axil-auren Documentation**: See [axil-auren README & Install Guide](https://github.com/tty-pt/axil-auren#installation--build) (or local [axil-auren/README.md](../../../axil-auren/README.md)) for installation and multi-model configuration details.
 
 ### 1. Download Fast GGUF Models (~530 MB total)
 
@@ -93,6 +93,23 @@ When you talk to Pi, `pi-mm` will automatically classify technical decisions wit
 
 ---
 
+## Prerequisites & Core C Engines
+
+`pi-mm` leverages ultra-fast, native C engines to index and store memories with microsecond latency. Follow the official installation and build guides for each component:
+
+| Engine | Description | Installation & Build Guide |
+| :--- | :--- | :--- |
+| **`libcorm`** | In-memory multidimensional key-value store, unified recall kernel, and resident `cormd` daemon. | [libcorm Installation & Build](https://github.com/tty-pt/libcorm#installation--build) |
+| **`libsepal`** | Pure-C semantic Approximate Nearest Neighbor (ANN) vector store powering dense memory embeddings. | [libsepal Installation & Build](https://github.com/tty-pt/libsepal#installation--build) |
+| **`libjoint`** | Interval-tree temporal presence engine for historical co-occurrence and time-window queries. | [libjoint Installation & Build](https://github.com/tty-pt/libjoint#installation--build) |
+| **`liblemma`** | Diacritic-preserving full-text search tokenizer (`pão ≠ pao`) and memory-mapped inverted lexical index. | [liblemma Installation & Build](https://github.com/tty-pt/liblemma#installation--build) |
+| **`axil-auren`** | Local LLM inference, OpenAI-compatible embeddings, and Jev-compatible System One decision judge. | [axil-auren Installation & Build](https://github.com/tty-pt/axil-auren#installation--build) |
+
+### Prebuilt Packages
+Prebuilt packages for Linux (APT / Alpine / Arch / Fedora-RHEL), macOS (Homebrew), Windows (winget / MSYS2), and OpenBSD are distributed via the [tty.pt package repository](https://github.com/tty-pt/ci/blob/main/docs/install.md). Use `libcorm`, `libsepal`, `libjoint`, `liblemma`, or `libauren` (or `axil-auren`) as package names.
+
+---
+
 ## Installation & Setup
 
 `pi-mm` can be installed like any standard Pi extension:
@@ -125,27 +142,52 @@ pi --extension .pi/extensions/pi-mm
 
 ## Configuration Reference
 
-`pi-mm` follows standard Pi configuration conventions. Options can be defined in `.pi/settings.json` under the `"pi-mm"` key or overridden via environment variables.
+`pi-mm` follows standard Pi configuration conventions. Options can be defined in `.pi/settings.json` under the `"pi-mm"` (or `"mm"`) key, or overridden via environment variables.
+
+### Global Settings Fallback
+If a repository does not have a local `.pi/settings.json`, `pi-mm` automatically checks global configuration files in the following order:
+1. `PI_SETTINGS_PATH` (explicit file override)
+2. `${PI_CODING_AGENT_DIR}/settings.json`
+3. `~/.pi/agent/settings.json`
+4. `~/.pi/settings.json`
+
+Project-level settings always override global settings on a key-by-key basis.
+
+### Complete Options Table
 
 | `settings.json` Key | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `judgeMode` | `PI_MM_JUDGE_MODE` | `"auto"` | `"auto"` (use judge if reachable), `"heuristic"` (local regex), or `"off"`. |
-| `judgeUrl` | `PI_MM_JUDGE_URL` | *(none)* | URL of System One judge (e.g. `http://127.0.0.1:4242`). |
-| `judgeModel` | `PI_MM_JUDGE_MODEL` | `"qwen"` / `"default"` | Model identifier for decision judging. |
-| `judgeKey` | `PI_MM_JUDGE_KEY` | *(none)* | Optional Bearer auth token for remote endpoints. |
-| `judgeTimeoutMs` | `PI_MM_JUDGE_TIMEOUT_MS` | `15000` | Abort timeout in milliseconds for judge evaluation. |
-| `judgeFallback` | `PI_MM_JUDGE_FALLBACK` | `"skip"` | Fallback on service failure: `"skip"` or `"capture"`. |
-| `captureKeywords` | `PI_MM_CAPTURE_KEYWORDS` | `["@remember", "@memory", "remember:", "note:"]` | Trigger word families that bypass the judge and immediately save memory. |
-| `embedUrl` | `CORM_SEPAL_EMBED_URL` | *(none)* | URL of vector embeddings endpoint (e.g. `http://127.0.0.1:4242/v1/embeddings`). |
-| `embedModel` | `CORM_SEPAL_EMBED_MODEL` | *(none)* | Model identifier for embeddings (e.g. `bge-small`). |
-| `embedKey` | `CORM_SEPAL_EMBED_KEY` | *(none)* | Optional Bearer token for remote embeddings. |
-| `semanticSearch` | `PI_MM_SEMANTIC_SEARCH` | `false` | Enable dense vector indexing with `libsepal` (`true` / `false`). |
-| `memDir` | `PI_MM_DIR` | `".pi/mm"` | Directory where memory databases and logs are stored. |
-| `socketPath` | `PI_MM_SOCKET` | *(auto)* | Path to the `cormd` Unix domain socket. Defaults to `<memDir>/cormd.sock`, with automatic routing to `$XDG_RUNTIME_DIR/pi-mm/` or `/tmp/pi-mm/` on filesystems that don't support sockets (such as WSL Windows mounts under `/mnt/*` / DrvFs). |
-| `runtimeDir` | `PI_MM_RUNTIME_DIR` | *(auto)* | Custom runtime directory for sockets and ephemeral IPC endpoints. |
-| `axisLibs` | `CORM_AXIS_PATH` | *(auto)* | Path or colon-separated list of directories for CORM axis libraries (`libjoint`, `liblemma`, `libislet`, `libsepal`). Defaults to local `<cwd>/external/lib*/lib` if present, with automatic fallback to system-installed libraries (`/usr/lib`, `/usr/local/lib`). |
+| `cormBin` | `CORM_BIN` | *(auto)* | Path to the `corm` CLI binary. Auto-detects in `PATH` or `<cwd>/external/libcorm/bin/corm`. |
+| `cormdBin` | `CORMD_BIN` | *(auto)* | Path to the `cormd` daemon binary. Auto-detects alongside `corm`, in `PATH`, or in `<cwd>/external/libcorm/bin/cormd`. |
+| `socketPath` | `PI_MM_SOCKET` / `MM_SOCKET` | *(auto)* | Path to the `cormd` Unix domain socket. Defaults to `<memDir>/cormd.sock`, with automatic routing to `$XDG_RUNTIME_DIR/pi-mm/` or `/tmp/pi-mm/` on filesystems lacking AF_UNIX support (such as WSL Windows mounts under `/mnt/*` / DrvFs). |
+| `runtimeDir` | `PI_MM_RUNTIME_DIR` / `MM_RUNTIME_DIR` | *(auto)* | Custom base directory for ephemeral sockets and IPC endpoints. |
+| `axisLibs` | `CORM_AXIS_PATH` / `CORM_AXIS_LIBS` | *(auto)* | Colon-separated directory path for CORM axis libraries (`libjoint`, `liblemma`, `libislet`, `libsepal`). Defaults to local `<cwd>/external/lib*/lib` if present, with automatic fallback to system libraries (`/usr/lib/ttypt`, `/usr/lib`, `/usr/local/lib`). |
+| `memDir` | `PI_MM_DIR` | `".pi/mm"` | Directory where memory databases, vector indexes, and association graphs are stored. |
 | `scanLimit` | `PI_MM_SCAN_LIMIT` | `10` | Maximum candidate results returned per recall query. |
-| `advancedTools` | `PI_MM_ADVANCED_TOOLS` | `false` | Expose 9 low-level diagnostic tools (`memory_store`, `memory_think`, etc.). |
+| `advancedTools` | `PI_MM_ADVANCED_TOOLS` | `false` | Expose 9 low-level diagnostic and maintenance tools (`memory_store`, `memory_think`, `memory_consolidate`, etc.). |
+| `semanticSearch` | `PI_MM_SEMANTIC_SEARCH` / `MM_SEMANTIC_SEARCH` | `false` | Enable dense vector indexing with `libsepal` (`true` / `false`). |
+| `embedUrl` | `CORM_SEPAL_EMBED_URL` | *(none)* | URL of vector embeddings endpoint (e.g. `http://127.0.0.1:4242/v1/embeddings`). Falls back to `AUREN_URL` / `QLLM_URL`. |
+| `embedModel` | `CORM_SEPAL_EMBED_MODEL` | *(none)* | Model identifier for embeddings (e.g. `bge-small`). Falls back to `AUREN_MODEL`. |
+| `embedKey` | `CORM_SEPAL_EMBED_KEY` | *(none)* | Optional Bearer token for remote embeddings. Falls back to `AUREN_KEY`. |
+| `ephemeralSepal` | `PI_MM_SEPAL_EPHEMERAL` / `CORM_SEPAL_EPHEMERAL` | `false` | Run the Sepal vector axis purely in RAM (zero disk files created for vectors). |
+| `ephemeralJoint` | `CORM_JOINT_EPHEMERAL` | `false` | Run the Joint temporal axis purely in RAM (ephemeral interval trees). |
+| `captureMode` | `PI_MM_CAPTURE_MODE` / `MM_CAPTURE_MODE` | `"all"` | Automatic capture policy: `"all"` (capture technical turns), `"keyword"` (only on trigger prefixes), `"judge"` (System One classification), or `"off"`. |
+| `captureKeyword` | `PI_MM_CAPTURE_KEYWORD` / `MM_CAPTURE_KEYWORD` | `"@remember"` | Primary trigger word bypassing judge to store memory immediately. |
+| `captureKeywords` | `PI_MM_CAPTURE_KEYWORDS` / `MM_CAPTURE_KEYWORDS` | `["@remember", "@memory", "remember:", "note:"]` | Array of trigger word families that immediately save memory. |
+| `judgeMode` | `PI_MM_JUDGE_MODE` / `MM_JUDGE_MODE` | `"auto"` | Strategy for decision judge: `"auto"` (use judge if reachable), `"heuristic"` (local regex), or `"off"`. |
+| `judgeUrl` | `PI_MM_JUDGE_URL` / `MM_JUDGE_URL` / `JEV_URL` | *(none)* | URL of System One judge (e.g. `http://127.0.0.1:4242`). Falls back to `AUREN_URL`. |
+| `judgeModel` | `PI_MM_JUDGE_MODEL` / `MM_JUDGE_MODEL` / `JEV_MODEL` | `"qwen"` | Model identifier for decision judging. Falls back to `AUREN_MODEL`. |
+| `judgeKey` | `PI_MM_JUDGE_KEY` / `MM_JUDGE_KEY` / `JEV_KEY` | *(none)* | Optional Bearer auth token for remote endpoints. Falls back to `AUREN_KEY`. |
+| `judgeTimeoutMs` | `PI_MM_JUDGE_TIMEOUT_MS` / `MM_JUDGE_TIMEOUT_MS` | `15000` | Abort timeout in milliseconds for judge evaluation. |
+| `judgeFallback` | `PI_MM_JUDGE_FALLBACK` / `MM_JUDGE_FALLBACK` | `"skip"` | Fallback on judge service failure: `"skip"` (fail closed) or `"capture"`. |
+| `consolidateL2Threshold` | `PI_MM_CONSOLIDATE_L2_THRESHOLD` / `MM_CONSOLIDATE_L2_THRESHOLD` | `3` | Number of related episodes required to trigger L2 semantic invariant consolidation. |
+| `consolidateL3Threshold` | `PI_MM_CONSOLIDATE_L3_THRESHOLD` / `MM_CONSOLIDATE_L3_THRESHOLD` | `2` | Number of verified L2 invariants required to trigger L3 architectural model synthesis. |
+| `consolidateMaxAgeHours` | `PI_MM_CONSOLIDATE_MAX_AGE_HOURS` / `MM_CONSOLIDATE_MAX_AGE_HOURS` | *(none)* | Maximum age of memories considered for batch consolidation. |
+| `consolidateBatchLimit` | `PI_MM_CONSOLIDATE_BATCH_LIMIT` / `MM_CONSOLIDATE_BATCH_LIMIT` | `20` | Maximum candidate memories consolidated in a single run. |
+| `synthUrl` | `PI_MM_SYNTH_URL` / `MM_SYNTH_URL` | *(none)* | OpenAI-compatible chat completion URL for memory consolidation synthesis. |
+| `synthModel` | `PI_MM_SYNTH_MODEL` / `MM_SYNTH_MODEL` | *(none)* | Model identifier for memory consolidation synthesis. |
+| `synthKey` | `PI_MM_SYNTH_KEY` / `MM_SYNTH_KEY` | *(none)* | Bearer authorization key for memory consolidation synthesis. |
+| `synthTimeoutMs` | `PI_MM_SYNTH_TIMEOUT_MS` / `MM_SYNTH_TIMEOUT_MS` | `15000` | Abort timeout in milliseconds for consolidation LLM synthesis. |
 | *(diagnostics)* | `PI_MM_DEBUG_MEMORY` | `0` | Set `1` to enable structured lifecycle diagnostics and JSONL tracing to stderr. |
 | *(diagnostics)* | `PI_MM_TRACE_FILE` | `"/tmp/pi_mm_trace.jsonl"` | Filepath for appending shared JSONL lifecycle events across processes. |
 | *(diagnostics)* | `PI_MM_RUN_ID` | *(auto-generated)* | Correlates diagnostic trace events across separate processes in a test run. |
@@ -174,21 +216,26 @@ pi --extension .pi/extensions/pi-mm
 
 ---
 
-## Diagnostic Commands (`/mm doctor`)
+## Diagnostic Commands (`/mm doctor` & `/mm status`)
 
-Run `/mm doctor` (or `/mm status`) in Pi to inspect real-time memory health and storage metrics:
+Run `/mm doctor`, `/mm status`, or `/mm` in Pi to inspect real-time memory health and storage metrics:
 ```text
 /mm doctor
 ```
 Reports:
-* **Primary Storage Health**: Physical size of `mem.db`, record counts, and exact HTOK null-byte density.
+* **Decision Judge Connectivity**: Status (200 OK or OFFLINE), active endpoint URL, latency in ms, and detected models.
+* **Embeddings Endpoint**: Vector endpoint status, latency, or disabled/unconfigured state.
+* **Pipeline Capabilities**: Active configuration description (`capture`, `judge`, `semantic`, `lemma`).
+* **Trigger Word Families**: Configured trigger word markers (`@remember`, `@memory`, etc.).
+* **Primary Storage Health**: Exact size of `mem.db` in KB, byte count, and HTOK null-byte density percentage.
 * **Secondary Axis Modes**: Joint temporal axis (persistent vs ephemeral in-memory), Sepal vector axis (ephemeral zero-disk mode vs persistent file), and embed cache binary size.
-* **Endpoint Telemetry**: Live connectivity and latency for Jev System One judge and Sepal embeddings.
-* **Trigger Words & Invariants**: Active trigger word families and capability pipeline status.
+* **Epistemic Roster**: Total indexed record count across memory tiers.
 
 ---
 
-## Agent Tools (The Essential 3)
+## Agent Tools
+
+### The Essential 3 (Active by Default)
 
 By default, `pi-mm` exposes only 3 high-level tools to keep the model's context window clean and avoid tool ambiguity:
 
@@ -196,6 +243,7 @@ By default, `pi-mm` exposes only 3 high-level tools to keep the model's context 
 Performs hybrid search fusing keyword matches ([libstoma](https://github.com/tty-pt/site/tree/main/external/libstoma)) and vector similarity ([libsepal](https://github.com/tty-pt/site/tree/main/external/libsepal)) via Reciprocal Rank Fusion ($k=60$).
 - **`query`**: Natural-language question, topic, error message, or symbol.
 - **`project`** / **`subsystem`**: Optional scope filters to boost matching memories.
+- **`level`**: Optional resolution filter (`'L0'`, `'L1'`, `'L2'`, `'L3'`).
 - **`includeEvidence`**: When `true`, automatically fetches and attaches the full underlying evidence tree (diffs, shell commands, prior investigations).
 
 ### 2. `memory_record`
@@ -204,12 +252,31 @@ Explicitly records a resolved task, bug fix, or project invariant.
 - **`approaches`**: List of attempted solutions with outcome (`"worked"`, `"failed"`, or `"abandoned"`) and reason.
 - **`diffs`**: Associated git diffs, file edits, or terminal commands.
 - **`evidence`**: Supporting memory reference IDs.
-- **`verification`**: Verified test commands (`testsPassed: string[]`).
+- **`verification`**: Verified test commands (`testsPassed: string[]`) and verified diff confirmation.
 
 ### 3. `memory_review`
 Reviews memory hierarchies and manages factual confidence.
+- **`ref`**: Memory reference number to inspect or review.
 - **`action: "inspect"`**: Returns full episode details, approaches, and downward evidence trees.
 - **`action: "update_lifecycle"`**: Updates confidence lifecycle (`tested`, `supported`, `contradicted`, `superseded`) with required justification and evidence validation.
+
+---
+
+### The Advanced 9 Tools (Enabled via `advancedTools: true`)
+
+Set `"advancedTools": true` in settings or export `PI_MM_ADVANCED_TOOLS=1` to expose fine-grained memory management tools:
+
+| Advanced Tool | Parameters | Description |
+| :--- | :--- | :--- |
+| `memory_store` | `content`, `level`, `tags`, `project`, `subsystem`, `lifecycle`, `source` | Stores a raw memory block directly into `libcorm` with explicit level (L0-L3) and epistemic metadata. |
+| `memory_scan` | `pattern`, `level`, `lifecycle`, `limit`, `project`, `subsystem` | Linear memory scan filtering on token substrings, level, and lifecycle status. |
+| `memory_think` | `prompt`, `depth`, `temperature` | Multi-hop associative reasoning and spreading activation across domain concepts. |
+| `memory_forget` | `ref`, `reason` | Soft deletes or tombstones a memory record from active recall. |
+| `memory_reset` | `confirm: true` | Clears all memory databases and resets the `cormd` store. |
+| `memory_traverse` | `startRef`, `maxHops`, `direction` | Graph traversal across concept co-occurrence edges and memory association networks. |
+| `memory_lifecycle` | `action`, `refs`, `targetLifecycle`, `reason` | Bulk transition or query lifecycle confidence across memory cohorts. |
+| `memory_feedback` | `ref`, `signal: "positive" \| "negative"`, `note` | Records reinforcement / reward feedback signals to adjust ranking salience. |
+| `memory_consolidate` | `batchLimit`, `targetLevel`, `maxAgeHours` | Manually triggers offline consolidation of L1 episodes into L2 invariants and L3 models. |
 
 ---
 

@@ -13,7 +13,7 @@
  *   - Part B: Real Backend Retrieval Evaluation (via libcorm/liblemma/libjoint)
  */
 
-import { encodePayload } from "../src/payload.ts";
+import { encodeLegacyJsonPayload } from "../src/payload.ts";
 import type { MemoryEnvelope } from "../src/types.ts";
 import { makeScanTool } from "../src/tools/scan.ts";
 import { makeTraverseTool } from "../src/tools/traverse.ts";
@@ -299,7 +299,7 @@ function runSyntheticBenchmark(): SyntheticMetrics[] {
     const ranked4 = [...CORPUS]
       .filter((item) => item.envelope.lifecycle !== "superseded" && item.envelope.lifecycle !== "contradicted")
       .map((item) => {
-        const fullText = encodePayload(item.date, item.envelope);
+        const fullText = encodeLegacyJsonPayload(item.date, item.envelope);
         const lex = scoreLexical(fullText, task.query);
         const sem = scoreSemantic(item.semanticTokens, task.query);
         const provBonus = item.envelope.evidence?.length ? 0.15 : 0.0;
@@ -369,10 +369,23 @@ async function runRealBackendBenchmark(_siteRoot?: string): Promise<void> {
         const p = new Deno.Command(inv.command, {
           args: inv.args,
           cwd: inv.cwd ?? tmpDir,
-          env: inv.env ?? {},
+          env: { ...Deno.env.toObject(), ...(inv.env ?? {}) },
+          stdin: inv.payloadBytes ? "piped" : "null",
           stdout: "piped",
           stderr: "piped",
         });
+        if (inv.payloadBytes) {
+          const child = p.spawn();
+          const writer = child.stdin.getWriter();
+          await writer.write(inv.payloadBytes);
+          await writer.close();
+          const out = await child.output();
+          return {
+            code: out.code,
+            stdout: new TextDecoder().decode(out.stdout),
+            stderr: new TextDecoder().decode(out.stderr),
+          };
+        }
         const out = await p.output();
         return {
           code: out.code,

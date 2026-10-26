@@ -2,6 +2,7 @@ import { installTools, defaultEnvSource, resolveMemDir } from "./tools/index.ts"
 import { installSessionHooks } from "./hooks/events.ts";
 import { checkMmHealth } from "./judge/adapter.ts";
 import { readMmConfig, describeCapabilities } from "./config.ts";
+import { buildMemoryOverview } from "./tools/overview.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -65,10 +66,57 @@ export default function install(pi: import("./hooks/events.ts").Pi): void {
 
   if (typeof extApi.registerCommand === "function") {
     extApi.registerCommand("mm", {
-      description: "Memory status and health diagnostics (/mm doctor, /mm status).",
+      description: "Memory status, health diagnostics, and all-time timeline overview (/mm doctor, /mm overview, /mm timeline).",
       handler: async (args: string, ctx: { cwd: string }) => {
         const sub = args.trim();
         const cfg = await readMmConfig(ctx.cwd);
+
+        if (sub === "overview" || sub === "timeline" || sub.startsWith("overview") || sub.startsWith("timeline")) {
+          const env = await envSource(ctx as unknown as import("./hooks/events.ts").PiCtx);
+          const overview = await buildMemoryOverview(env, { limit: 12 });
+          const lines: string[] = [
+            `[-] Total Records: ${overview.totalRecords} (${overview.scannedRecords} evaluated)`,
+          ];
+          if (overview.activeSpan.earliestDate && overview.activeSpan.latestDate) {
+            lines.push(`[✓] Operational Timeline: ${overview.activeSpan.earliestDate} to ${overview.activeSpan.latestDate}`);
+          }
+          lines.push(`[-] Tiers: L3=${overview.levelCounts.L3} (Principles), L2=${overview.levelCounts.L2} (Invariants), L1=${overview.levelCounts.L1} (Tasks), L0=${overview.levelCounts.L0} (Raw)`);
+
+          if (overview.principles.length > 0) {
+            lines.push(`[✓] Universal Principles (L3):`);
+            for (const pr of overview.principles.slice(0, 3)) {
+              lines.push(`    • [Ref ${pr.ref}]: ${pr.summary}`);
+            }
+          }
+
+          if (overview.invariantsAndDecisions.length > 0) {
+            lines.push(`[✓] Invariants & Decisions (L2):`);
+            for (const inv of overview.invariantsAndDecisions.slice(0, 4)) {
+              const scope = [inv.project, inv.subsystem].filter(Boolean).join("/");
+              lines.push(`    • [Ref ${inv.ref}]${scope ? ` (${scope})` : ""}: ${inv.summary}`);
+            }
+          }
+
+          if (overview.timeline.length > 0) {
+            lines.push(`[-] Timeline Epochs:`);
+            for (const ep of overview.timeline.slice(-4)) {
+              lines.push(`    • Epoch ${ep.epoch} (${ep.count} memories): ${ep.highlights.map((h) => `[Ref ${h.ref}]`).join(", ") || "various tasks"}`);
+            }
+          }
+
+          lines.push(`[-] Zoom-In: Use memory_recall({ zoomRef: <ref> }) in agent turns to inspect full approaches & evidence.`);
+
+          const reportData: MmReportData = {
+            title: "Pi-MM Memory Overview & Timeline",
+            lines,
+            timestamp: Date.now(),
+          };
+
+          if (typeof extApi.appendEntry === "function") {
+            extApi.appendEntry("mm-report", reportData);
+          }
+          return;
+        }
 
         if (sub === "doctor" || sub === "status" || sub === "") {
           const health = await checkMmHealth(cfg);

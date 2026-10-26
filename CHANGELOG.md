@@ -2,11 +2,34 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
-## [0.3.2]
+## [0.3.3]
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
 </p>
+
+### Added
+- **All-Time Timeline Overview & Multi-Resolution Recall (`src/tools/overview.ts`, `src/tools/recall.ts`)**:
+  - Added `overview` flag to `memory_recall` to synthesize a structured high-level summary of active operational principles (L3), invariants (L2), task investigations (L1), and chronological epochs across all time.
+  - Added direct `zoomRef` drill-down in `memory_recall` to retrieve full vertical context: problem statements, attempted approaches (worked/failed/abandoned), diffs, findings, and complete upward/downward evidence lineage trees.
+  - Added slash commands `/mm overview` and `/mm timeline` with rich TUI report formatting.
+  - Automated proactive overview context injection in `before_agent_start` when users pose open-ended introspection questions (*"What do you remember?"*).
+
+### Changed
+- **Modularized Architecture & Complexity Ceilings (`src/tools/overview_render.ts`, `scripts/check-complexity.ts`)**:
+  - Extracted overview markdown rendering into pure helper module `overview_render.ts`.
+  - Refactored `executeRecall` into compact sub-handlers (`executeOverviewRecall`, `executeTargetedHybridRecall`).
+  - Added subsystem baseline complexity ceilings in `check-complexity.ts` while enforcing strict LOC limits on new modules.
+
+### Fixed
+- **Static Analysis & Lint Cleanliness (`src/associative.ts`, `tests/payload.test.ts`, `tests/hybrid.test.ts`)**:
+  - Resolved all 10 `deno lint` errors (require-await in `recordAssociations` and `replay_session.ts`; unused imports/variables in `payload.test.ts`, `hybrid.test.ts`, and `cognitive_memory.test.ts`).
+  - 93 files checked with 0 warnings and 0 errors.
+- **Native Benchmark Streaming (`scripts/benchmark-mm.ts`)**:
+  - Fixed binary payload streaming over stdin in native C benchmark runner (`-p <ref>:-`).
+  - Fixed payload stringification in synthetic benchmark ranking.
+
+## [0.3.2]
 
 ### Added
 - **Decoupled Socket Runtime Path & DrvFs Auto-Fallback (`src/config.ts`, `src/tools/index.ts`)**:

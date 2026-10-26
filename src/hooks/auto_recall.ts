@@ -9,6 +9,7 @@ import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } f
 
 import { isCleanSummaryText } from "../payload.ts";
 import { isQuestionMemory } from "../tools/ranking.ts";
+import { buildMemoryOverview } from "../tools/overview.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -111,8 +112,11 @@ export function isMemoryRecallPrompt(prompt?: string): boolean {
 export function isDirectMemoryQuestion(prompt?: string): boolean {
   if (!prompt) return false;
   const p = prompt.trim().toLowerCase();
-  // Open-ended introspection: user asking agent what it remembers/recalls in general
-  if (/^(?:what\s+do\s+you\s+remember|what\s+do\s+you\s+recall|tell\s+me\s+what\s+you\s+remember|what\s+did\s+i\s+say(?:\s+earlier|\s+before)?|what\s+were\s+we\s+talking\s+about|do\s+you\s+remember\s+anything|do\s+you\s+recall\s+anything)[?.!\s]*$/i.test(p)) {
+  // Open-ended introspection: user asking agent what it remembers/recalls in general across time
+  if (/^(?:what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+i\s+say(?:\s+earlier|\s+before)?|what\s+were\s+we\s+talking\s+about|do\s+you\s+remember\s+anything|do\s+you\s+recall\s+anything|what\s+do\s+you\s+(?:remember|recall)\s+(?:across\s+all\s+time|from\s+all\s+time|from\s+past\s+sessions)?|give\s+me\s+(?:an?\s+)?(?:overview|summary)\s+of\s+(?:all\s+)?(?:your\s+)?memories|what\s+memories\s+do\s+you\s+have|what\s+have\s+we\s+worked\s+on(?:\s+across\s+all\s+time)?)[?.!\s]*$/i.test(p)) {
+    return true;
+  }
+  if (/\b(?:give\s+me\s+an?\s+overview\s+of\s+(?:all\s+)?memories|high-level\s+overview\s+of\s+(?:all\s+)?memories)\b/i.test(p)) {
     return true;
   }
   return false;
@@ -458,6 +462,44 @@ export async function handleBeforeAgentStart(
     if (!env.cfg.cormBin) {
       debugLog("recall", "Auto-recall aborted: cormBin unset");
       return null;
+    }
+
+    const isDirectQuestion = isDirectMemoryQuestion(prompt);
+    if (isDirectQuestion) {
+      const overview = await buildMemoryOverview(env, { limit: 8, maxScan: 200 });
+      if (overview.totalRecords > 0) {
+        const budget = options?.budget ?? DEFAULT_AUTO_RECALL_BUDGET;
+        let overviewText = overview.renderedOverview;
+        if (overviewText.length > budget) {
+          overviewText = overviewText.slice(0, budget - 40) + "\n\n[Overview truncated for budget...]";
+        }
+        const contextContent = `[Persistent Memory Overview Across All Time]\n${overviewText}\n\nGuidance for the Assistant:\n- The user is asking what you remember or for a memory overview. Provide a cohesive, high-level summary of your memories across all the operational time and domains shown above.\n- Offer to zoom in to any specific memory, task episode, or evidence tree using memory_recall(zoomRef=...).`;
+
+        traceEvent("auto_recall", "ok", {
+          query: prompt,
+          filespec: fspec,
+          candidateCount: overview.totalRecords,
+          overviewInjected: true,
+        }, { sessionId });
+
+        if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+          if (!event.systemPromptOptions.sections) {
+            event.systemPromptOptions.sections = {};
+          }
+          event.systemPromptOptions.sections["memory_context"] = contextContent;
+        }
+
+        return {
+          message: {
+            role: "custom",
+            customType: "memory_context",
+            content: contextContent,
+            display: true,
+            details: { overview: true, totalRecords: overview.totalRecords },
+            timestamp: Date.now(),
+          },
+        };
+      }
     }
 
     const timeout = options?.timeoutMs ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS;

@@ -19,6 +19,7 @@ import { makeConsolidateTool } from "./consolidate.ts";
 import { makeRecallTool } from "./recall.ts";
 import { makeRecordTool } from "./record.ts";
 import { makeReviewTool } from "./review.ts";
+import { buildMemoryOverview, type MemoryOverviewResult, type MemoryOverviewOptions } from "./overview.ts";
 
 export {
   makeStoreTool,
@@ -33,6 +34,9 @@ export {
   makeRecallTool,
   makeRecordTool,
   makeReviewTool,
+  buildMemoryOverview,
+  type MemoryOverviewResult,
+  type MemoryOverviewOptions,
 };
 export { sepalConfigured };
 

@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { fuseRankingsRRF, computeRankingScore, filterAndEnrich, adaptiveRrfK, isCodeOrDocArtifact } from "../src/tools/ranking.ts";
+import { fuseRankingsRRF, computeRankingScore, filterAndEnrich, adaptiveRrfK } from "../src/tools/ranking.ts";
 import { executeHybridScan } from "../src/tools/scan.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { ResultLine } from "../src/corm.ts";

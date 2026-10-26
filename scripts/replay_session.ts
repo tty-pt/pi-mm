@@ -29,7 +29,7 @@ Options:
 `);
 }
 
-async function main(): Promise<void> {
+function main(): void {
   const args = Deno.args;
   if (args.length === 0 || args.includes("--help")) {
     printUsage();
@@ -123,5 +123,5 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  main();
 }

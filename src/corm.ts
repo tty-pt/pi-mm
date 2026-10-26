@@ -2,7 +2,6 @@ import type { PiExecResult } from "./hooks/events.ts";
 import { levelWindow, type JointWindow } from "./window.ts";
 import type { MmConfig } from "./config.ts";
 import { isDaemonLockHeld, resolveLockPath } from "./daemon.ts";
-import { encodeHtokPayload, decodePayload, bytesToBinaryString } from "./payload.ts";
 
 export { DaemonCormRunner, DaemonCormRunner as DaemonQmapRunner, isDaemonLockHeld, resolveLockPath } from "./daemon.ts";
 
