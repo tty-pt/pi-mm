@@ -129,3 +129,54 @@ Deno.test("installer registers mm-report entry renderer and dispatches via /mm d
   check(lines[0].includes("─"), "must include top border");
   check(lines[lines.length - 1].includes("─"), "must include bottom border");
 });
+
+Deno.test("/mm doctor accurately counts indexed records using corm list", async () => {
+  const appendedEntries: { type: string; data: unknown }[] = [];
+  const commands = new Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }>();
+
+  // Mock runner that returns 3 records on corm list
+  const fakePiInstance = {
+    ...fakePi(),
+    registerEntryRenderer() {},
+    registerCommand(name: string, spec: { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }) {
+      commands.set(name, spec);
+    },
+    appendEntry(type: string, data: unknown) {
+      appendedEntries.push({ type, data });
+    },
+    exec(_command: string, args: string[]) {
+      if (args.includes("-g") && args.includes(".")) {
+        return Promise.resolve({ stdout: "101\n102\n103\n", stderr: "", code: 0 });
+      }
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  // deno-lint-ignore no-explicit-any
+  install(fakePiInstance as any);
+  const cmd = commands.get("mm")!;
+
+  // Use a temporary test directory with a mock mem.db
+  const tmpDir = await Deno.makeTempDir({ prefix: "fake-mm-doctor-test-" });
+  try {
+    const memDir = `${tmpDir}/.pi/mm`;
+    await Deno.mkdir(memDir, { recursive: true });
+    await Deno.writeTextFile(`${memDir}/mem.db`, "mock-db-bytes");
+    await Deno.writeTextFile(`${memDir}/mem.db.roster`, "mock-binary-roster");
+
+    await cmd.handler("doctor", { cwd: tmpDir });
+
+    check(appendedEntries.length === 1, "must append doctor report entry");
+    // deno-lint-ignore no-explicit-any
+    const data = appendedEntries[0].data as any;
+    const countLine = data.lines.find((l: string) => l.includes("Total Indexed Records"));
+    check(Boolean(countLine), "must report Total Indexed Records");
+    check(countLine.includes("3"), `must report exactly 3 records, got: ${countLine}`);
+
+    const rosterLine = data.lines.find((l: string) => l.includes("Axis Roster"));
+    check(Boolean(rosterLine), "must report Axis Roster line");
+    check(rosterLine.includes("Persistent Disk"), `must report Persistent Disk for Axis Roster, got: ${rosterLine}`);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

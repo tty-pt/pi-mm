@@ -2,6 +2,21 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.3.4]
+
+### Fixed
+- **Doctor Diagnostic Accuracy (`src/index.ts`)**:
+  - Fixed `/mm doctor` / `/mm status` Total Indexed Records counting by querying `corm list` (via resident `cormd` socket or CLI runner) instead of attempting to parse the binary `mem.db.roster` file as raw text lines.
+  - Aligns `/mm doctor` record reporting with `/mm overview` and `/mm timeline`.
+- **Roster Diagnostic Reporting (`src/index.ts`)**:
+  - Added explicit persistent disk size reporting for `mem.db.roster` under secondary axes.
+- **Complexity Compliance (`src/index.ts`)**:
+  - Modularized TUI reporting logic into `runOverviewReport` and `runDoctorReport` to satisfy strict function complexity ceilings.
+- **Documentation & Installation Guidance (`README.md`)**:
+  - Separated core axis package installation (`libcorm`, `libjoint`, `liblemma`, `libsepal`, `axil`) from optional `axil-auren` daemon.
+  - Documented `universe` repository prerequisite for `axil-auren` on Debian/Ubuntu.
+  - Documented `libjoint` v1.6.1 fix resolving `/usr/bin/test` packaging collision.
+
 ## [0.3.3]
 
 <p align="center">

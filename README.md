@@ -124,17 +124,27 @@ wget -qO- https://tty.pt/apt/keyrings/archive-key.gpg | sudo tee /etc/apt/keyrin
 echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/ttypt.asc] https://tty.pt/deb stable main" | sudo tee /etc/apt/sources.list.d/ttypt.list
 ```
 
-Install or update all required engines:
+Install or update the core memory engines and recall axes:
 ```bash
 sudo apt update
-sudo apt install -y axil axil-auren libsepal liblemma libjoint libcorm
+sudo apt install -y axil libcorm libjoint liblemma libsepal
+```
+
+To install the optional local LLM inference and embeddings server (**`axil-auren`** on port 4242), enable Ubuntu's `universe` component first (needed for Vulkan and GLSL dependencies):
+```bash
+sudo add-apt-repository universe && sudo apt update
+sudo apt install -y axil-auren
 ```
 
 To update existing installations specifically:
 ```bash
 sudo apt update
-sudo apt --only-upgrade install -y axil axil-auren libsepal liblemma libjoint libcorm
+sudo apt --only-upgrade install -y axil libcorm libjoint liblemma libsepal axil-auren
 ```
+
+> **Packaging Notes**:
+> * **`libjoint` v1.6.1+**: In v1.6.0, internal test binaries were mistakenly included in the package bin path, colliding with `/usr/bin/test` from `coreutils`. This has been resolved in v1.6.1+ where `INSTALL_BIN` is strictly cleared.
+> * **`axil-auren`**: Optional local server daemon. If `universe` is disabled, APT will report that `axil-auren` has no installation candidate. If you already use Ollama (`http://localhost:11434/v1`) or any OpenAI-compatible API for embeddings, `axil-auren` is not required.
 
 #### macOS (Homebrew)
 ```bash
