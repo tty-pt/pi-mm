@@ -182,7 +182,7 @@ Deno.test("concurrency: simultaneous consolidation attempts allocate unique refs
   assert.strictEqual(store.records.size, 3);
 });
 
-Deno.test("concurrency: withLock fails safely on prolonged lock contention instead of bypassing", async () => {
+Deno.test("concurrency: withLock aborts safely on prolonged lock contention instead of bypassing", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "mm-lock-timeout-" });
   const lockFile = join(tmpDir, ".mm.lock");
 
@@ -310,7 +310,7 @@ Deno.test("concurrency: active process lock is not pruned even if staleThreshold
   assert.strictEqual(caughtError!.message.includes("lock contention"), true);
 });
 
-Deno.test("concurrency: withLock is strictly fail-closed on filesystem setup error", async () => {
+Deno.test("concurrency: withLock is strictly closed-on-error on filesystem setup error", async () => {
   // A path under a regular file cannot have subdirectories created
   const tmpFile = await Deno.makeTempFile({ prefix: "mm-fail-closed-" });
   const badDir = join(tmpFile, "invalid_subdir");
@@ -331,7 +331,7 @@ Deno.test("concurrency: withLock is strictly fail-closed on filesystem setup err
   assert.notStrictEqual(caughtError, null);
 });
 
-Deno.test("concurrency: isPidAlive fails closed on ambiguous error (only ESRCH is dead)", async () => {
+Deno.test("concurrency: isPidAlive rejects cleanly on ambiguous error (only ESRCH is dead)", async () => {
   const { isPidAlive } = await import("../src/lock.ts");
 
   // Current process is alive
@@ -1194,7 +1194,7 @@ Deno.test("concurrency: Node production runtime automatically recovers coordinat
   assert.strictEqual(c2Enter > c1Enter, true, "Recovering process enters after initial process entered");
 });
 
-Deno.test("concurrency: main lock initialization write failure cleans up uninitialized lock without permanently bricking", async () => {
+Deno.test("concurrency: main lock initialization write error cleans up uninitialized lock without permanently bricking", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "write-fail-test-" });
 
   let failOnce = true;
@@ -1239,7 +1239,7 @@ Deno.test("concurrency: live main lock initializer is protected against prematur
   assert.strictEqual(st.size, 0, "Live 0-byte lock must remain untouched while within threshold");
 });
 
-Deno.test("concurrency: legacy empty lock with live creator paused beyond stale threshold fails closed and preserves file", async () => {
+Deno.test("concurrency: legacy empty lock with live creator paused beyond stale threshold rejects cleanly and preserves file", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "empty-live-" });
   const lockFile = join(tmpDir, ".mm.lock");
   const aCreated = join(tmpDir, "created.barrier");
@@ -1302,7 +1302,7 @@ Deno.test("concurrency: legacy empty lock with live creator paused beyond stale 
   assert.strictEqual(stAfter.size, 0, "Creator file was untouched");
 });
 
-Deno.test("concurrency: legacy empty lock with terminated creator fails closed without automatic recovery", async () => {
+Deno.test("concurrency: legacy empty lock with terminated creator rejects cleanly without automatic recovery", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "empty-term-" });
   const lockFile = join(tmpDir, ".mm.lock");
   await writeFile(lockFile, "");
@@ -1380,7 +1380,7 @@ Deno.test("concurrency: live initializer paused beyond staleThresholdMs preserve
   await p1Child.status;
 });
 
-Deno.test("concurrency: initialization failure cleanup cannot delete competitor lock", async () => {
+Deno.test("concurrency: initialization error cleanup cannot delete competitor lock", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "cleanup-safety-" });
   const lockFile = join(tmpDir, ".mm.lock");
 
