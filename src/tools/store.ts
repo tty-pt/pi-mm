@@ -62,6 +62,7 @@ const STORE_PARAMS = {
     evidence: { type: "array", items: { type: "number" }, description: "Underlying evidence refs supporting this memory." },
     supersedes: { type: "number", description: "Ref of an older memory this conclusion replaces." },
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
+    standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
     timestamp: { type: "string", description: "ISO timestamp (used as DATE prefix); default now." },
   },
   additionalProperties: false,
@@ -135,10 +136,11 @@ function buildEnvelope(params: Record<string, unknown>, summary: string, ep?: Ep
     supersedes: typeof params["supersedes"] === "number" ? params["supersedes"] : undefined,
     tags: Array.isArray(params["tags"]) ? (params["tags"] as string[]) : undefined,
     isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
+    standing: typeof params["standing"] === "boolean" ? params["standing"] : (type === "invariant" ? true : undefined),
   };
   const isStructured = Boolean(
     ep || params["level"] || params["context"] || params["evidence"] ||
-    params["supersedes"] || params["tags"] || params["lifecycle"]
+    params["supersedes"] || params["tags"] || params["lifecycle"] || params["standing"]
   );
   return { envelope, isStructured };
 }

@@ -17,6 +17,9 @@ import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
 import { recordAssociations } from "../associative.ts";
+import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
+import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
+import { detectSubsystemMentions } from "./auto_recall.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -685,10 +688,13 @@ export interface ActiveConversationTurn {
 }
 
 export const activeConversationTurn: ActiveConversationTurn = {};
+export const reinforcementScheduler = new ReinforcementScheduler();
+
+export { isStandingDirective, STANDING_DIRECTIVE_PATTERN };
 
 export interface ConversationalClassification {
   meaningful: boolean;
-  type?: "note" | "decision" | "episode";
+  type?: "note" | "decision" | "episode" | "invariant";
   level?: "L0" | "L1" | "L2";
   summary?: string;
   problem?: string;
@@ -696,6 +702,7 @@ export interface ConversationalClassification {
   evidence?: number[];
   context?: MemoryContext;
   isAnchor?: boolean;
+  standing?: boolean;
 }
 
 export async function persistConversationalMemory(
@@ -739,12 +746,13 @@ export async function persistConversationalMemory(
     const envelope: MemoryEnvelope = {
       level: classification.level ?? "L1",
       type: classification.type ?? "note",
-      lifecycle: "observed",
+      lifecycle: classification.standing ? "supported" : "observed",
       summary: classification.summary,
       evidence: classification.evidence,
       context,
       episode,
-      isAnchor: Boolean(classification.isAnchor || classification.summary.includes("@remember") || classification.summary.toLowerCase().startsWith("remember:") || context?.project === "user") || undefined,
+      isAnchor: Boolean(classification.isAnchor || classification.standing || classification.summary.includes("@remember") || classification.summary.toLowerCase().startsWith("remember:") || context?.project === "user") || undefined,
+      standing: classification.standing || undefined,
     };
 
     const date = env.nowProvider().toISOString().slice(0, 10);
@@ -785,6 +793,14 @@ export async function persistConversationalMemory(
 
       if (res.code === 0) {
         debugLog("persistence", "Successfully allocated memory reference", { ref });
+        if (classification.standing && classification.summary) {
+          reinforcementScheduler.registerDirective({
+            ref,
+            summary: classification.summary,
+            subsystem: classification.context?.subsystem,
+            project: classification.context?.project,
+          });
+        }
         if (classification.level === "L0") {
           await recordNewL0InJournal(cwd, [ref]).catch(() => {});
         }
@@ -1047,6 +1063,7 @@ export async function handleMemoryUpdate(
 export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
   pi.on("session_start", async (_event: unknown, ctxUnknown?: unknown) => {
     activeSessionBuffer.onSessionStart();
+    reinforcementScheduler.onSessionStart();
     activeConversationTurn.activeMemoryRef = undefined;
     activeConversationTurn.activeSessionId = undefined;
     if (envSource && ctxUnknown) {
@@ -1097,6 +1114,16 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           if (res.code === 0 && res.stdout.trim()) {
             const { envelope } = decodePayload(res.stdout.trim());
             for (const id of envelope.episode?.eventIds || []) committedIds.add(id);
+            if (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant")) {
+              if (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") {
+                reinforcementScheduler.registerDirective({
+                  ref: r,
+                  summary: envelope.summary,
+                  subsystem: envelope.context?.subsystem,
+                  project: envelope.context?.project,
+                });
+              }
+            }
           }
         }
         await activeSessionBuffer.restoreJournal(cwd, committedIds);
@@ -1341,15 +1368,17 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
 
           if (shouldStoreConversational) {
             const isDirective = prompt.toLowerCase().includes("@remember") || prompt.toLowerCase().startsWith("remember:");
+            const isStanding = isStandingDirective(prompt);
             const l0Classification: ConversationalClassification = {
               meaningful: true,
-              type: "note",
-              level: "L0",
+              type: isStanding ? "invariant" : "note",
+              level: isStanding ? "L2" : "L0",
               summary: contentToStore.slice(0, 250),
               problem: contentToStore,
               findings: [contentToStore],
               context: activeConversationTurn.topicSubject ? { subject: activeConversationTurn.topicSubject } : undefined,
-              isAnchor: isDirective || undefined,
+              isAnchor: isDirective || isStanding || undefined,
+              standing: isStanding || undefined,
             };
             const l0Ref = await persistConversationalMemory(l0Classification, envSource, ctx);
             debugLog("capture", "Captured L0 experience record", { l0Ref, summary: l0Classification.summary });
@@ -1417,6 +1446,35 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     }
     if (!envSource || !ctxUnknown) return;
     const event = eventUnknown as BeforeAgentStartEvent;
+
+    // Check reinforcement trigger (session_start, compaction reset, or milestone)
+    try {
+      const env = await envSource(ctxUnknown as PiCtx);
+      const usage = (ctxUnknown as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.() ||
+                    (pi as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.();
+      const pct = typeof usage?.percent === "number" ? usage.percent : 0;
+      const reinfCfg = (env.cfg.reinforcement as Required<import("../config.ts").ReinforcementConfig>) ?? DEFAULT_REINFORCEMENT_CONFIG;
+      const trigger = reinforcementScheduler.checkTrigger(pct, reinfCfg);
+      if (trigger.trigger) {
+        const promptText = typeof event.prompt === "string" ? event.prompt : "";
+        const mentioned = promptText ? detectSubsystemMentions(promptText) : undefined;
+        const directives = reinforcementScheduler.getDirectives(mentioned);
+        const block = synthesizeReinforcementBlockFromDirectives(directives, ctxUnknown as PiCtx, trigger, reinfCfg);
+        if (block && event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+          if (!event.systemPromptOptions.sections) {
+            event.systemPromptOptions.sections = {};
+          }
+          event.systemPromptOptions.sections["standing_directives"] = block;
+          debugLog("reinforcement", "Injected standing directives into systemPromptOptions", {
+            reason: trigger.reason,
+            milestone: trigger.milestone,
+          });
+        }
+      }
+    } catch (err) {
+      debugLog("reinforcement", "Reinforcement check failed", { error: String(err) });
+    }
+
     const recallRes = await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
     const recalledRefs = (recallRes?.message?.details as { refs?: unknown[] })?.refs;
     if (recalledRefs && recalledRefs.length > 0) {
@@ -1426,6 +1484,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
   });
 
   const onBeforeCompact = async (eventUnknown: unknown, ctxUnknown?: unknown) => {
+    // 0. Signal compaction reset to reinforcement scheduler
+    reinforcementScheduler.onCompaction();
+
     // 1. Ensure any in-flight turn is captured and settled into L0/L1
     await onRunSettled(eventUnknown, ctxUnknown);
 
@@ -1444,6 +1505,29 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
   };
 
   pi.on("turn_end", onTurnEnd);
+  pi.on("turn_start", async (_event: unknown, ctxUnknown?: unknown) => {
+    if (!envSource || !ctxUnknown) return;
+    try {
+      const ctx = ctxUnknown as PiCtx;
+      const env = await envSource(ctx);
+      const usage = (ctx as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.() ||
+                    (pi as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.();
+      const pct = typeof usage?.percent === "number" ? usage.percent : 0;
+      const reinfCfg = (env.cfg.reinforcement as Required<import("../config.ts").ReinforcementConfig>) ?? DEFAULT_REINFORCEMENT_CONFIG;
+      const trigger = reinforcementScheduler.checkTrigger(pct, reinfCfg);
+      if (trigger.trigger) {
+        const directives = reinforcementScheduler.getDirectives();
+        const block = synthesizeReinforcementBlockFromDirectives(directives, ctx, trigger, reinfCfg);
+        if (block) {
+          debugLog("reinforcement", "turn_start milestone triggered", {
+            reason: trigger.reason,
+            milestone: trigger.milestone,
+            percent: pct,
+          });
+        }
+      }
+    } catch { /* best effort */ }
+  });
   pi.on("agent_settled", onRunSettled);
   pi.on("session_before_compact", onBeforeCompact);
   pi.on("session_shutdown", async (_ev: unknown, ctxUnknown?: unknown) => {

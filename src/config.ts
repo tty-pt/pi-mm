@@ -9,6 +9,24 @@ export type JudgeMode = "auto" | "heuristic" | "off";
 export type JudgeProtocol = "auto" | "systemzero" | "systemone";
 export type JudgeFallback = "capture" | "skip";
 
+export interface ReinforcementConfig {
+  enabled?: boolean;
+  milestones?: number[];
+  onSessionStart?: boolean;
+  onCompaction?: boolean;
+  maxTokens?: number;
+  includeEnvironmentBaseline?: boolean;
+}
+
+export const DEFAULT_REINFORCEMENT_CONFIG: Required<ReinforcementConfig> = {
+  enabled: true,
+  milestones: [0.33, 0.66],
+  onSessionStart: true,
+  onCompaction: true,
+  maxTokens: 180,
+  includeEnvironmentBaseline: true,
+};
+
 export interface MmConfig {
   cormBin: string;
   qmapBin?: string;
@@ -47,6 +65,7 @@ export interface MmConfig {
   autoStartAuren?: boolean;
   /** Model download policy: small models auto, large models ask once (default "ask"). */
   autoDownloadModels?: "auto" | "ask" | "never";
+  reinforcement?: ReinforcementConfig;
 }
 
 export const DEFAULT_CAPTURE_KEYWORDS: string[] = [
@@ -83,6 +102,7 @@ export const DEFAULT_CONFIG: MmConfig = {
   ephemeralSepal: false,
   autoStartAuren: true,
   autoDownloadModels: "ask",
+  reinforcement: DEFAULT_REINFORCEMENT_CONFIG,
 };
 
 export type CormSource = "settings" | "env" | "path" | "insite" | "none";
@@ -130,6 +150,22 @@ export function loadConfig(raw: unknown): MmConfig {
   const ephem = record["ephemeralSepal"] ?? record["sepalEphemeral"];
   const autoStart = record["autoStartAuren"];
   const autoDl = record["autoDownloadModels"];
+  const rawReinf = record["reinforcement"];
+
+  let parsedReinforcement: ReinforcementConfig = { ...DEFAULT_REINFORCEMENT_CONFIG };
+  if (typeof rawReinf === "object" && rawReinf !== null) {
+    const r = rawReinf as Record<string, unknown>;
+    parsedReinforcement = {
+      enabled: typeof r["enabled"] === "boolean" ? r["enabled"] : DEFAULT_REINFORCEMENT_CONFIG.enabled,
+      milestones: Array.isArray(r["milestones"]) && r["milestones"].every((m) => typeof m === "number" && m > 0 && m < 1)
+        ? r["milestones"].sort((a, b) => a - b)
+        : DEFAULT_REINFORCEMENT_CONFIG.milestones,
+      onSessionStart: typeof r["onSessionStart"] === "boolean" ? r["onSessionStart"] : DEFAULT_REINFORCEMENT_CONFIG.onSessionStart,
+      onCompaction: typeof r["onCompaction"] === "boolean" ? r["onCompaction"] : DEFAULT_REINFORCEMENT_CONFIG.onCompaction,
+      maxTokens: typeof r["maxTokens"] === "number" && r["maxTokens"] > 0 ? r["maxTokens"] : DEFAULT_REINFORCEMENT_CONFIG.maxTokens,
+      includeEnvironmentBaseline: typeof r["includeEnvironmentBaseline"] === "boolean" ? r["includeEnvironmentBaseline"] : DEFAULT_REINFORCEMENT_CONFIG.includeEnvironmentBaseline,
+    };
+  }
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
   let effectiveCaptureMode: CaptureMode = "all";
@@ -196,6 +232,7 @@ export function loadConfig(raw: unknown): MmConfig {
     ephemeralSepal: typeof ephem === "boolean" ? ephem : DEFAULT_CONFIG.ephemeralSepal,
     autoStartAuren: typeof autoStart === "boolean" ? autoStart : DEFAULT_CONFIG.autoStartAuren,
     autoDownloadModels: autoDl === "auto" || autoDl === "ask" || autoDl === "never" ? autoDl : DEFAULT_CONFIG.autoDownloadModels,
+    reinforcement: parsedReinforcement,
   };
 }
 

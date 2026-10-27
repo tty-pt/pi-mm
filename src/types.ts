@@ -82,4 +82,5 @@ export interface MemoryEnvelope {
   tags?: string[];
   constraints?: string[];
   isAnchor?: boolean;
+  standing?: boolean;
 }

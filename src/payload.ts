@@ -80,6 +80,7 @@ export const FIELD_NAME_TO_ID = new Map<string, number>([
   ["hist", 25],
   ["ep_pr", 26],
   ["ep_ap", 27],
+  ["standing", 28],
 ]);
 
 export const FIELD_ID_TO_NAME = new Map<number, string>(
@@ -210,6 +211,7 @@ export function encodeLegacyJsonPayload(date: string, envelope: MemoryEnvelope):
   if (Array.isArray(envelope.evidence) && envelope.evidence.length > 0) compact.e = envelope.evidence;
   if (envelope.supersedes !== undefined) compact.p = envelope.supersedes;
   if (envelope.supersededBy !== undefined) compact.b = envelope.supersededBy;
+  if (envelope.standing) compact.st = true;
   if (Array.isArray(envelope.tags) && envelope.tags.length > 0) compact.g = envelope.tags;
 
   if (envelope.context && typeof envelope.context === "object") {
@@ -365,6 +367,10 @@ export function encodeHtokPayload(date: string, envelope: MemoryEnvelope, versio
   // Searchable text (summary / primary searchable text) - stored as packed token stream
   const searchableText = envelope.summary || envelope.episode?.problem || envelope.episode?.request || "";
   fields.push(tokField("text", searchableText));
+
+  if (envelope.standing) {
+    fields.push(tokField("standing", "1"));
+  }
 
   // Tags
   if (envelope.tags && envelope.tags.length > 0) {
@@ -916,6 +922,7 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
     date = getStr("date");
   }
   const summary = getStr("text");
+  const standing = has("standing") ? (getStr("standing") === "1" || getStr("standing").toLowerCase() === "true") : undefined;
 
   // Version 1 fallback if version was 1
   if (version < 2) {
@@ -1071,6 +1078,7 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
       utility,
       history,
       isAnchor: isAnchor || undefined,
+      standing: standing || undefined,
     },
   };
 }
@@ -1178,6 +1186,7 @@ export function decodePayload(raw: string | Uint8Array): { date: string; envelop
               context,
               episode,
               utility: (parsed.u as UtilityFeedback) || undefined,
+              standing: parsed.st === true || parsed.standing === true || undefined,
               history: (parsed.h as LifecycleTransition[]) || undefined,
             },
           };

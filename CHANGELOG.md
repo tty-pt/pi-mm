@@ -18,6 +18,10 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - Displays full matrix of core C engines, installed versions, required thresholds, and exact copy-paste remediation commands for package managers and source compilation.
 - **Turnkey Verification Playbook (`scripts/test-bootstrap-playbook.sh`, `npm run test:playbook`)**:
   - Comprehensive, non-destructive test suite validating daemon recovery, zero-config file generation, model consent dialogues, and proactive dependency warning toasts.
+- **Standing Directives & Context Reinforcement (`src/hooks/reinforcement.ts`, `src/hooks/events.ts`)**:
+  - Automatic detection of standing rules, operational directives, and project invariants (`isStandingDirective()`, `/mm rule <directive>`).
+  - Periodic context milestone re-anchoring (e.g. at 33% and 66% context capacity) and post-compaction re-injection into `systemPromptOptions.sections.standing_directives`.
+  - Subsystem-aware directive routing with strict token budget capping.
 
 ## [0.3.5]
 

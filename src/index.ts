@@ -1,5 +1,5 @@
 import { installTools, defaultEnvSource, resolveMemDir, cormBin, memDir, axisPath } from "./tools/index.ts";
-import { installSessionHooks } from "./hooks/events.ts";
+import { installSessionHooks, persistConversationalMemory } from "./hooks/events.ts";
 import { checkMmHealth } from "./judge/adapter.ts";
 import { readMmConfig, describeCapabilities, sepalConfigured } from "./config.ts";
 import { buildMemoryOverview } from "./tools/overview.ts";
@@ -7,7 +7,7 @@ import { filespecFor, buildListInvocation, embedEnv } from "./corm.ts";
 import { parseBareRefs } from "./resolve.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_AUREN, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
+import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
 
 export interface MmReportData {
   title: string;
@@ -134,7 +134,7 @@ async function runDoctorReport(
     lines.push("[-] Embeddings Endpoint: Unconfigured (semantic search disabled)");
   }
   // Core C Engine Versions & Requirements
-  const { checkAllEngineVersions, generateRemediationAdvice } = await import("./versions.ts");
+  const { checkAllEngineVersions } = await import("./versions.ts");
   const engineReports = checkAllEngineVersions({ cwd: targetCwd });
   lines.push("[-] Core C Engines & Versions:");
   for (const rep of engineReports) {
@@ -241,7 +241,7 @@ async function runDoctorReport(
   const uCfg = findUserConfig({ cwd: targetCwd });
   lines.push(`[-] Auren Config: ${uCfg ?? "None (auto-managed at ~/.config/auren/config.json)"}`);
   const home = typeof process !== "undefined" && process.env?.HOME ? process.env.HOME : "/tmp";
-  const { modelsDir, presentModels } = await import("./auren-bootstrap.ts");
+  const { presentModels } = await import("./auren-bootstrap.ts");
   const present = presentModels(MODEL_CATALOG, home);
   if (present.length > 0) {
     lines.push(`[✓] Local GGUF Models (~/.models): ${present.map((m) => m.id).join(", ")}`);
@@ -307,10 +307,49 @@ export function install(pi: import("./hooks/events.ts").Pi): void {
 
   if (typeof extApi.registerCommand === "function") {
     extApi.registerCommand("mm", {
-      description: "Memory status, health diagnostics, and all-time timeline overview (/mm doctor, /mm overview, /mm timeline).",
+      description: "Memory status, health diagnostics, all-time timeline overview, and standing rules (/mm doctor, /mm overview, /mm rule <directive>).",
       handler: async (args: string, ctx: { cwd: string }) => {
         const sub = args.trim();
         const cfg = await readMmConfig(ctx.cwd);
+
+        if (sub.startsWith("rule ") || sub.startsWith("rule:") || sub === "rule") {
+          const ruleText = sub.replace(/^rule[:\s]*/i, "").trim();
+          if (!ruleText) {
+            if (typeof extApi.appendEntry === "function") {
+              extApi.appendEntry("mm-report", {
+                title: "Pi-MM Standing Directive",
+                lines: ["[!] Usage: /mm rule <standing operational rule>"],
+                timestamp: Date.now(),
+              });
+            }
+            return;
+          }
+          const ref = await persistConversationalMemory(
+            {
+              meaningful: true,
+              level: "L2",
+              type: "invariant",
+              standing: true,
+              summary: ruleText,
+              problem: ruleText,
+              findings: [ruleText],
+            },
+            envSource,
+            ctx as unknown as import("./hooks/events.ts").PiCtx,
+          );
+          if (typeof extApi.appendEntry === "function") {
+            extApi.appendEntry("mm-report", {
+              title: "Pi-MM Standing Directive Registered",
+              lines: [
+                `[✓] Registered Standing Invariant [Ref ${ref ?? "saved"}]:`,
+                `    • ${ruleText}`,
+                `[-] This directive will be reinforced at context milestones and session start.`,
+              ],
+              timestamp: Date.now(),
+            });
+          }
+          return;
+        }
 
         if (sub === "overview" || sub === "timeline" || sub.startsWith("overview") || sub.startsWith("timeline")) {
           await runOverviewReport(envSource, ctx, extApi);
