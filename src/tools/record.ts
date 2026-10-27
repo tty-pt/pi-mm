@@ -37,6 +37,7 @@ const RECORD_PARAMS = {
     evidence: { type: "array", items: { type: "number" }, description: "Refs of supporting memories or investigations." },
     supersedes: { type: "number", description: "Ref of an older memory that this record supersedes." },
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
+    standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
   },
   required: ["problem", "approaches"],
   additionalProperties: false,
@@ -118,6 +119,7 @@ async function executeRecord(
     evidence: params["evidence"],
     supersedes: params["supersedes"],
     tags: params["tags"],
+    standing: typeof params["standing"] === "boolean" ? params["standing"] : undefined,
   }, ctx);
 
   const d = storeRes.details as { ref?: number; key?: string } | undefined;

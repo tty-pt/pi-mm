@@ -1,5 +1,5 @@
 import { installTools, defaultEnvSource, resolveMemDir, cormBin, memDir, axisPath } from "./tools/index.ts";
-import { installSessionHooks } from "./hooks/events.ts";
+import { installSessionHooks, persistConversationalMemory } from "./hooks/events.ts";
 import { checkMmHealth } from "./judge/adapter.ts";
 import { readMmConfig, describeCapabilities, sepalConfigured } from "./config.ts";
 import { buildMemoryOverview } from "./tools/overview.ts";
@@ -307,10 +307,49 @@ export function install(pi: import("./hooks/events.ts").Pi): void {
 
   if (typeof extApi.registerCommand === "function") {
     extApi.registerCommand("mm", {
-      description: "Memory status, health diagnostics, and all-time timeline overview (/mm doctor, /mm overview, /mm timeline).",
+      description: "Memory status, health diagnostics, all-time timeline overview, and standing rules (/mm doctor, /mm overview, /mm rule <directive>).",
       handler: async (args: string, ctx: { cwd: string }) => {
         const sub = args.trim();
         const cfg = await readMmConfig(ctx.cwd);
+
+        if (sub.startsWith("rule ") || sub.startsWith("rule:") || sub === "rule") {
+          const ruleText = sub.replace(/^rule[:\s]*/i, "").trim();
+          if (!ruleText) {
+            if (typeof extApi.appendEntry === "function") {
+              extApi.appendEntry("mm-report", {
+                title: "Pi-MM Standing Directive",
+                lines: ["[!] Usage: /mm rule <standing operational rule>"],
+                timestamp: Date.now(),
+              });
+            }
+            return;
+          }
+          const ref = await persistConversationalMemory(
+            {
+              meaningful: true,
+              level: "L2",
+              type: "invariant",
+              standing: true,
+              summary: ruleText,
+              problem: ruleText,
+              findings: [ruleText],
+            },
+            envSource,
+            ctx as unknown as import("./hooks/events.ts").PiCtx,
+          );
+          if (typeof extApi.appendEntry === "function") {
+            extApi.appendEntry("mm-report", {
+              title: "Pi-MM Standing Directive Registered",
+              lines: [
+                `[✓] Registered Standing Invariant [Ref ${ref ?? "saved"}]:`,
+                `    • ${ruleText}`,
+                `[-] This directive will be reinforced at context milestones and session start.`,
+              ],
+              timestamp: Date.now(),
+            });
+          }
+          return;
+        }
 
         if (sub === "overview" || sub === "timeline" || sub.startsWith("overview") || sub.startsWith("timeline")) {
           await runOverviewReport(envSource, ctx, extApi);

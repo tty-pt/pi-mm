@@ -5,7 +5,7 @@
 
 import { appendFileSync } from "node:fs";
 
-export type DebugStage = "startup" | "capture" | "judgement" | "persistence" | "recall" | "consolidation";
+export type DebugStage = "startup" | "capture" | "judgement" | "persistence" | "recall" | "consolidation" | "reinforcement";
 
 export type TraceTransition =
   | "extension_loaded"
