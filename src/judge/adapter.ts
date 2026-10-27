@@ -101,6 +101,76 @@ export async function checkMmHealth(cfg: MmConfig): Promise<MmHealthReport> {
   };
 }
 
+export function normalizeSystemZeroUrl(baseUrlOrUrl: string): string {
+  const trimmed = baseUrlOrUrl.trim();
+  if (trimmed.includes("/systemzero")) {
+    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+  }
+  return `${trimmed.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/v1$/, "")}/api/v1/systemzero/`;
+}
+
+export async function callSystemZeroJudge(
+  prompt: string,
+  response: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+  threadContext?: string,
+): Promise<JudgeDecision> {
+  const rawUrl = cfg.judgeUrl;
+  if (!rawUrl) throw new Error("No judgeUrl configured");
+
+  const url = normalizeSystemZeroUrl(rawUrl);
+  const timeoutMs = cfg.judgeTimeoutMs ?? 15000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (cfg.judgeKey) {
+    headers["Authorization"] = `Bearer ${cfg.judgeKey}`;
+  }
+
+  const clippedResponse = response.length > 500 ? response.slice(0, 500) + "..." : response;
+  const stateText = threadContext
+    ? `${threadContext}\nCurrent User: ${prompt}\nCurrent Assistant: ${clippedResponse}`
+    : `User: ${prompt}\nAssistant: ${clippedResponse}`;
+
+  const reqBody = {
+    model: cfg.judgeModel || "default",
+    prompt: `Is this user-provided information meaningful personal facts, experiences, preferences, technical discoveries, or decisions worth remembering for future conversations (versus casual chitchat or questions)?\n${stateText}\nAnswer [y/n]:`,
+    threshold: 0.5,
+  };
+
+  try {
+    const res = await fetchFn(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(reqBody),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      throw new Error(`SystemZero HTTP error ${res.status}: ${res.statusText}${errText ? ` - ${errText.slice(0, 100)}` : ""}`);
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+    const decision = data["decision"];
+    if (typeof decision !== "boolean" && data["choice"] === undefined) {
+      throw new Error(`Invalid SystemZero response: expected boolean 'decision' or string 'choice'`);
+    }
+    const action: JudgeAction = decision === true || String(data["choice"]).toLowerCase() === "y" || String(data["choice"]).toLowerCase() === "yes" || String(data["choice"]).toLowerCase() === "remember" ? "remember" : "skip";
+    return {
+      action,
+      summary: prompt.trim().slice(0, 250),
+      reason: `SystemZero decision: ${action} (p=${data["probability"]})`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function normalizeJevUrl(baseUrlOrUrl: string): string {
   const trimmed = baseUrlOrUrl.trim();
   if (trimmed.includes("/systemone")) {
@@ -235,14 +305,26 @@ export async function callJevJudge(
   }
 }
 
-export function callLlmJudge(
+export async function callLlmJudge(
   prompt: string,
   response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
   threadContext?: string,
 ): Promise<JudgeDecision> {
-  return callJevJudge(prompt, response, cfg, fetchFn, threadContext);
+  const url = cfg.judgeUrl || "";
+  if (cfg.judgeProtocol === "systemzero" || url.includes("/systemzero")) {
+    return callSystemZeroJudge(prompt, response, cfg, fetchFn, threadContext);
+  }
+  if (cfg.judgeProtocol === "systemone" || url.includes("/systemone")) {
+    return callJevJudge(prompt, response, cfg, fetchFn, threadContext);
+  }
+  // "auto": Try systemzero first, fall back to systemone on error
+  try {
+    return await callSystemZeroJudge(prompt, response, cfg, fetchFn, threadContext);
+  } catch {
+    return callJevJudge(prompt, response, cfg, fetchFn, threadContext);
+  }
 }
 
 export async function evaluateTurnWithJudge(

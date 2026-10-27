@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import type { Pi, PiCtx, PiToolSpec } from "../hooks/events";
-import type { MmConfig } from "../config";
-import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config";
-import type { CormRunner } from "../corm";
-import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm";
+import type { Pi, PiCtx, PiToolSpec } from "../hooks/events.ts";
+import type { MmConfig } from "../config.ts";
+import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config.ts";
+import type { CormRunner } from "../corm.ts";
+import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm.ts";
 import { ensureDaemon } from "../daemon.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";
@@ -19,6 +19,7 @@ import { makeConsolidateTool } from "./consolidate.ts";
 import { makeRecallTool } from "./recall.ts";
 import { makeRecordTool } from "./record.ts";
 import { makeReviewTool } from "./review.ts";
+import { buildMemoryOverview, type MemoryOverviewResult, type MemoryOverviewOptions } from "./overview.ts";
 
 export {
   makeStoreTool,
@@ -33,6 +34,9 @@ export {
   makeRecallTool,
   makeRecordTool,
   makeReviewTool,
+  buildMemoryOverview,
+  type MemoryOverviewResult,
+  type MemoryOverviewOptions,
 };
 export { sepalConfigured };
 
@@ -75,7 +79,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
   return async (ctx) => {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
-    const socketPath = join(mDir, "cormd.sock");
+    const socketPath = resolveSocketPath(cfg, mDir);
     const axes = resolveAxisPath(cfg, ctx.cwd);
     const embed = sepalConfigured(cfg);
     const fspec = filespecFor(mDir, embed);
@@ -88,6 +92,31 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     let runner: CormRunner = shellRunner;
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+
+    // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
+    // and adopt the local server for judge/embeddings as soon as it answers.
+    if (isProject && (!cfg.judgeUrl || !cfg.embedUrl)) {
+      try {
+        const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
+        void ensureAuren({
+          cwd: ctx.cwd,
+          settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
+        });
+        if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
+          if (!cfg.judgeUrl && cfg.judgeMode !== "off" && cfg.judgeMode !== "heuristic") {
+            cfg.judgeUrl = DEFAULT_AUREN_URL;
+            if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
+          }
+          if (!cfg.embedUrl && cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
+            cfg.embedUrl = DEFAULT_AUREN_URL;
+            if (!cfg.embedModel) cfg.embedModel = DEFAULT_AUREN_EMBED_MODEL;
+          }
+        }
+      } catch {
+        // Best-effort auto-discovery
+      }
+    }
+
     if (cormdRes.path !== "" && isProject) {
       try {
         await ensureDaemon({
@@ -112,6 +141,10 @@ export function defaultEnvSource(pi: Pi): EnvSource {
 
 export function axisPath(env: ToolEnv): string {
   return resolveAxisPath(env.cfg, env.cwd);
+}
+
+export function socketPath(env: ToolEnv): string {
+  return resolveSocketPath(env.cfg, memDir(env));
 }
 
 export function resolveMemDir(cwd: string, dir: string): string {

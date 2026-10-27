@@ -2,7 +2,85 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.4.0] - 2026-10-27
+
+### Added
+- **Zero-Configuration `axil-auren` Inference Server Bring-Up (`src/auren-bootstrap.ts`, `src/auren.ts`)**:
+  - Automatically provisions local inference configuration at `~/.config/auren/config.json` if absent, mapping detected models and capabilities without requiring manual setup.
+  - Automatically manages background daemon startup on port 4242 with socket/HTTP readiness polling and process lifecycle management.
+- **Intelligent Model Provisioning & Tiered Consent (`~/.models/`)**:
+  - Supports automatic discovery and downloading of local models (`bge-base`, `bge-small`, `qwen2.5-0.5b`, `olmoe`) with cryptographic `sha256` verification, resumable range downloads, and atomic file swaps.
+  - Tiered consent: light models download seamlessly, while large MoE models (`olmoe`, 3.3 GB) prompt interactively via `ctx.ui.confirm()` to respect user bandwidth and disk budget.
+- **Proactive C Engine Dependency Tracking on `session_start` (`src/versions.ts`, `src/hooks/events.ts`)**:
+  - Pure TypeScript SemVer parser and engine detector inspecting system packages (`pkgconfig`), source repositories (`external/`), and git tags for `axil`, `libcorm`, `libsepal`, `liblemma`, `libjoint`, and `axil-auren`.
+  - Automatically alerts users on `session_start` with concise TUI remediation toasts if any required engine is missing or outdated, eliminating the need to manually invoke `/mm doctor`.
+- **Integrated C Engine Diagnostics in `/mm doctor` (`src/index.ts`)**:
+  - Displays full matrix of core C engines, installed versions, required thresholds, and exact copy-paste remediation commands for package managers and source compilation.
+- **Turnkey Verification Playbook (`scripts/test-bootstrap-playbook.sh`, `npm run test:playbook`)**:
+  - Comprehensive, non-destructive test suite validating daemon recovery, zero-config file generation, model consent dialogues, and proactive dependency warning toasts.
+
+## [0.3.5]
+
+### Fixed
+- **Doctor Diagnostic Accuracy & Architecture Clarity (`src/index.ts`)**:
+  - Replaced misleading `Axis Sepal (Vectors): In-Memory (Ephemeral, zero disk bytes)` with `In-Memory (Ephemeral index)` and labeled `Sepal Embeddings Cache` as an L2 disk cache to resolve user confusion between in-memory vector index and on-disk embedding cache.
+  - Replaced confusing `Axis Roster: Persistent Disk (0.0 KB)` line with `Bound Axes (mem.db.roster): joint, lemma, sepal` parsing active bound axes from the database header.
+
+## [0.3.4]
+
+### Fixed
+- **Doctor Diagnostic Accuracy (`src/index.ts`)**:
+  - Fixed `/mm doctor` / `/mm status` Total Indexed Records counting by querying `corm list` (via resident `cormd` socket or CLI runner) instead of attempting to parse the binary `mem.db.roster` file as raw text lines.
+  - Aligns `/mm doctor` record reporting with `/mm overview` and `/mm timeline`.
+- **Roster Diagnostic Reporting (`src/index.ts`)**:
+  - Added explicit persistent disk size reporting for `mem.db.roster` under secondary axes.
+- **Complexity Compliance (`src/index.ts`)**:
+  - Modularized TUI reporting logic into `runOverviewReport` and `runDoctorReport` to satisfy strict function complexity ceilings.
+- **Documentation & Installation Guidance (`README.md`)**:
+  - Separated core axis package installation (`libcorm`, `libjoint`, `liblemma`, `libsepal`, `axil`) from optional `axil-auren` daemon.
+  - Documented `universe` repository prerequisite for `axil-auren` on Debian/Ubuntu.
+  - Documented `libjoint` v1.6.1 fix resolving `/usr/bin/test` packaging collision.
+
+## [0.3.3]
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
+</p>
+
+### Added
+- **All-Time Timeline Overview & Multi-Resolution Recall (`src/tools/overview.ts`, `src/tools/recall.ts`)**:
+  - Added `overview` flag to `memory_recall` to synthesize a structured high-level summary of active operational principles (L3), invariants (L2), task investigations (L1), and chronological epochs across all time.
+  - Added direct `zoomRef` drill-down in `memory_recall` to retrieve full vertical context: problem statements, attempted approaches (worked/failed/abandoned), diffs, findings, and complete upward/downward evidence lineage trees.
+  - Added slash commands `/mm overview` and `/mm timeline` with rich TUI report formatting.
+  - Automated proactive overview context injection in `before_agent_start` when users pose open-ended introspection questions (*"What do you remember?"*).
+
+### Changed
+- **Modularized Architecture & Complexity Ceilings (`src/tools/overview_render.ts`, `scripts/check-complexity.ts`)**:
+  - Extracted overview markdown rendering into pure helper module `overview_render.ts`.
+  - Refactored `executeRecall` into compact sub-handlers (`executeOverviewRecall`, `executeTargetedHybridRecall`).
+  - Added subsystem baseline complexity ceilings in `check-complexity.ts` while enforcing strict LOC limits on new modules.
+
+### Fixed
+- **Static Analysis & Lint Cleanliness (`src/associative.ts`, `tests/payload.test.ts`, `tests/hybrid.test.ts`)**:
+  - Resolved all 10 `deno lint` errors (require-await in `recordAssociations` and `replay_session.ts`; unused imports/variables in `payload.test.ts`, `hybrid.test.ts`, and `cognitive_memory.test.ts`).
+  - 93 files checked with 0 warnings and 0 errors.
+- **Native Benchmark Streaming (`scripts/benchmark-mm.ts`)**:
+  - Fixed binary payload streaming over stdin in native C benchmark runner (`-p <ref>:-`).
+  - Fixed payload stringification in synthetic benchmark ranking.
+
 ## [0.3.2]
+
+### Added
+- **Decoupled Socket Runtime Path & DrvFs Auto-Fallback (`src/config.ts`, `src/tools/index.ts`)**:
+  - Added `socketPath` and `runtimeDir` configuration keys, with `PI_MM_SOCKET` and `PI_MM_RUNTIME_DIR` environment variable overrides.
+  - Added automatic detection and routing of `cormd.sock` to `$XDG_RUNTIME_DIR/pi-mm/cormd-<hash>.sock` or `/tmp/pi-mm/cormd-<hash>.sock` when `memDir` is located on non-POSIX socket filesystems (such as WSL Windows mounts under `/mnt/*` / DrvFs).
+  - Cleanly separates ephemeral host IPC endpoints from persistent repository data (`mem.db`, vector indexes, crash journals).
+
+### Changed
+- **System-Wide Axis Library Resolution (`src/config.ts`)**:
+  - `resolveAxisPath()` now detects and defaults to system-installed CORM axis libraries (`/usr/lib`, `/usr/local/lib`, `/usr/lib/ttypt`, `/lib`, `/usr/lib64`) when monorepo submodules (`<cwd>/external/lib*`) are not present.
+  - Allows `pi-mm` to run out-of-the-box in standalone repositories without triggering `cormd: unknown axis 'joint'/'lemma'/'sepal'`.
+  - Preserves local monorepo checkout priority when `external/libjoint/lib` exists on disk.
 
 ### Fixed
 - **Global Settings Fallback (`src/config.ts`)**:
@@ -12,10 +90,6 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - Updated database compaction script (`scripts/compact_db.ts`) to use `readMmConfig()`.
 
 ## [0.3.1]
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
-</p>
 
 ### Added
 - **Latent Human-Like Mipmap Recall & LOD Gating (`src/hooks/auto_recall.ts`)**:

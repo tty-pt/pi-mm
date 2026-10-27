@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { encodeHtokPayload, decodePayload, FLAG_IS_ANCHOR } from "../src/payload.ts";
 import { computeRankingScore } from "../src/tools/ranking.ts";
 import { extractKeyEntities, recordAssociations, getAssociatedTokens, loadAssociations } from "../src/associative.ts";
-import { buildInjectedContext, detectSubsystemMentions, primeSubsystemInvariants } from "../src/hooks/auto_recall.ts";
+import { buildInjectedContext, detectSubsystemMentions } from "../src/hooks/auto_recall.ts";
 import { installSessionHooks } from "../src/hooks/events.ts";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";

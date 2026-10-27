@@ -41,11 +41,15 @@ For routine coding tasks, agents use the 3 streamlined tools:
 1. **Automatic Context Recall**:
    Pi automatically injects compact, relevant memory context before your turn starts via the `before_agent_start` hook. You do not need to call a memory tool just to check if prior experience exists.
 
-2. **`memory_recall(query, options?)`**:
-   One-stop hybrid search across lexical (`lemma`) and semantic (`sepal`) axes fused deterministically with Reciprocal Rank Fusion ($k=60$).
-   - `query`: natural language problem, error text, or symbol.
-   - `project`: optional project filter/boost (e.g. `site`).
+2. **`memory_recall({ query?, overview?, zoomRef?, ... })`**:
+   Multi-resolution memory retrieval: search semantically across topics, generate all-time high-level overviews, or zoom in to inspect specific memory investigations, approaches, diffs, and evidence trees.
+   - `query`: natural language problem, error text, or symbol. Omit or pass `"overview"` to generate an all-time high-level memory overview. Inline shorthand queries like `ref:42` or `zoom:42` delegate directly to zoom-in.
+   - `overview: true`: synthesizes a structured timeline and hierarchical overview across all operational time (principles, invariants, milestones, epochs).
+   - `zoomRef: number`: zoom directly into a specific memory reference number, returning its complete multi-resolution details: problem statement, attempted approaches (worked/failed/abandoned), diffs, findings, outcome, and evidence tree.
+   - `project` / `subsystem`: optional project filter/boost (e.g. `site`).
+   - `level`: optional resolution level filter (`'L0'`, `'L1'`, `'L2'`, `'L3'`).
    - `includeEvidence: true`: automatically fetches and attaches supporting evidence trees.
+   - `limit`: maximum number of memories to return (default 5 for search, 15 for overview, max 30).
 
 3. **`memory_record(problem, approaches, ...)`**:
    Record task resolution and learnings without low-level JSON envelope wrangling:
@@ -69,24 +73,34 @@ By default, only the 3 primary tools above are registered for clean model focus.
 
 1. **Rely on automatic context first:**
    Prior experience is already injected at the start of your turn. Review the `[Persistent Memory Context]` block before writing code.
-2. **Recall for deeper searches:**
-   When encountering a specific compiler error or unfamiliar symbol, run `memory_recall(query, { includeEvidence: true })`.
-3. **Inspect evidence behind conclusions:**
-   When verifying an invariant or rule, use `memory_review(ref, "inspect")` to examine underlying diffs and test results.
-4. **Record failed and successful approaches:**
+2. **Overview for broad orientation:**
+   When starting work in a project or answering broad questions about prior work across sessions, run `memory_recall({ overview: true })`.
+3. **Recall for deeper searches:**
+   When encountering a specific compiler error or unfamiliar symbol, run `memory_recall({ query: "...", includeEvidence: true })`.
+4. **Zoom in to inspect investigations:**
+   To inspect the full approaches (worked/failed), diffs, and evidence tree of a prior investigation, run `memory_recall({ zoomRef: <ref> })`.
+5. **Inspect evidence behind conclusions:**
+   When verifying an invariant or rule, use `memory_review(ref, "inspect")` or `memory_recall({ zoomRef: ref })` to examine underlying diffs and test results.
+6. **Record failed and successful approaches:**
    When finishing a task, record what worked and what failed via `memory_record`. Include specific reasons.
-5. **Truthful verification:**
+7. **Truthful verification:**
    Do not claim verification without tests or verified diffs. Unverified fixes will be marked `tested`, while verified fixes will be marked `supported`.
-6. **Contradict or supersede without erasing history:**
+8. **Contradict or supersede without erasing history:**
    When new evidence disproves an old conclusion, use `memory_review(oldRef, "update_lifecycle", { lifecycle: "superseded", reason, evidenceRef: newRef })`.
 
 ## Examples
 
 ```ts
-// 1. Recall prior experience with supporting evidence
-memory_recall("corm_open handle aliasing leak", { includeEvidence: true, project: "site" });
+// 1. All-time high-level memory overview & timeline
+memory_recall({ overview: true });
 
-// 2. Record a structured task resolution with verified fix
+// 2. Direct zoom into a specific memory to inspect approaches, diffs, and evidence tree
+memory_recall({ zoomRef: 42 });
+
+// 3. Recall prior experience with supporting evidence
+memory_recall({ query: "corm_open handle aliasing leak", includeEvidence: true, project: "site" });
+
+// 4. Record a structured task resolution with verified fix
 memory_record({
   problem: "Investigate fd leak on duplicate corm_open",
   approaches: [
@@ -101,10 +115,10 @@ memory_record({
   subsystem: "libcorm",
 });
 
-// 3. Inspect evidence tree behind a rule
+// 5. Inspect evidence tree behind a rule
 memory_review(2, "inspect");
 
-// 4. Update lifecycle when an old theory is superseded
+// 6. Update lifecycle when an old theory is superseded
 memory_review(1, "update_lifecycle", {
   lifecycle: "superseded",
   reason: "Superseded by verified handle aliasing implementation in Ref 2",

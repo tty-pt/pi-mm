@@ -1,4 +1,4 @@
-import { readMmConfig, loadConfig, applyEnv, resolveCormBin, resolveAxisPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
+import { readMmConfig, loadConfig, applyEnv, resolveCormBin, resolveAxisPath, resolveSocketPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
 import { resolveMemDir } from "../src/tools/index.ts";
 import { join } from "node:path";
 
@@ -91,12 +91,28 @@ Deno.test("resolveCormBin: precedence settings → env → PATH → in-site → 
   check(none.source === "none" && none.path === "", "none when nothing resolves");
 });
 
-Deno.test("resolveAxisPath: explicit list used; null → in-site joint:lemma:islet under cwd", () => {
+Deno.test("resolveAxisPath: explicit list, local monorepo, and system-wide fallback", () => {
   check(resolveAxisPath(loadConfig({ axisLibs: "/x:/y" }), "/repo") === "/x:/y", "explicit axisLibs");
+
+  // In-site monorepo check when local directory exists
+  const localJoint = join("/repo", "external", "libjoint", "lib");
   check(
-    resolveAxisPath(DEFAULT_CONFIG, "/repo") ===
+    resolveAxisPath(DEFAULT_CONFIG, "/repo", (p) => p === localJoint) ===
       join("/repo", "external", "libjoint", "lib") + ":" + join("/repo", "external", "liblemma", "lib") + ":" + join("/repo", "external", "libislet", "lib"),
-    "in-site joint:lemma:islet default",
+    "in-site joint:lemma:islet when local monorepo exists",
+  );
+
+  // System-wide library fallback when local monorepo does not exist
+  check(
+    resolveAxisPath(DEFAULT_CONFIG, "/repo", (p) => p === "/usr/lib/libjoint.so") === "/usr/lib",
+    "system-wide /usr/lib fallback when local does not exist",
+  );
+
+  // Default fallback when neither local nor system libraries exist
+  check(
+    resolveAxisPath(DEFAULT_CONFIG, "/repo", () => false) ===
+      join("/repo", "external", "libjoint", "lib") + ":" + join("/repo", "external", "liblemma", "lib") + ":" + join("/repo", "external", "libislet", "lib"),
+    "fallback when nothing resolves",
   );
 });
 
@@ -339,6 +355,44 @@ Deno.test("resolveAdvancedTools: PI_MM_ADVANCED_TOOLS env var takes precedence",
   }
 });
 
+Deno.test("resolveSocketPath: default, explicit, runtimeDir, and DrvFs auto-fallback", () => {
+  // 1. Default: inside memDir for Linux paths
+  check(
+    resolveSocketPath(DEFAULT_CONFIG, "/home/user/project/.pi/mm") === "/home/user/project/.pi/mm/cormd.sock",
+    "default socket inside memDir",
+  );
+
+  // 2. Explicit setting override
+  const custom = loadConfig({ socketPath: "/tmp/custom-socket.sock" });
+  check(
+    resolveSocketPath(custom, "/home/user/project/.pi/mm") === "/tmp/custom-socket.sock",
+    "explicit socketPath honored",
+  );
+
+  // 3. PI_MM_SOCKET environment override
+  const envCustom = applyEnv(DEFAULT_CONFIG, { PI_MM_SOCKET: "/tmp/env-socket.sock" });
+  check(
+    resolveSocketPath(envCustom, "/home/user/project/.pi/mm") === "/tmp/env-socket.sock",
+    "env PI_MM_SOCKET honored",
+  );
+
+  // 4. runtimeDir setting override
+  const runtime = loadConfig({ runtimeDir: "/var/run/custom" });
+  const runtimeRes = resolveSocketPath(runtime, "/home/user/project/.pi/mm");
+  check(
+    runtimeRes.startsWith("/var/run/custom/cormd-") && runtimeRes.endsWith(".sock"),
+    "runtimeDir override honored with hash",
+  );
+
+  // 5. Auto-fallback for WSL DrvFs (/mnt/*) paths where unix sockets fail
+  const drvFsRes = resolveSocketPath(DEFAULT_CONFIG, "/mnt/l/JOGO/.pi/mm");
+  check(!drvFsRes.startsWith("/mnt/"), "DrvFs auto-fallback routes outside /mnt/");
+  check(
+    (drvFsRes.includes("/pi-mm/cormd-") || drvFsRes.startsWith("/tmp/")) && drvFsRes.endsWith(".sock"),
+    "DrvFs auto-fallback uses /tmp or XDG_RUNTIME_DIR with hash",
+  );
+});
+
 Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
   const envRec = {
     AUREN_URL: "http://localhost:4242",
@@ -363,4 +417,14 @@ Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
   const fallbackFilled = applyEnv(DEFAULT_CONFIG, fallbackRec);
   check(fallbackFilled.embedUrl === "http://localhost:9999/v1/embeddings", "QLLM_URL fallback embedUrl");
   check(fallbackFilled.embedModel === "qllm-model", "QLLM_MODEL fallback embedModel");
+});
+Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, validate and honour env", () => {
+  const d = loadConfig(undefined);
+  check(d.autoStartAuren === true && d.autoDownloadModels === "ask", "defaults");
+  const c = loadConfig({ autoStartAuren: false, autoDownloadModels: "never" });
+  check(c.autoStartAuren === false && c.autoDownloadModels === "never", "settings honoured");
+  const bad = loadConfig({ autoStartAuren: "no", autoDownloadModels: "sometimes" });
+  check(bad.autoStartAuren === true && bad.autoDownloadModels === "ask", "invalid values fall back");
+  const e = applyEnv(loadConfig(undefined), { PI_MM_AUTO_START_AUREN: "0", PI_MM_AUTO_DOWNLOAD_MODELS: "auto" });
+  check(e.autoStartAuren === false && e.autoDownloadModels === "auto", "env overrides");
 });

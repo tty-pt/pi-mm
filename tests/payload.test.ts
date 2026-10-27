@@ -1,6 +1,5 @@
 import assert from "node:assert";
 import {
-  encodePayload,
   encodeLegacyJsonPayload,
   decodePayload,
   splitRawPayload,
@@ -8,7 +7,6 @@ import {
   decodeHtokPayload,
   isHtokPayload,
   HTOK_MAGIC,
-  HTOK_VERSION,
   HTOK_TYPE_TOKENS,
   HTOK_TYPE_UUID,
   HTOK_TYPE_HISTORY,
@@ -462,7 +460,6 @@ Deno.test("HTOK v3 session identifier: 16-byte raw UUID compression", () => {
     const typeTag = bytes[offset++];
     const dataLen = view.getUint16(offset, true);
     offset += 2;
-    const fieldData = bytes.subarray(offset, offset + dataLen);
     offset += dataLen;
 
     if (name === "ep_sid") {

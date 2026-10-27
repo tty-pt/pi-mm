@@ -1,16 +1,20 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 export type CaptureMode = "all" | "keyword" | "judge" | "off";
 export type JudgeMode = "auto" | "heuristic" | "off";
+export type JudgeProtocol = "auto" | "systemzero" | "systemone";
 export type JudgeFallback = "capture" | "skip";
 
 export interface MmConfig {
   cormBin: string;
   qmapBin?: string;
   cormdBin?: string;
+  socketPath?: string;
+  runtimeDir?: string;
   axisLibs: string | null;
   memDir: string;
   scanLimit: number;
@@ -23,6 +27,7 @@ export interface MmConfig {
   captureKeyword?: string;
   captureKeywords?: string[];
   judgeMode?: JudgeMode;
+  judgeProtocol?: JudgeProtocol;
   judgeUrl?: string;
   judgeModel?: string;
   judgeKey?: string;
@@ -38,6 +43,10 @@ export interface MmConfig {
   synthTimeoutMs?: number;
   ephemeralSepal?: boolean;
   ephemeralJoint?: boolean;
+  /** Start the local axil-auren server automatically when it is installed (default true). */
+  autoStartAuren?: boolean;
+  /** Model download policy: small models auto, large models ask once (default "ask"). */
+  autoDownloadModels?: "auto" | "ask" | "never";
 }
 
 export const DEFAULT_CAPTURE_KEYWORDS: string[] = [
@@ -50,6 +59,8 @@ export const DEFAULT_CAPTURE_KEYWORDS: string[] = [
 export const DEFAULT_CONFIG: MmConfig = {
   cormBin: "",
   cormdBin: undefined,
+  socketPath: undefined,
+  runtimeDir: undefined,
   axisLibs: null,
   memDir: ".pi/mm",
   scanLimit: 10,
@@ -58,6 +69,7 @@ export const DEFAULT_CONFIG: MmConfig = {
   captureKeyword: "@remember",
   captureKeywords: DEFAULT_CAPTURE_KEYWORDS,
   judgeMode: "auto",
+  judgeProtocol: "systemone",
   judgeTimeoutMs: 15000,
   judgeFallback: "skip",
   consolidateL2Threshold: 3,
@@ -69,6 +81,8 @@ export const DEFAULT_CONFIG: MmConfig = {
   synthKey: undefined,
   synthTimeoutMs: 15000,
   ephemeralSepal: false,
+  autoStartAuren: true,
+  autoDownloadModels: "ask",
 };
 
 export type CormSource = "settings" | "env" | "path" | "insite" | "none";
@@ -83,6 +97,10 @@ export function loadConfig(raw: unknown): MmConfig {
   const record = raw as Record<string, unknown>;
   const bin = record["cormBin"] ?? record["qmapBin"];
   const cormd = record["cormdBin"];
+  const rawSocket = record["socketPath"];
+  const socketPath = typeof rawSocket === "string" && rawSocket.trim() !== "" ? rawSocket.trim() : undefined;
+  const rawRuntime = record["runtimeDir"];
+  const runtimeDir = typeof rawRuntime === "string" && rawRuntime.trim() !== "" ? rawRuntime.trim() : undefined;
   const libs = record["axisLibs"];
   const dir = record["memDir"];
   const limit = record["scanLimit"];
@@ -95,6 +113,7 @@ export function loadConfig(raw: unknown): MmConfig {
   const capKeyword = record["captureKeyword"];
   const capKeywords = record["captureKeywords"];
   const jMode = record["judgeMode"];
+  const jProto = record["judgeProtocol"];
   const jUrl = record["judgeUrl"];
   const jModel = record["judgeModel"];
   const jKey = record["judgeKey"];
@@ -109,6 +128,8 @@ export function loadConfig(raw: unknown): MmConfig {
   const sKey = record["synthKey"];
   const sTimeout = record["synthTimeoutMs"];
   const ephem = record["ephemeralSepal"] ?? record["sepalEphemeral"];
+  const autoStart = record["autoStartAuren"];
+  const autoDl = record["autoDownloadModels"];
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
   let effectiveCaptureMode: CaptureMode = "all";
@@ -144,6 +165,8 @@ export function loadConfig(raw: unknown): MmConfig {
   return {
     cormBin: effectiveBin,
     cormdBin: typeof cormd === "string" && cormd.trim() !== "" ? cormd.trim() : undefined,
+    socketPath,
+    runtimeDir,
     axisLibs: typeof libs === "string" && libs.trim() !== "" ? libs.trim() : DEFAULT_CONFIG.axisLibs,
     memDir: typeof dir === "string" && dir.trim() !== "" ? dir.trim() : DEFAULT_CONFIG.memDir,
     scanLimit: typeof limit === "number" && Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_CONFIG.scanLimit,
@@ -156,6 +179,7 @@ export function loadConfig(raw: unknown): MmConfig {
     captureKeyword: typeof capKeyword === "string" && capKeyword.trim() !== "" ? capKeyword.trim() : DEFAULT_CONFIG.captureKeyword,
     captureKeywords: effectiveKeywords,
     judgeMode: jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : DEFAULT_CONFIG.judgeMode,
+    judgeProtocol: jProto === "systemzero" || jProto === "systemone" || jProto === "auto" ? jProto : DEFAULT_CONFIG.judgeProtocol,
     judgeUrl: typeof jUrl === "string" && jUrl.trim() !== "" ? jUrl.trim() : undefined,
     judgeModel: typeof jModel === "string" && jModel.trim() !== "" ? jModel.trim() : undefined,
     judgeKey: typeof jKey === "string" && jKey.trim() !== "" ? jKey.trim() : undefined,
@@ -170,12 +194,16 @@ export function loadConfig(raw: unknown): MmConfig {
     synthKey: typeof sKey === "string" && sKey.trim() !== "" ? sKey.trim() : undefined,
     synthTimeoutMs: typeof sTimeout === "number" && sTimeout > 0 ? sTimeout : DEFAULT_CONFIG.synthTimeoutMs,
     ephemeralSepal: typeof ephem === "boolean" ? ephem : DEFAULT_CONFIG.ephemeralSepal,
+    autoStartAuren: typeof autoStart === "boolean" ? autoStart : DEFAULT_CONFIG.autoStartAuren,
+    autoDownloadModels: autoDl === "auto" || autoDl === "ask" || autoDl === "never" ? autoDl : DEFAULT_CONFIG.autoDownloadModels,
   };
 }
 
 export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>): MmConfig {
   const envBin = env["CORM_BIN"];
   const envCormd = env["CORMD_BIN"];
+  const envSocket = env["PI_MM_SOCKET"] ?? env["MM_SOCKET"];
+  const envRuntimeDir = env["PI_MM_RUNTIME_DIR"] ?? env["MM_RUNTIME_DIR"];
   const envLibs = env["CORM_AXIS_PATH"];
 
   // Independent embedding settings
@@ -189,6 +217,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
 
   // Independent judge settings
   const envJMode = env["PI_MM_JUDGE_MODE"] ?? env["MM_JUDGE_MODE"];
+  const envJProto = env["PI_MM_JUDGE_PROTOCOL"] ?? env["MM_JUDGE_PROTOCOL"];
   let defaultJudgeUrl = env["PI_MM_JUDGE_URL"] ?? env["MM_JUDGE_URL"] ?? env["JEV_URL"];
   let defaultJudgeModel = env["PI_MM_JUDGE_MODEL"] ?? env["MM_JUDGE_MODEL"] ?? env["JEV_MODEL"];
   let defaultJudgeKey = env["PI_MM_JUDGE_KEY"] ?? env["MM_JUDGE_KEY"] ?? env["JEV_KEY"];
@@ -243,6 +272,13 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const envJUrl = defaultJudgeUrl;
   const envJModel = defaultJudgeModel;
   const envJKey = defaultJudgeKey;
+
+  let autoStartAuren = cfg.autoStartAuren;
+  const envAutoStart = env["PI_MM_AUTO_START_AUREN"];
+  if (envAutoStart !== undefined) autoStartAuren = !(envAutoStart === "0" || envAutoStart === "false");
+  let autoDownloadModels = cfg.autoDownloadModels;
+  const envAutoDl = env["PI_MM_AUTO_DOWNLOAD_MODELS"];
+  if (envAutoDl === "auto" || envAutoDl === "ask" || envAutoDl === "never") autoDownloadModels = envAutoDl;
 
   let ephemeralSepal = cfg.ephemeralSepal;
   if (envEphem !== undefined) {
@@ -299,6 +335,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   return {
     cormBin: resolvedBin,
     cormdBin: cfg.cormdBin ?? (typeof envCormd === "string" && envCormd.trim() !== "" ? envCormd.trim() : undefined),
+    socketPath: cfg.socketPath ?? (typeof envSocket === "string" && envSocket.trim() !== "" ? envSocket.trim() : undefined),
+    runtimeDir: cfg.runtimeDir ?? (typeof envRuntimeDir === "string" && envRuntimeDir.trim() !== "" ? envRuntimeDir.trim() : undefined),
     axisLibs: cfg.axisLibs === null && typeof envLibs === "string" && envLibs.trim() !== "" ? envLibs.trim() : cfg.axisLibs,
     memDir: cfg.memDir,
     scanLimit: cfg.scanLimit,
@@ -311,6 +349,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     captureKeyword: capKeyword,
     captureKeywords: capKeywords,
     judgeMode: jMode,
+    judgeProtocol: envJProto === "systemzero" || envJProto === "systemone" || envJProto === "auto" ? envJProto : cfg.judgeProtocol,
     judgeUrl: cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined),
     judgeModel: cfg.judgeModel ?? (typeof envJModel === "string" && envJModel.trim() !== "" ? envJModel.trim() : undefined),
     judgeKey: cfg.judgeKey ?? (typeof envJKey === "string" && envJKey.trim() !== "" ? envJKey.trim() : undefined),
@@ -325,6 +364,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     synthKey: cfg.synthKey ?? (typeof defaultSynthKey === "string" && defaultSynthKey.trim() !== "" ? defaultSynthKey.trim() : undefined),
     synthTimeoutMs: synthTimeoutNum && !isNaN(synthTimeoutNum) && synthTimeoutNum > 0 ? synthTimeoutNum : cfg.synthTimeoutMs,
     ephemeralSepal,
+    autoStartAuren,
+    autoDownloadModels,
   };
 }
 
@@ -410,8 +451,73 @@ export function resolveCormdBin(
   return { source: "none", path: "" };
 }
 
-export function resolveAxisPath(cfg: MmConfig, cwd: string): string {
+export function resolveSocketPath(cfg: MmConfig, memDir: string): string {
+  // 1. Explicit socket path (setting or env)
+  if (cfg.socketPath && cfg.socketPath.trim() !== "") {
+    return cfg.socketPath.trim();
+  }
+
+  // 2. Explicit runtime directory (setting or env)
+  if (cfg.runtimeDir && cfg.runtimeDir.trim() !== "") {
+    const hash = createHash("sha256").update(memDir).digest("hex").slice(0, 12);
+    return join(cfg.runtimeDir.trim(), `cormd-${hash}.sock`);
+  }
+
+  // 3. Auto-fallback for filesystems lacking AF_UNIX support (e.g. WSL DrvFs /mnt/*)
+  if (memDir.startsWith("/mnt/")) {
+    const env = runtimeEnv();
+    const fallbackBase = env["XDG_RUNTIME_DIR"] || "/tmp";
+    const hash = createHash("sha256").update(memDir).digest("hex").slice(0, 12);
+    return join(fallbackBase, "pi-mm", `cormd-${hash}.sock`);
+  }
+
+  // 4. Default: inside memDir
+  return join(memDir, "cormd.sock");
+}
+
+export function resolveAxisPath(
+  cfg: MmConfig,
+  cwd: string,
+  probe: (p: string) => boolean = existsSync,
+): string {
   if (cfg.axisLibs !== null) return cfg.axisLibs;
+
+  const env = runtimeEnv();
+  const envAxis = env["CORM_AXIS_PATH"] ?? env["CORM_AXIS_LIBS"];
+  if (envAxis && envAxis.trim() !== "") return envAxis.trim();
+
+  // 1. If project has local monorepo external/lib* checkouts, prefer them
+  const localJoint = join(cwd, "external", "libjoint", "lib");
+  if (probe(localJoint)) {
+    const lemma = join(cwd, "external", "liblemma", "lib");
+    const islet = join(cwd, "external", "libislet", "lib");
+    let base = `${localJoint}:${lemma}:${islet}`;
+    if (sepalConfigured(cfg)) {
+      base += `:${join(cwd, "external", "libsepal", "lib")}`;
+    }
+    return base;
+  }
+
+  // 2. System-wide library directories (standard system installation)
+  const systemCandidates = [
+    "/usr/lib/ttypt",
+    "/usr/local/lib/ttypt",
+    "/usr/lib",
+    "/usr/local/lib",
+    "/lib",
+    "/usr/lib64",
+  ];
+  for (const dir of systemCandidates) {
+    if (
+      probe(join(dir, "libjoint.so")) ||
+      probe(join(dir, "libjoint.dylib")) ||
+      probe(join(dir, "libjoint.dll"))
+    ) {
+      return dir;
+    }
+  }
+
+  // 3. Fallback: if nothing exists, default to local monorepo path
   const joint = join(cwd, "external", "libjoint", "lib");
   const lemma = join(cwd, "external", "liblemma", "lib");
   const islet = join(cwd, "external", "libislet", "lib");

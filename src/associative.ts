@@ -62,9 +62,9 @@ export function saveAssociationsAtomic(memDir: string, map: AssociationMap): voi
   }
 }
 
-export async function recordAssociations(memDir: string, text: string): Promise<void> {
+export function recordAssociations(memDir: string, text: string): Promise<void> {
   const entities = extractKeyEntities(text);
-  if (entities.length < 2) return;
+  if (entities.length < 2) return Promise.resolve();
 
   const map = loadAssociations(memDir);
 
@@ -86,6 +86,7 @@ export async function recordAssociations(memDir: string, text: string): Promise<
   }
 
   saveAssociationsAtomic(memDir, map);
+  return Promise.resolve();
 }
 
 export function getAssociatedTokens(memDir: string, queryTokens: string[], maxNeighbors = 2): string[] {
