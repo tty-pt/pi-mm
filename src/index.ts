@@ -7,7 +7,7 @@ import { filespecFor, buildListInvocation, embedEnv } from "./corm.ts";
 import { parseBareRefs } from "./resolve.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_AUREN, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
+import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
 
 export interface MmReportData {
   title: string;
@@ -134,7 +134,7 @@ async function runDoctorReport(
     lines.push("[-] Embeddings Endpoint: Unconfigured (semantic search disabled)");
   }
   // Core C Engine Versions & Requirements
-  const { checkAllEngineVersions, generateRemediationAdvice } = await import("./versions.ts");
+  const { checkAllEngineVersions } = await import("./versions.ts");
   const engineReports = checkAllEngineVersions({ cwd: targetCwd });
   lines.push("[-] Core C Engines & Versions:");
   for (const rep of engineReports) {
@@ -241,7 +241,7 @@ async function runDoctorReport(
   const uCfg = findUserConfig({ cwd: targetCwd });
   lines.push(`[-] Auren Config: ${uCfg ?? "None (auto-managed at ~/.config/auren/config.json)"}`);
   const home = typeof process !== "undefined" && process.env?.HOME ? process.env.HOME : "/tmp";
-  const { modelsDir, presentModels } = await import("./auren-bootstrap.ts");
+  const { presentModels } = await import("./auren-bootstrap.ts");
   const present = presentModels(MODEL_CATALOG, home);
   if (present.length > 0) {
     lines.push(`[✓] Local GGUF Models (~/.models): ${present.map((m) => m.id).join(", ")}`);

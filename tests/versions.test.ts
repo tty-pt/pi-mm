@@ -8,9 +8,8 @@ import {
   generateRemediationAdvice,
   formatRemediationToast,
   MIN_ENGINE_VERSIONS,
-  type EngineName,
 } from "../src/versions.ts";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 

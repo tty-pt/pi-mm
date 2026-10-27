@@ -16,13 +16,10 @@ import { checkAllEngineVersions, generateRemediationAdvice } from "../src/versio
 import {
   ensureAuren,
   diagnoseAuren,
-  downloadModel,
-  MODEL_CATALOG,
   type CatalogModel,
   resetBootstrapForTests,
-  DOCS_PIMM_PREREQUISITES,
 } from "../src/auren-bootstrap.ts";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -151,11 +148,11 @@ export async function showAutoDownloadDemo(): Promise<void> {
       cwd: sandbox,
       catalog: testCatalog,
       settings: { autoStart: false, autoDownloadModels: "ask" },
-      confirm: async (msg) => {
+      confirm: (msg) => {
         promptedConsent = true;
         console.log(`\n\x1b[35m[Interactive Consent Dialog]\x1b[0m ${msg}`);
         console.log("  -> Operator responded: YES (consent granted for large model)");
-        return true;
+        return Promise.resolve(true);
       },
       onUpdate: (st) => {
         if (st.downloads.length > 0) {
