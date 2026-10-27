@@ -18,6 +18,7 @@ import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
 import { recordAssociations } from "../associative.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 export interface PiToolSpec {
@@ -131,6 +132,65 @@ export class ConsolidationQueue {
 }
 
 export const consolidationQueue = new ConsolidationQueue();
+
+let sessionSavedCount = 0;
+let mmStatusTimer: ReturnType<typeof setTimeout> | undefined;
+let mmDownloadSuffix: string | undefined;
+
+/** Show (or clear) a model-download progress suffix next to the brain indicator. */
+export function setMmDownloadProgress(
+  ctx: PiCtx | undefined,
+  text: string | undefined,
+): void {
+  mmDownloadSuffix = text;
+  const ui = (ctx as { ui?: { setStatus?: (id: string, text: string | undefined) => void; theme?: { fg?: (name: string, text: string) => string } } })?.ui;
+  if (!ui?.setStatus || mmStatusTimer !== undefined) return;
+  const base = `🧠 ${sessionSavedCount}${mmDownloadSuffix ? ` ${mmDownloadSuffix}` : ""}`;
+  ui.setStatus("pi-mm", ui.theme?.fg ? ui.theme.fg("muted", base) : base);
+}
+
+export function notifyMmEvent(
+  ctx: PiCtx | undefined,
+  type: "saved" | "degraded" | "recalled",
+  count?: number,
+): void {
+  const ui = (ctx as { ui?: { setStatus?: (id: string, text: string | undefined) => void; theme?: { fg?: (name: string, text: string) => string } } })?.ui;
+  if (!ui?.setStatus) return;
+
+  if (mmStatusTimer !== undefined) {
+    clearTimeout(mmStatusTimer);
+    mmStatusTimer = undefined;
+  }
+
+  const renderIdleOrCount = () => {
+    const txt = `🧠 ${sessionSavedCount}${mmDownloadSuffix ? ` ${mmDownloadSuffix}` : ""}`;
+    return ui.theme?.fg ? ui.theme.fg("muted", txt) : txt;
+  };
+
+  if (type === "saved") {
+    sessionSavedCount += (count ?? 1);
+    const flash = ui.theme?.fg ? ui.theme.fg("success", "🧠 +1") : "🧠 +1";
+    ui.setStatus("pi-mm", flash);
+    mmStatusTimer = setTimeout(() => {
+      ui.setStatus?.("pi-mm", renderIdleOrCount());
+    }, 2500);
+    return;
+  }
+
+  if (type === "degraded") {
+    const warn = ui.theme?.fg ? ui.theme.fg("error", "⚠️") : "⚠️";
+    ui.setStatus("pi-mm", warn);
+    mmStatusTimer = setTimeout(() => {
+      ui.setStatus?.("pi-mm", renderIdleOrCount());
+    }, 3500);
+    return;
+  }
+
+  if (type === "recalled" && count && count > 0 && sessionSavedCount === 0) {
+    const txt = ui.theme?.fg ? ui.theme.fg("muted", `🧠 ${count}`) : `🧠 ${count}`;
+    ui.setStatus("pi-mm", txt);
+  }
+}
 
 export interface SignificantEvent {
   id: string; timestamp: string; toolName: string; summary: string; isError: boolean;
@@ -1040,6 +1100,65 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           }
         }
         await activeSessionBuffer.restoreJournal(cwd, committedIds);
+
+        const ui = (ctxUnknown as {
+          ui?: {
+            setStatus?: (id: string, text: string | undefined) => void;
+            notify?: (text: string, level?: "info" | "warning" | "error") => void;
+            theme?: { fg?: (name: string, text: string) => string };
+          };
+        })?.ui;
+        if (ui?.setStatus) {
+          sessionSavedCount = 0;
+          const idleTxt = ui.theme?.fg ? ui.theme.fg("muted", "🧠 0") : "🧠 0";
+          ui.setStatus("pi-mm", idleTxt);
+          ui.setStatus("mm-judge", undefined);
+        }
+
+        const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
+        if (isProject) {
+          try {
+            const { findSepalLib, ensureAuren, describeProgress, DOCS_SEPAL } = await import("../auren.ts");
+            const { checkAllEngineVersions, formatRemediationToast } = await import("../versions.ts");
+            const notify = typeof ui?.notify === "function" ? ui.notify.bind(ui) : undefined;
+            const told = new Set<string>();
+            const tell = (key: string, text: string, level: "info" | "warning") => {
+              if (!notify || told.has(key)) return;
+              told.add(key);
+              notify(text, level);
+            };
+
+            // Proactively alert the user if any core engine is missing or outdated
+            const engineReports = checkAllEngineVersions({ cwd: ctx.cwd });
+            for (const rep of engineReports) {
+              if (rep.status === "missing" || rep.status === "outdated") {
+                if (rep.name === "libsepal" && env.cfg.semanticSearch === false) continue;
+                tell(`engine:${rep.name}:${rep.status}`, `[pi-mm] ${formatRemediationToast(rep)}`, "warning");
+              }
+            }
+
+            if (!findSepalLib(ctx.cwd) && env.cfg.semanticSearch !== false) {
+              tell("sepal", `[pi-mm] Semantic recall needs libsepal, which is not installed. See: ${DOCS_SEPAL}`, "warning");
+            }
+            if (env.cfg.judgeMode !== "off" && env.cfg.judgeMode !== "heuristic") {
+              const confirmFn = (ctxUnknown as { ui?: { confirm?: (title: string, message: string) => Promise<boolean> } })?.ui?.confirm;
+              void ensureAuren({
+                cwd: ctx.cwd,
+                settings: { autoStart: env.cfg.autoStartAuren, autoDownloadModels: env.cfg.autoDownloadModels },
+                confirm: confirmFn ? (m: string) => confirmFn.call((ctxUnknown as { ui: object }).ui, "pi-mm: local model", m) : undefined,
+                onUpdate: (st) => {
+                  setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
+                  for (const n of st.notices) {
+                    if (n.code === "downloading") continue;
+                    tell(`${n.code}:${n.message}`, `[pi-mm] ${n.message} See: ${n.link}`, n.severity);
+                  }
+                },
+              });
+            }
+          } catch {
+            // Best-effort notification
+          }
+        }
       } catch (err) {
         debugLog("startup", "session_start failed", {
           error: err instanceof Error ? err.message : String(err),
@@ -1198,6 +1317,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
               const judgeRes = await evaluateTurnWithJudge(prompt, response, env.cfg, globalThis.fetch, threadContext);
               const judgeDurationMs = Date.now() - judgeStart;
 
+              if (judgeRes.degraded) {
+                notifyMmEvent(ctx, "degraded");
+              }
+
               traceEvent("judge_request", judgeRes.decision.action === "skip" ? "skip" : "ok", {
                 endpoint: env.cfg.judgeUrl || "unconfigured",
                 model: env.cfg.judgeModel || "none",
@@ -1234,6 +1357,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
               const numRef = typeof l0Ref === "number" ? l0Ref : parseInt(String(l0Ref), 10);
               if (!isNaN(numRef)) capturedL0Refs.push(numRef);
               void recordAssociations(memDir(env), contentToStore).catch(() => {});
+              notifyMmEvent(ctx, "saved");
             }
           }
         } catch (err) {
@@ -1293,7 +1417,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     }
     if (!envSource || !ctxUnknown) return;
     const event = eventUnknown as BeforeAgentStartEvent;
-    return await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
+    const recallRes = await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
+    const recalledRefs = (recallRes?.message?.details as { refs?: unknown[] })?.refs;
+    if (recalledRefs && recalledRefs.length > 0) {
+      notifyMmEvent(ctxUnknown as PiCtx, "recalled", recalledRefs.length);
+    }
+    return recallRes;
   });
 
   const onBeforeCompact = async (eventUnknown: unknown, ctxUnknown?: unknown) => {

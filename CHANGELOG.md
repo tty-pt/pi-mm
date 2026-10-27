@@ -2,6 +2,30 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.4.0] - 2026-10-27
+
+### Added
+- **Zero-Configuration `axil-auren` Inference Server Bring-Up (`src/auren-bootstrap.ts`, `src/auren.ts`)**:
+  - Automatically provisions local inference configuration at `~/.config/auren/config.json` if absent, mapping detected models and capabilities without requiring manual setup.
+  - Automatically manages background daemon startup on port 4242 with socket/HTTP readiness polling and process lifecycle management.
+- **Intelligent Model Provisioning & Tiered Consent (`~/.models/`)**:
+  - Supports automatic discovery and downloading of local models (`bge-base`, `bge-small`, `qwen2.5-0.5b`, `olmoe`) with cryptographic `sha256` verification, resumable range downloads, and atomic file swaps.
+  - Tiered consent: light models download seamlessly, while large MoE models (`olmoe`, 3.3 GB) prompt interactively via `ctx.ui.confirm()` to respect user bandwidth and disk budget.
+- **Proactive C Engine Dependency Tracking on `session_start` (`src/versions.ts`, `src/hooks/events.ts`)**:
+  - Pure TypeScript SemVer parser and engine detector inspecting system packages (`pkgconfig`), source repositories (`external/`), and git tags for `axil`, `libcorm`, `libsepal`, `liblemma`, `libjoint`, and `axil-auren`.
+  - Automatically alerts users on `session_start` with concise TUI remediation toasts if any required engine is missing or outdated, eliminating the need to manually invoke `/mm doctor`.
+- **Integrated C Engine Diagnostics in `/mm doctor` (`src/index.ts`)**:
+  - Displays full matrix of core C engines, installed versions, required thresholds, and exact copy-paste remediation commands for package managers and source compilation.
+- **Turnkey Verification Playbook (`scripts/test-bootstrap-playbook.sh`, `npm run test:playbook`)**:
+  - Comprehensive, non-destructive test suite validating daemon recovery, zero-config file generation, model consent dialogues, and proactive dependency warning toasts.
+
+## [0.3.5]
+
+### Fixed
+- **Doctor Diagnostic Accuracy & Architecture Clarity (`src/index.ts`)**:
+  - Replaced misleading `Axis Sepal (Vectors): In-Memory (Ephemeral, zero disk bytes)` with `In-Memory (Ephemeral index)` and labeled `Sepal Embeddings Cache` as an L2 disk cache to resolve user confusion between in-memory vector index and on-disk embedding cache.
+  - Replaced confusing `Axis Roster: Persistent Disk (0.0 KB)` line with `Bound Axes (mem.db.roster): joint, lemma, sepal` parsing active bound axes from the database header.
+
 ## [0.3.4]
 
 ### Fixed

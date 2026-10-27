@@ -92,6 +92,31 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     let runner: CormRunner = shellRunner;
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+
+    // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
+    // and adopt the local server for judge/embeddings as soon as it answers.
+    if (isProject && (!cfg.judgeUrl || !cfg.embedUrl)) {
+      try {
+        const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
+        void ensureAuren({
+          cwd: ctx.cwd,
+          settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
+        });
+        if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
+          if (!cfg.judgeUrl && cfg.judgeMode !== "off" && cfg.judgeMode !== "heuristic") {
+            cfg.judgeUrl = DEFAULT_AUREN_URL;
+            if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
+          }
+          if (!cfg.embedUrl && cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
+            cfg.embedUrl = DEFAULT_AUREN_URL;
+            if (!cfg.embedModel) cfg.embedModel = DEFAULT_AUREN_EMBED_MODEL;
+          }
+        }
+      } catch {
+        // Best-effort auto-discovery
+      }
+    }
+
     if (cormdRes.path !== "" && isProject) {
       try {
         await ensureDaemon({

@@ -418,3 +418,13 @@ Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
   check(fallbackFilled.embedUrl === "http://localhost:9999/v1/embeddings", "QLLM_URL fallback embedUrl");
   check(fallbackFilled.embedModel === "qllm-model", "QLLM_MODEL fallback embedModel");
 });
+Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, validate and honour env", () => {
+  const d = loadConfig(undefined);
+  check(d.autoStartAuren === true && d.autoDownloadModels === "ask", "defaults");
+  const c = loadConfig({ autoStartAuren: false, autoDownloadModels: "never" });
+  check(c.autoStartAuren === false && c.autoDownloadModels === "never", "settings honoured");
+  const bad = loadConfig({ autoStartAuren: "no", autoDownloadModels: "sometimes" });
+  check(bad.autoStartAuren === true && bad.autoDownloadModels === "ask", "invalid values fall back");
+  const e = applyEnv(loadConfig(undefined), { PI_MM_AUTO_START_AUREN: "0", PI_MM_AUTO_DOWNLOAD_MODELS: "auto" });
+  check(e.autoStartAuren === false && e.autoDownloadModels === "auto", "env overrides");
+});

@@ -100,6 +100,19 @@ When you talk to Pi, `pi-mm` will automatically classify technical decisions wit
 
 ---
 
+## Zero-Configuration Bring-Up
+
+`pi-mm` brings up intelligent local memory out-of-the-box with **zero manual configuration**:
+- **Automatic Daemon Startup**: If `axil-auren` is installed but not running on port 4242, `pi-mm` starts it automatically in the background (logging to `~/.cache/auren/server.log`), just like `cormd`.
+- **Default Configuration**: If no `auren.json` exists, `pi-mm` generates `~/.config/auren/config.json` automatically with optimal resident limits. Custom user configs are never overwritten.
+- **Automatic Model Downloads**:
+  - **Lightweight Models (automatic)**: `bge-base` (embeddings, 118 MB), `bge-small` (embeddings, 37 MB), and `qwen2.5-0.5b` (judge/chat, 491 MB) download automatically into `~/.models/` with sha256 verification and resumable downloads.
+  - **High-Quality MoE Model (interactive consent)**: `olmoe-1b-7b` (3.3 GB) provides deep decision judging; `pi-mm` prompts once for consent and remembers your preference in `~/.cache/auren/prefs.json`. Configure `"autoDownloadModels": "auto"` in `.pi/settings.json` to download automatically.
+- **Graceful Heuristic Degradation**: If `axil-auren` is not installed, decision judging falls back seamlessly to built-in heuristics with zero runtime errors.
+- **Actionable Diagnostics**: If native system libraries (e.g. `libsepal` or `libcorm`) are missing, `pi-mm` surfaces a clear startup notice with direct links to the installation guides.
+
+---
+
 ## Prerequisites & Core C Engines
 
 `pi-mm` leverages ultra-fast, native C engines to index and store memories with microsecond latency. Follow the official installation and build guides for each component:
@@ -273,7 +286,8 @@ Project-level settings always override global settings on a key-by-key basis.
 | `captureKeyword` | `PI_MM_CAPTURE_KEYWORD` / `MM_CAPTURE_KEYWORD` | `"@remember"` | Primary trigger word bypassing judge to store memory immediately. |
 | `captureKeywords` | `PI_MM_CAPTURE_KEYWORDS` / `MM_CAPTURE_KEYWORDS` | `["@remember", "@memory", "remember:", "note:"]` | Array of trigger word families that immediately save memory. |
 | `judgeMode` | `PI_MM_JUDGE_MODE` / `MM_JUDGE_MODE` | `"auto"` | Strategy for decision judge: `"auto"` (use judge if reachable), `"heuristic"` (local regex), or `"off"`. |
-| `judgeUrl` | `PI_MM_JUDGE_URL` / `MM_JUDGE_URL` / `JEV_URL` | *(none)* | URL of System One judge (e.g. `http://127.0.0.1:4242`). Falls back to `AUREN_URL`. |
+| `judgeProtocol` | `PI_MM_JUDGE_PROTOCOL` / `MM_JUDGE_PROTOCOL` | `"auto"` | Decision protocol: `"systemzero"` uses axil-auren's fast binary next-token logit probe (`/api/v1/systemzero/`), `"systemone"` uses standard Jev choice questions (`/api/v1/systemone/`), `"auto"` attempts System Zero first and falls back gracefully to System One. |
+| `judgeUrl` | `PI_MM_JUDGE_URL` / `MM_JUDGE_URL` / `JEV_URL` | *(none)* | URL of judge (e.g. `http://127.0.0.1:4242`). Falls back to `AUREN_URL`. |
 | `judgeModel` | `PI_MM_JUDGE_MODEL` / `MM_JUDGE_MODEL` / `JEV_MODEL` | `"qwen"` | Model identifier for decision judging. Falls back to `AUREN_MODEL`. |
 | `judgeKey` | `PI_MM_JUDGE_KEY` / `MM_JUDGE_KEY` / `JEV_KEY` | *(none)* | Optional Bearer auth token for remote endpoints. Falls back to `AUREN_KEY`. |
 | `judgeTimeoutMs` | `PI_MM_JUDGE_TIMEOUT_MS` / `MM_JUDGE_TIMEOUT_MS` | `15000` | Abort timeout in milliseconds for judge evaluation. |
@@ -311,6 +325,13 @@ Project-level settings always override global settings on a key-by-key basis.
 ### 4. User Persona & Engineering Tenets
 * Personal preferences, architectural tenets, and biographical context are segregated under `context: { project: "user" }`.
 * Injected into prompts as `[User Persona & Engineering Tenets]` with strict token budget deduction, giving the agent authentic continuity across sessions.
+
+### 5. Dynamic Minimal Status Indicator
+* **Manners & Proper Spacing**: Clean separation between emoji and counter (`🧠 0`, `🧠 +1`, `🧠 <N>`).
+* **Idle State**: Displays `🧠 0` in muted style when idle with zero saved memories in the session.
+* **Informative Pulse**: Flashes `🧠 +1` in bright green when a new experience record is captured and persisted to disk.
+* **Session Memory Count**: Settles into an ultra-compact indicator `🧠 <N>` (e.g. `🧠 1`, `🧠 2`) representing active memories captured in the session, taking only 3–4 characters.
+* **Degraded / Error Alert**: Momentarily surfaces `⚠️` if the configured judge endpoint is unreachable or degraded.
 
 ---
 
@@ -406,9 +427,11 @@ Set `"advancedTools": true` in settings or export `PI_MM_ADVANCED_TOOLS=1` to ex
 ## Development & Testing
 
 ```bash
-make -C .pi/extensions/pi-mm test     # Run all 250 unit and integration tests
-make -C .pi/extensions/pi-mm lint     # Check formatting and linting
-make -C .pi/extensions/pi-mm zip      # Package pi-mm-bundle.zip
+npm --prefix .pi/extensions/pi-mm test             # Run all 400+ unit and integration tests
+npm --prefix .pi/extensions/pi-mm run test:playbook # Run non-destructive verification playbook
+npm --prefix .pi/extensions/pi-mm run demo          # Run interactive live bootstrap demo
+npm --prefix .pi/extensions/pi-mm run lint          # Check formatting and linting
+npm --prefix .pi/extensions/pi-mm run zip           # Package pi-mm-bundle.zip
 ```
 
 ## License

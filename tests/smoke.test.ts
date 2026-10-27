@@ -173,9 +173,9 @@ Deno.test("/mm doctor accurately counts indexed records using corm list", async 
     check(Boolean(countLine), "must report Total Indexed Records");
     check(countLine.includes("3"), `must report exactly 3 records, got: ${countLine}`);
 
-    const rosterLine = data.lines.find((l: string) => l.includes("Axis Roster"));
-    check(Boolean(rosterLine), "must report Axis Roster line");
-    check(rosterLine.includes("Persistent Disk"), `must report Persistent Disk for Axis Roster, got: ${rosterLine}`);
+    const rosterLine = data.lines.find((l: string) => l.includes("Bound Axes"));
+    check(Boolean(rosterLine), "must report Bound Axes line");
+    check(rosterLine.includes("Bound Axes"), `must report Bound Axes line, got: ${rosterLine}`);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

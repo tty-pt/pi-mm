@@ -7,6 +7,7 @@ import { filespecFor, buildListInvocation, embedEnv } from "./corm.ts";
 import { parseBareRefs } from "./resolve.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_AUREN, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
 
 export interface MmReportData {
   title: string;
@@ -101,6 +102,19 @@ async function runDoctorReport(
   cfg: import("./config.ts").MmConfig,
   extApi: { appendEntry?: (type: string, data: unknown) => void },
 ): Promise<void> {
+  const targetCwd = typeof (ctx as { cwd?: string })?.cwd === "string" ? (ctx as { cwd: string }).cwd : ".";
+
+  // Zero-config axil-auren: inspect/provision models & launcher
+  let bootState = getBootstrapState();
+  if (!cfg.judgeUrl || cfg.judgeUrl.includes("4242")) {
+    try {
+      bootState = await ensureAuren({
+        cwd: targetCwd,
+        settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
+      });
+    } catch { /* best effort */ }
+  }
+
   const health = await checkMmHealth(cfg);
   const lines: string[] = [
     health.judgeOk
@@ -119,6 +133,16 @@ async function runDoctorReport(
   } else {
     lines.push("[-] Embeddings Endpoint: Unconfigured (semantic search disabled)");
   }
+  // Core C Engine Versions & Requirements
+  const { checkAllEngineVersions, generateRemediationAdvice } = await import("./versions.ts");
+  const engineReports = checkAllEngineVersions({ cwd: targetCwd });
+  lines.push("[-] Core C Engines & Versions:");
+  for (const rep of engineReports) {
+    const symbol = rep.status === "satisfied" ? "[✓]" : rep.status === "outdated" ? "[!]" : "[✗]";
+    const ver = rep.version ? `${rep.version} (${rep.source})` : "not installed";
+    lines.push(`  ${symbol} ${rep.name.padEnd(11)}: ${ver} (requires >= ${rep.minRequired})`);
+  }
+
   lines.push(`[-] Pipeline: ${describeCapabilities(cfg)}`);
   const keywords = cfg.captureKeywords && cfg.captureKeywords.length > 0
     ? cfg.captureKeywords
@@ -126,7 +150,6 @@ async function runDoctorReport(
   lines.push(`[-] Trigger Word Families: ${keywords.map((k) => `'${k}'`).join(", ")}`);
 
   // Primary Storage & HTOK Density diagnostics
-  const targetCwd = typeof (ctx as { cwd?: string })?.cwd === "string" ? (ctx as { cwd: string }).cwd : ".";
   const memDirPath = resolveMemDir(targetCwd, cfg.memDir);
   const dbPath = join(memDirPath, "mem.db");
   if (existsSync(dbPath)) {
@@ -154,18 +177,35 @@ async function runDoctorReport(
 
   const sepalPath = join(memDirPath, "mem.db-sepal");
   const sepalMode = cfg.ephemeralSepal || (typeof process !== "undefined" && process?.env?.["CORM_SEPAL_EPHEMERAL"] === "1")
-    ? "In-Memory (Ephemeral, zero disk bytes)"
+    ? "In-Memory (Ephemeral index)"
     : (existsSync(sepalPath) ? `Persistent Disk (${(statSync(sepalPath).size / 1024).toFixed(1)} KB)` : "Persistent Disk (uncreated)");
   lines.push(`[-] Axis Sepal (Vectors): ${sepalMode}`);
 
   const embedCachePath = join(memDirPath, "sepal-embed-cache.bin");
   if (existsSync(embedCachePath)) {
-    lines.push(`[✓] Sepal Embed Cache: ${(statSync(embedCachePath).size / 1024).toFixed(1)} KB`);
+    lines.push(`[✓] Sepal Embeddings Cache: ${(statSync(embedCachePath).size / 1024).toFixed(1)} KB (L2 disk cache)`);
   }
 
   const rosterPath = join(memDirPath, "mem.db.roster");
   if (existsSync(rosterPath)) {
-    lines.push(`[-] Axis Roster: Persistent Disk (${(statSync(rosterPath).size / 1024).toFixed(1)} KB)`);
+    try {
+      const rosterBytes = readFileSync(rosterPath);
+      let ascii = "";
+      for (let i = 0; i < rosterBytes.length; i++) {
+        const b = rosterBytes[i];
+        ascii += (b >= 32 && b <= 126) ? String.fromCharCode(b) : " ";
+      }
+      const idx = ascii.indexOf("axes");
+      let axesList = "joint, lemma, sepal";
+      if (idx !== -1) {
+        const sub = ascii.slice(idx + 4).trim();
+        const m = sub.match(/^[a-zA-Z0-9_,]+/);
+        if (m) axesList = m[0].replace(/,/g, ", ");
+      }
+      lines.push(`[✓] Bound Axes (mem.db.roster): ${axesList}`);
+    } catch {
+      lines.push(`[✓] Bound Axes (mem.db.roster): joint, lemma, sepal`);
+    }
   }
 
   // Total Indexed Records count
@@ -195,6 +235,42 @@ async function runDoctorReport(
     }
   } else {
     lines.push(`[-] Total Indexed Records: 0 (starts fresh on first store)`);
+  }
+
+  // Zero-config diagnostics: config, models, daemon log, actionable notices
+  const uCfg = findUserConfig({ cwd: targetCwd });
+  lines.push(`[-] Auren Config: ${uCfg ?? "None (auto-managed at ~/.config/auren/config.json)"}`);
+  const home = typeof process !== "undefined" && process.env?.HOME ? process.env.HOME : "/tmp";
+  const { modelsDir, presentModels } = await import("./auren-bootstrap.ts");
+  const present = presentModels(MODEL_CATALOG, home);
+  if (present.length > 0) {
+    lines.push(`[✓] Local GGUF Models (~/.models): ${present.map((m) => m.id).join(", ")}`);
+  } else {
+    lines.push("[-] Local GGUF Models (~/.models): None found");
+  }
+  if (bootState.downloads.length > 0) {
+    for (const dl of bootState.downloads) {
+      const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
+      lines.push(`[-] Downloading: ${dl.id} (${pct}%)`);
+    }
+  }
+  lines.push(`[-] Daemon Log: ${serverLogPath(home)}`);
+
+  // Actionable notices for uninstalled services
+  const sepalLib = findSepalLib(targetCwd);
+  if (!sepalLib && cfg.semanticSearch !== false) {
+    lines.push("");
+    lines.push("[!] Axis Sepal (libsepal.so) is not installed.");
+    lines.push("    Vector embeddings and semantic hybrid search require libsepal.");
+    lines.push(`    -> Installation guide: ${DOCS_SEPAL}`);
+    lines.push(`    -> Prerequisites guide: ${DOCS_PIMM_PREREQUISITES}`);
+  }
+
+  for (const n of bootState.notices) {
+    if (n.code === "downloading") continue;
+    lines.push("");
+    lines.push(`[!] ${n.message}`);
+    lines.push(`    -> Guide: ${n.link}`);
   }
 
   const reportData: MmReportData = {
