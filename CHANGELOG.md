@@ -2,6 +2,11 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- `judgeModel` defaults to `olmoe` (the protocol already defaulted to `systemone`), so a fresh install uses the model/protocol pair that measured best; documented in the README configuration table. axil-auren now answers an unparseable judge reply with `choice: null`, which the judge client treats as unavailable.
+
 ## [0.4.0] - 2026-10-27
 
 ### Added

@@ -67,7 +67,9 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `judgeMode` | `"auto"` | Decision judge protocol (`"auto"`, `"systemzero"`, `"systemone"`, `"heuristic"`, `"off"`) |
+| `judgeMode` | `"auto"` | Decision judge mode (`"auto"`, `"systemone"`, `"heuristic"`, `"off"`) |
+| `judgeProtocol` | `"systemone"` | Judge wire protocol (`"systemone"`, `"systemzero"`, `"auto"`). SystemOne (closed multiple-choice, option-letter logits) is the default because SystemZero's binary logit probe scored only 3/8 with `qwen` and 6/8 with `olmoe` on a quest-vs-chat check |
+| `judgeModel` | `"olmoe"` | Model used for judge calls |
 | `judgeUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for the local decision judge |
 | `autoStartAuren` | `true` | Automatically launch `axil-auren` in the background if offline |
 | `autoDownloadModels` | `"manual"` | Model download policy (`"manual"` prompts for heavy models, `"auto"` downloads without prompting) |
