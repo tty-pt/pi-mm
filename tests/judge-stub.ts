@@ -16,7 +16,11 @@ export function makeStubFetch(judge: JudgeAnswer, embed?: EmbedAnswer): StubFetc
   let embeds = 0;
   let judges = 0;
   const stub = ((url: unknown, init?: { body?: string }) => {
-    if (String(url).includes("/v1/embeddings")) {
+    const urlStr = String(url);
+    if (urlStr.includes("/v1/classify")) {
+      return Promise.resolve(new Response("classify stub down", { status: 404 }));
+    }
+    if (urlStr.includes("/v1/embeddings")) {
       embeds += 1;
       if (embed === undefined) return Promise.resolve(new Response("down", { status: 503 }));
       const input = (JSON.parse(init?.body ?? "{}") as { input?: string | string[] }).input ?? [];

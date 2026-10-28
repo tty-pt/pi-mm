@@ -106,7 +106,7 @@ async function runDoctorReport(
 
   // Zero-config axil-auren: inspect/provision models & launcher
   let bootState = getBootstrapState();
-  if (!cfg.judgeUrl || cfg.judgeUrl.includes("4242")) {
+  if (!cfg.captureEmbedUrl || cfg.captureEmbedUrl.includes("4242") || (cfg.judgeUrl && cfg.judgeUrl.includes("4242"))) {
     try {
       bootState = await ensureAuren({
         cwd: targetCwd,
@@ -118,8 +118,8 @@ async function runDoctorReport(
   const health = await checkMmHealth(cfg);
   const lines: string[] = [
     health.judgeOk
-      ? `[✓] Decision Judge: ${health.judgeEndpoint} (200 OK, latency: ${health.judgeLatencyMs}ms)`
-      : `[✗] Decision Judge: ${health.judgeEndpoint} (OFFLINE - ${health.judgeError})`,
+      ? `[✓] Embedding Classifier: ${health.judgeEndpoint} (200 OK, latency: ${health.judgeLatencyMs}ms)`
+      : `[✗] Embedding Classifier: ${health.judgeEndpoint} (OFFLINE - ${health.judgeError})`,
   ];
   if (health.judgeModels && health.judgeModels.length > 0) {
     lines.push(`[✓] Models Detected: ${health.judgeModels.join(", ")}`);

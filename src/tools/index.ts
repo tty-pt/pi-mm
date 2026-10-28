@@ -95,7 +95,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
 
     // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
     // and adopt the local server for judge/embeddings as soon as it answers.
-    if (isProject && (!cfg.judgeUrl || !cfg.embedUrl)) {
+    if (isProject && (!cfg.captureEmbedUrl || !cfg.judgeUrl || !cfg.embedUrl)) {
       try {
         const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
         void ensureAuren({
@@ -103,6 +103,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
           settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
         });
         if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
+          if (!cfg.captureEmbedUrl) cfg.captureEmbedUrl = DEFAULT_AUREN_URL;
           if (!cfg.judgeUrl && cfg.judgeMode !== "off" && cfg.judgeMode !== "heuristic") {
             cfg.judgeUrl = DEFAULT_AUREN_URL;
             if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;

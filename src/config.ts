@@ -238,7 +238,9 @@ export function loadConfig(raw: unknown): MmConfig {
     judgeTimeoutMs: typeof jTimeout === "number" && jTimeout > 0 ? jTimeout : DEFAULT_CONFIG.judgeTimeoutMs,
     judgeFallback: effectiveFallback,
     captureEmbed: embedMode(record["captureEmbed"]),
-    captureEmbedUrl: typeof record["captureEmbedUrl"] === "string" && record["captureEmbedUrl"].trim() !== "" ? record["captureEmbedUrl"].trim() : undefined,
+    captureEmbedUrl: typeof record["captureEmbedUrl"] === "string" && record["captureEmbedUrl"].trim() !== ""
+      ? record["captureEmbedUrl"].trim()
+      : (typeof jUrl === "string" && jUrl.trim() !== "" ? jUrl.trim() : undefined),
     captureEmbedModel: typeof record["captureEmbedModel"] === "string" && record["captureEmbedModel"].trim() !== "" ? record["captureEmbedModel"].trim() : undefined,
     captureMinMargin: unitInterval(record["captureMinMargin"]),
     captureMinSimilarity: unitInterval(record["captureMinSimilarity"]),
@@ -490,7 +492,8 @@ export function describeCapabilities(cfg: MmConfig): string {
   } else if (cap === "keyword") {
     parts.push(`capture=keyword ("${cfg.captureKeyword ?? "@remember"}")`);
   } else if (cap === "judge") {
-    parts.push(`capture=judge (systemone @ ${cfg.judgeUrl || "unconfigured"}, fallback: ${cfg.judgeFallback ?? "skip"})`);
+    const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
+    parts.push(`capture=embed (/v1/classify @ ${target}, fallback: ${cfg.judgeFallback ?? "skip"})`);
   } else {
     parts.push("capture=all");
   }

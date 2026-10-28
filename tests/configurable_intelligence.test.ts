@@ -177,6 +177,7 @@ Deno.test("configurable intelligence: 2. Jev-native adapter: mock server validat
       judgeUrl: jevBaseUrl,
       judgeModel: "jev-systemone-v1",
       judgeKey: "test-jev-token-xyz",
+      captureEmbed: "off" as const,
     };
 
     // 1. Remember decision
@@ -236,6 +237,7 @@ Deno.test("configurable intelligence: 2b. Jev System One questions: choice, noul
       ...DEFAULT_CONFIG,
       judgeMode: "auto" as const,
       judgeUrl: baseUrl,
+      captureEmbed: "off" as const,
     };
 
     const res1 = await evaluateTurnWithJudge("Let's discuss the caching layer.", "We are using Redis.", cfg);
@@ -868,6 +870,7 @@ Deno.test("configurable intelligence: 5b. Local inference configuration with no 
       ...DEFAULT_CONFIG,
       judgeMode: "auto" as const,
       judgeUrl: `http://127.0.0.1:${localServer.addr.port}`,
+      captureEmbed: "off" as const,
       // No judgeKey / Jev credentials
     };
 
@@ -901,6 +904,7 @@ Deno.test("configurable intelligence: 5c. Long assistant response is clipped to 
       ...DEFAULT_CONFIG,
       judgeMode: "auto" as const,
       judgeUrl: `http://127.0.0.1:${mockServer.addr.port}`,
+      captureEmbed: "off" as const,
     };
     const longResponse = "A".repeat(1200);
     const result = await evaluateTurnWithJudge("User message", longResponse, cfg);

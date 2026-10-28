@@ -6,7 +6,6 @@
 // verdicts and no unavailable answers. Live runners are opt-in and never part of
 // `npm test`; everything here that does not touch a server is unit-tested.
 import type { MmConfig } from "../../src/config.ts";
-import { callLlmJudge } from "../../src/judge/adapter.ts";
 import { captureEmbedBase, captureEmbedModel, embedTexts } from "../../src/judge/embed.ts";
 import { type Exemplar, gate, type GateOptions, nearestExemplar } from "../../src/judge/nearest.ts";
 
@@ -149,23 +148,12 @@ export const JUDGE_WARMUP_TIMEOUT_MS = 180_000;
 /** The judge's QUALITY is measured with a long timeout; its real latency is the p50/p95 reported. */
 export const JUDGE_QUALITY_TIMEOUT_MS = 30_000;
 
-/** Judge strategy: the production capture judge (remember | skip | update), unavailable on any error. */
-export function judgeStrategy(cfg: MmConfig): Strategy {
-  const quality: MmConfig = { ...cfg, judgeProtocol: "systemone", judgeTimeoutMs: JUDGE_QUALITY_TIMEOUT_MS };
+/** Judge strategy: deprecated; returns null. */
+export function judgeStrategy(_cfg: MmConfig): Strategy {
   return {
-    name: `judge(${cfg.judgeModel ?? "default"})`,
-    classify: async (c) => {
-      try {
-        return (await callLlmJudge(c.text, c.response ?? "", quality)).action;
-      } catch {
-        return null;
-      }
-    },
-    warmup: async () => {
-      try {
-        await callLlmJudge("hello", "hi", { ...quality, judgeTimeoutMs: JUDGE_WARMUP_TIMEOUT_MS });
-      } catch { /* a failed warm-up shows up as unavailable answers */ }
-    },
+    name: "judge(deprecated)",
+    classify: () => Promise.resolve(null),
+    warmup: async () => {},
   };
 }
 

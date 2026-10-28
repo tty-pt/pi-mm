@@ -1084,9 +1084,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           filespec: fspec,
           axes: axes.split(":"),
           semanticSearch: embed,
+          captureEmbedUrl: env.cfg.captureEmbedUrl ?? env.cfg.judgeUrl,
+          captureEmbedModel: env.cfg.captureEmbedModel,
           judgeMode: env.cfg.judgeMode,
-          judgeUrl: env.cfg.judgeUrl,
-          judgeModel: env.cfg.judgeModel,
           judgeFallback: env.cfg.judgeFallback,
         });
 
@@ -1099,9 +1099,8 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           axisRoster: axes.split(":"),
           cormdRunning: isDaemonLockHeld(cwd),
           cormdSocket: socketPath(env),
-          judgeMode: env.cfg.judgeMode,
-          judgeUrl: env.cfg.judgeUrl,
-          judgeModel: env.cfg.judgeModel,
+          captureEmbedUrl: env.cfg.captureEmbedUrl ?? env.cfg.judgeUrl,
+          captureEmbedModel: env.cfg.captureEmbedModel,
           judgeFallback: env.cfg.judgeFallback,
           semanticSearch: embed,
           embedUrl: env.cfg.embedUrl,
@@ -1312,7 +1311,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
       if (prompt) {
         try {
           const env = await envSource(ctx);
-          const mode = env.cfg.captureMode ?? (env.cfg.judgeMode === "off" ? "off" : (env.cfg.judgeUrl ? "judge" : "all"));
+          const mode = env.cfg.captureMode ?? (env.cfg.judgeMode === "off" ? "off" : ((env.cfg.captureEmbedUrl || env.cfg.judgeUrl) ? "judge" : "all"));
 
           let shouldStoreConversational = false;
           let contentToStore = prompt;
