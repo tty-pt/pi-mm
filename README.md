@@ -67,23 +67,23 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `judgeMode` | `"auto"` | Decision judge mode (`"auto"`, `"systemone"`, `"heuristic"`, `"off"`) |
-| `judgeProtocol` | `"systemone"` | Judge wire protocol (`"systemone"`, `"systemzero"`, `"auto"`). SystemOne (closed multiple-choice, option-letter logits) is the default because SystemZero's binary logit probe scored only 3/8 with `qwen` and 6/8 with `olmoe` on a quest-vs-chat check |
-| `judgeModel` | `"olmoe"` | Model used for judge calls |
-| `judgeUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for the local decision judge |
-| `captureMode` | `"all"`, or `"judge"` when `judgeUrl` is set in your settings | What automatic conversational capture stores: `"all"` (every user turn), `"keyword"` (only turns starting with a capture keyword), `"judge"` (turns the decision tier says are worth remembering), `"off"` |
-| `captureEmbed` | `"auto"` | Classify turns by embeddings in `captureMode: "judge"` (`"off"` restores the judge-only path). Env: `PI_MM_CAPTURE_EMBED` |
-| `captureEmbedUrl` | the `judgeUrl` host | Server for classification embeddings. Independent of `embedUrl`, which feeds the memory index with its own model |
+| `captureEmbedUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for in-memory semantic classification (`POST /v1/classify`). Independent of `embedUrl`, which feeds the memory index |
 | `captureEmbedModel` | `"bge-base"` | Classification embedding model (a multilingual model improves non-English recall) |
+| `captureMode` | `"all"`, or `"judge"` when `captureEmbedUrl` is set in your settings | What automatic conversational capture stores: `"all"` (every user turn), `"keyword"` (only turns starting with a capture keyword), `"judge"` (turns the embedding classifier says are worth remembering), `"off"` |
+| `captureEmbed` | `"auto"` | Classify turns by embeddings in `captureMode: "judge"`. Env: `PI_MM_CAPTURE_EMBED` |
 | `captureMinSimilarity` | `0.6` | Cosine floor for any embedding verdict (0..1) |
 | `captureMinMargin` | `0.075` | How far a "remember" verdict must beat "skip" (0..1); raise it to store less, lower it to store more |
 | `captureExemplars` | `{}` | Your own example sentences, `{ "remember": [...], "skip": [...] }`, any language, merged with the shipped ones |
+| `judgeFallback` | `"skip"` | Deterministic fallback when the classifier server is offline (`"skip"` or `"capture"`) |
 | `autoStartAuren` | `true` | Automatically launch `axil-auren` in the background if offline |
 | `autoDownloadModels` | `"manual"` | Model download policy (`"manual"` prompts for heavy models, `"auto"` downloads without prompting) |
 | `semanticSearch` | `true` | Enable dense vector embeddings and semantic recall via `libsepal` |
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
 | `advancedTools` | `false` | Expose the 9 advanced low-level memory inspection tools |
+| `judgeProtocol` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
+| `judgeModel` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
+| `judgeUrl` | *(deprecated)* | Deprecated; mapped to `captureEmbedUrl` |
 
 ### Automatic Capture: What Decides What
 
@@ -91,9 +91,9 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 
 | `captureMode` | What stores a turn | If that is unavailable |
 | :--- | :--- | :--- |
-| `all` | Every user turn. No judge and no embeddings are consulted. | n/a |
+| `all` | Every user turn. No classifier and no embeddings are consulted. | n/a |
 | `keyword` | Only turns that start with a capture keyword | n/a |
-| `judge` | **Embeddings** of your message (nearest remember/skip example) | The generative judge, then `judgeFallback` (`skip` stores nothing, `capture` stores the turn) |
+| `judge` | **In-Memory Embedding Classification** via `POST /v1/classify` | Deterministic `judgeFallback` (`skip` stores nothing, `capture` stores the turn) |
 | `off` | Nothing automatic | n/a |
 
 `captureMode` resolves to `all` unless you set it or put a `judgeUrl` in your settings (which implies `judge`). **If you never set either, the embedding tier below never runs.**
