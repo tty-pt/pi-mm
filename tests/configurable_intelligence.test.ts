@@ -130,54 +130,41 @@ Deno.test("configurable intelligence: 1. No inference services starts normally, 
 });
 
 // ----------------------------------------------------------------------------
-// Test 2: Jev-native adapter: mock server validates POST /api/v1/systemone/, choice questions, answers, and bearer auth
+// Test 2: In-memory embedding classifier endpoint POST /v1/classify and deterministic fallback
 // ----------------------------------------------------------------------------
-Deno.test("configurable intelligence: 2. Jev-native adapter: mock server validates POST /api/v1/systemone/, choice questions, answers, and bearer auth", async () => {
-  let jevCallCount = 0;
-  let lastAuthHeader: string | null = null;
+Deno.test("configurable intelligence: 2. In-memory embedding classifier endpoint POST /v1/classify and deterministic fallback", async () => {
+  let classifyCount = 0;
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
-    jevCallCount++;
+  const classifyServer = Deno.serve({ port: 0 }, async (req) => {
+    classifyCount++;
     const url = new URL(req.url);
-    assert(url.pathname.endsWith("/api/v1/systemone/"), `URL must target /api/v1/systemone/, got ${url.pathname}`);
-    lastAuthHeader = req.headers.get("authorization");
-
+    assert(url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify");
     const body = await req.json();
-    assert.strictEqual(typeof body.state, "string");
-    assert(body.questions && typeof body.questions === "object" && !Array.isArray(body.questions), "Must be keyed questions object");
-    assert(body.questions.memory_action);
-    assert.strictEqual(body.questions.memory_action.type, "choice");
-    assert(body.questions.memory_action.criteria);
 
-    const state = (body.state as string).toLowerCase();
-    let action = "skip";
-    if (state.includes("caching layer")) {
-      action = state.includes("3 shards") ? "update" : "remember";
+    const text = (body.text as string).toLowerCase();
+    let choice = "skip";
+    let similarity = 0.85;
+    let margin = 0.20;
+    if (text.includes("caching layer")) {
+      choice = "remember";
+      similarity = 0.92;
+      margin = 0.25;
     }
 
     return new Response(JSON.stringify({
-      model: body.model || "jev-default",
-      answers: {
-        memory_action: {
-          type: "choice",
-          choice: action,
-          confidence: 0.90,
-          probabilities: { [action]: 0.90 },
-        },
-      },
+      choice,
+      similarity,
+      margin,
+      scores: { remember: choice === "remember" ? 0.92 : 0.67, skip: choice === "skip" ? 0.85 : 0.67 },
     }), { headers: { "Content-Type": "application/json" } });
   });
 
-  const jevBaseUrl = `http://127.0.0.1:${jevServer.addr.port}`;
+  const baseUrl = `http://127.0.0.1:${classifyServer.addr.port}`;
 
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      judgeMode: "auto" as const,
-      judgeUrl: jevBaseUrl,
-      judgeModel: "jev-systemone-v1",
-      judgeKey: "test-jev-token-xyz",
-      captureEmbed: "off" as const,
+      captureEmbedUrl: baseUrl,
     };
 
     // 1. Remember decision
@@ -186,99 +173,59 @@ Deno.test("configurable intelligence: 2. Jev-native adapter: mock server validat
       "Understood. The Redis cluster will handle the cache.",
       cfg,
     );
-    assert.strictEqual(res1.source, "llm");
+    assert.strictEqual(res1.source, "embed");
     assert.strictEqual(res1.degraded, undefined);
     assert.strictEqual(res1.decision.action, "remember");
     assert(res1.decision.summary && res1.decision.summary.includes("caching layer"));
-    assert.strictEqual(lastAuthHeader, "Bearer test-jev-token-xyz");
 
     // 2. Skip decision (trivial chatter)
     const res2 = await evaluateTurnWithJudge("Hello!", "Hi there! How can I help you?", cfg);
-    assert.strictEqual(res2.source, "llm");
+    assert.strictEqual(res2.source, "embed");
     assert.strictEqual(res2.decision.action, "skip");
-
-    // 3. Update decision
-    const res3 = await evaluateTurnWithJudge(
-      "Update caching layer: let's expand to 3 shards.",
-      "Expanding caching layer to 3 shards.",
-      cfg,
-    );
-    assert.strictEqual(res3.source, "llm");
-    assert.strictEqual(res3.decision.action, "update");
-    assert(res3.decision.summary && res3.decision.summary.includes("3 shards"));
   } finally {
-    await jevServer.shutdown();
+    await classifyServer.shutdown();
   }
 });
 
 // ----------------------------------------------------------------------------
-// Test 2b: Jev System One questions: choice, noul, and score verification
+// Test 2b: Fallback when classifier endpoint is unavailable
 // ----------------------------------------------------------------------------
-Deno.test("configurable intelligence: 2b. Jev System One questions: choice, noul, and score verification", async () => {
-  const server = Deno.serve({ port: 0 }, async (req) => {
-    const url = new URL(req.url);
-    assert(url.pathname.includes("/systemone"), `URL must target systemone, got ${url.pathname}`);
-    const body = await req.json();
+Deno.test("configurable intelligence: 2b. Fallback when classifier endpoint is unavailable", async () => {
+  const cfg = {
+    ...DEFAULT_CONFIG,
+    captureEmbedUrl: "http://127.0.0.1:59998", // unreachable
+    judgeFallback: "skip" as const,
+  };
 
-    assert(body.questions);
-    return new Response(JSON.stringify({
-      model: body.model || "jev-multi",
-      answers: {
-        memory_action: { type: "choice", choice: "remember", confidence: 0.95 },
-        is_relevant: { type: "noul", noul: 0.92 },
-        importance: { type: "score", score: 2.5, confidence: 0.8 },
-      },
-    }), { headers: { "Content-Type": "application/json" } });
-  });
-
-  const baseUrl = `http://127.0.0.1:${server.addr.port}`;
-  try {
-    const cfg = {
-      ...DEFAULT_CONFIG,
-      judgeMode: "auto" as const,
-      judgeUrl: baseUrl,
-      captureEmbed: "off" as const,
-    };
-
-    const res1 = await evaluateTurnWithJudge("Let's discuss the caching layer.", "We are using Redis.", cfg);
-    assert.strictEqual(res1.source, "llm");
-    assert.strictEqual(res1.decision.action, "remember");
-    assert(res1.decision.summary && res1.decision.summary.includes("caching layer"));
-  } finally {
-    await server.shutdown();
-  }
+  const res1 = await evaluateTurnWithJudge("Let's discuss the caching layer.", "We are using Redis.", cfg);
+  assert.strictEqual(res1.source, "fallback");
+  assert.strictEqual(res1.decision.action, "skip");
+  assert.strictEqual(res1.degraded, true);
 });
 
 // ----------------------------------------------------------------------------
-// Test 2c: End-to-end Jev decision persistence and Stoma FTS retrieval
+// Test 2c: End-to-end classifier decision persistence and Stoma FTS retrieval
 // ----------------------------------------------------------------------------
-Deno.test("configurable intelligence: 2c. End-to-end Jev decision persistence and Stoma FTS retrieval", async () => {
-  const tmpDir = Deno.makeTempDirSync({ prefix: "ci-jev-e2e-" });
+Deno.test("configurable intelligence: 2c. End-to-end classifier decision persistence and Stoma FTS retrieval", async () => {
+  const tmpDir = Deno.makeTempDirSync({ prefix: "ci-classify-e2e-" });
   const sockPath = join(tmpDir, "cormd.sock");
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
+  const classifyServer = Deno.serve({ port: 0 }, async (req) => {
     const body = await req.json();
-    assert(body.questions && typeof body.questions === "object" && !Array.isArray(body.questions), "Must be keyed questions object");
-    assert(body.questions.memory_action);
-    const state = (body.state as string || "").toLowerCase();
-    let action = "skip";
-    const userLine = state.split("\n").find((l: string) => l.startsWith("current user:") || l.startsWith("user:")) || "";
-    if (userLine.includes("caching layer")) {
-      action = userLine.includes("3 shards") ? "yes" : "yes";
+    const text = (body.text as string || "").toLowerCase();
+    let choice = "skip";
+    if (text.includes("caching layer")) {
+      choice = "remember";
     }
     return new Response(JSON.stringify({
-      model: body.model || "jev-default",
-      answers: {
-        memory_action: {
-          type: "choice",
-          choice: action,
-          confidence: 0.90,
-        },
-      },
+      choice,
+      similarity: choice === "remember" ? 0.92 : 0.80,
+      margin: choice === "remember" ? 0.25 : 0.20,
+      scores: { remember: 0.90, skip: 0.70 },
     }), { headers: { "Content-Type": "application/json" } });
   });
 
-  const judgeUrl = `http://127.0.0.1:${jevServer.addr.port}`;
+  const baseUrl = `http://127.0.0.1:${classifyServer.addr.port}`;
 
   try {
     const cfg = {
@@ -287,8 +234,7 @@ Deno.test("configurable intelligence: 2c. End-to-end Jev decision persistence an
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "auto" as const,
-      judgeUrl,
+      captureEmbedUrl: baseUrl,
       semanticSearch: false,
     };
 
@@ -383,7 +329,7 @@ Deno.test("configurable intelligence: 2c. End-to-end Jev decision persistence an
     const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
     process.kill(lockData.pid, "SIGTERM");
   } finally {
-    await jevServer.shutdown();
+    await classifyServer.shutdown();
     try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
   }
 });
@@ -638,16 +584,12 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
   // Single unified mock server for both System One and /v1/embeddings
   const unifiedServer = Deno.serve({ port: 0 }, async (req) => {
     const url = new URL(req.url);
-    if (url.pathname.includes("/systemone")) {
+    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
       return new Response(JSON.stringify({
-        model: "unified-judge-model",
-        answers: {
-          memory_action: {
-            type: "choice",
-            choice: "remember",
-            confidence: 0.95,
-          },
-        },
+        choice: "remember",
+        similarity: 0.95,
+        margin: 0.25,
+        scores: { remember: 0.95, skip: 0.70 },
       }), { headers: { "Content-Type": "application/json" } });
     } else if (url.pathname === "/v1/embeddings") {
       const body = await req.json();
@@ -661,7 +603,6 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
   });
 
   const baseUrl = `http://127.0.0.1:${unifiedServer.addr.port}`;
-  const judgeUrl = `${baseUrl}/api/v1/systemone/`;
   const embedUrl = `${baseUrl}/v1/embeddings`;
 
   try {
@@ -671,14 +612,12 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "auto" as const,
-      judgeUrl,
+      captureEmbedUrl: baseUrl,
       semanticSearch: true,
       embedUrl,
       embedModel: "unified-model",
     };
 
-    assert.strictEqual(judgeConfigured(cfg), true);
     assert.strictEqual(sepalConfigured(cfg), true);
 
     const fspec = filespecFor(tmpDir, true);
@@ -740,7 +679,7 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
 
     await emit("session_start", null, ctx);
 
-    // LLM judge evaluates turn and returns remember decision
+    // Embedding classifier evaluates turn and returns remember decision
     await emit("before_agent_start", { messageType: "user", prompt: "How should we tune network buffers under load?" }, ctx);
     await emit("message_end", { message: { role: "assistant", content: "High concurrency buffer sizes must be set to 64KB." } });
     await emit("agent_settled", null, ctx);
@@ -852,65 +791,47 @@ Deno.test("configurable intelligence: 5. Malformed answers, HTTP errors, timeout
 });
 
 // ----------------------------------------------------------------------------
-// Test 5b: Local inference configuration with no Jev credentials
+// Test 5b: Deterministic fallback when judge key/credentials are unset and embeddings are off
 // ----------------------------------------------------------------------------
-Deno.test("configurable intelligence: 5b. Local inference configuration with no Jev credentials", async () => {
-  let seenAuth: string | null = null;
-  const localServer = Deno.serve({ port: 0 }, (req) => {
-    seenAuth = req.headers.get("authorization");
-    return new Response(JSON.stringify({
-      answers: {
-        memory_action: { type: "choice", choice: "remember", confidence: 0.95 },
-      },
-    }), { headers: { "Content-Type": "application/json" } });
-  });
+Deno.test("configurable intelligence: 5b. Deterministic fallback when judge key/credentials are unset and embeddings are off", async () => {
+  const cfg = {
+    ...DEFAULT_CONFIG,
+    captureEmbed: "off" as const,
+    judgeFallback: "capture" as const,
+  };
 
-  try {
-    const cfg = {
-      ...DEFAULT_CONFIG,
-      judgeMode: "auto" as const,
-      judgeUrl: `http://127.0.0.1:${localServer.addr.port}`,
-      captureEmbed: "off" as const,
-      // No judgeKey / Jev credentials
-    };
-
-    const res = await evaluateTurnWithJudge("Save local config", "Done", cfg);
-    assert.strictEqual(seenAuth, null, "No authorization header should be sent when credentials are unset");
-    assert.strictEqual(res.source, "llm");
-    assert.strictEqual(res.decision.action, "remember");
-    assert(res.decision.summary && res.decision.summary.includes("local config"));
-  } finally {
-    await localServer.shutdown();
-  }
+  const res = await evaluateTurnWithJudge("Save local config", "Done", cfg);
+  assert.strictEqual(res.source, "fallback");
+  assert.strictEqual(res.decision.action, "remember");
+  assert.strictEqual(res.degraded, true);
 });
 
 // ----------------------------------------------------------------------------
-// Test 5c: Assistant response clipping in callJevJudge
+// Test 5c: Response text is safely ignored by classifier (only user prompt is classified)
 // ----------------------------------------------------------------------------
-Deno.test("configurable intelligence: 5c. Long assistant response is clipped to 500 characters in judge payload", async () => {
-  let receivedState = "";
+Deno.test("configurable intelligence: 5c. Response text is safely ignored by classifier (only user prompt is classified)", async () => {
+  let seenText = "";
   const mockServer = Deno.serve({ port: 0 }, async (req) => {
     const body = await req.json();
-    receivedState = body.state || "";
+    seenText = body.text || "";
     return new Response(JSON.stringify({
-      answers: {
-        memory_action: { type: "choice", choice: "skip", confidence: 0.95 },
-      },
+      choice: "skip",
+      similarity: 0.8,
+      margin: 0.2,
+      scores: { skip: 0.8 },
     }), { headers: { "Content-Type": "application/json" } });
   });
 
   try {
     const cfg = {
       ...DEFAULT_CONFIG,
-      judgeMode: "auto" as const,
-      judgeUrl: `http://127.0.0.1:${mockServer.addr.port}`,
-      captureEmbed: "off" as const,
+      captureEmbedUrl: `http://127.0.0.1:${mockServer.addr.port}`,
     };
     const longResponse = "A".repeat(1200);
     const result = await evaluateTurnWithJudge("User message", longResponse, cfg);
-    assert.strictEqual(result.source, "llm");
-    assert.ok(receivedState.includes("A".repeat(500) + "..."));
-    assert.ok(!receivedState.includes("A".repeat(501)));
+    assert.strictEqual(result.source, "embed");
+    assert.strictEqual(seenText, "User message");
+    assert.strictEqual(seenText.includes("A"), false);
   } finally {
     await mockServer.shutdown();
   }

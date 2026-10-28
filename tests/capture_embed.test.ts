@@ -89,12 +89,7 @@ Deno.test("only the USER prompt is embedded, never the assistant reply", async (
   fresh();
 });
 
-Deno.test("embeddings down falls to the judge, then to judgeFallback", async () => {
-  fresh();
-  const viaJudge = makeStubFetch(() => "yes"); // no embed => /v1/embeddings is down
-  const r1 = await evaluateTurnWithJudge("anything", "ok", ON, viaJudge.fetch);
-  assert.equal(r1.source, "llm");
-  assert.equal(r1.decision.action, "remember");
+Deno.test("embeddings down falls to judgeFallback", async () => {
   fresh();
   const bothDown = makeStubFetch(() => null);
   const skipFallback = await evaluateTurnWithJudge("anything", "ok", { ...ON, judgeFallback: "skip" }, bothDown.fetch);
@@ -124,8 +119,8 @@ Deno.test("captureMode off and captureEmbed off never use embeddings", async () 
   const off = await evaluateTurnWithJudge("x", "y", { ...ON, captureMode: "off" }, f.fetch);
   assert.equal(off.source, "disabled");
   assert.equal(f.embedCalls() + f.judgeCalls(), 0, "captureMode off touches nothing");
-  const noEmbed = await evaluateTurnWithJudge("x", "y", { ...ON, captureEmbed: "off" }, f.fetch);
-  assert.equal(noEmbed.source, "llm", "captureEmbed off restores the judge path");
+  const noEmbed = await evaluateTurnWithJudge("x", "y", { ...ON, captureEmbed: "off", judgeFallback: "skip" }, f.fetch);
+  assert.equal(noEmbed.source, "fallback", "captureEmbed off falls back to deterministic fallback");
   assert.equal(f.embedCalls(), 0);
   fresh();
 });

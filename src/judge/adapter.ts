@@ -1,9 +1,8 @@
 import type { MmConfig } from "../config.ts";
-import { captureMinMargin, captureMinSimilarity, judgeConfigured } from "../config.ts";
+import { captureMinMargin, captureMinSimilarity } from "../config.ts";
 import { CAPTURE_EXEMPLARS, CAPTURE_KINDS } from "./capture-exemplars.ts";
 import { gate, mergeExemplars, nearestExemplar } from "./nearest.ts";
-import { debugLog } from "../debug.ts";
-import type { JudgeAction, JudgeDecision, JudgeResult } from "./types.ts";
+import type { JudgeResult } from "./types.ts";
 
 export interface MmHealthReport {
   judgeOk: boolean;
@@ -103,94 +102,6 @@ export async function checkMmHealth(cfg: MmConfig): Promise<MmHealthReport> {
   };
 }
 
-export function normalizeSystemOneUrl(baseUrlOrUrl: string): string {
-  const trimmed = baseUrlOrUrl.trim();
-  if (trimmed.includes("/systemone")) {
-    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
-  }
-  return `${trimmed.replace(/\/+$/, "").replace(/\/api\/v1\/systemzero$/, "").replace(/\/v1$/, "")}/api/v1/systemone/`;
-}
-
-export function parseJevAnswer(data: unknown): JudgeDecision {
-  if (typeof data !== "object" || data === null) {
-    throw new Error("Jev response must be an object");
-  }
-  const obj = data as Record<string, unknown>;
-  const answers = obj["answers"];
-  if (typeof answers !== "object" || answers === null) {
-    throw new Error("Jev response missing 'answers' object");
-  }
-  const aMap = answers as Record<string, unknown>;
-  const memAns = aMap["memory_action"];
-  if (typeof memAns !== "object" || memAns === null) {
-    throw new Error("Jev response missing 'memory_action' question answer");
-  }
-  const memObj = memAns as Record<string, unknown>;
-  const choice = memObj["choice"];
-  if (typeof choice !== "string") {
-    throw new Error("Jev memory_action answer missing 'choice' string");
-  }
-  let action: JudgeAction;
-  if (choice === "yes" || choice === "remember") action = "remember";
-  else if (choice === "no" || choice === "skip") action = "skip";
-  else if (choice === "update") action = "update";
-  else throw new Error(`Unknown Jev choice '${choice}'`);
-
-  return { action, reason: `Parsed choice: ${choice}` };
-}
-
-export async function callLlmJudge(
-  prompt: string,
-  response: string,
-  cfg: MmConfig,
-  fetchFn: typeof fetch = globalThis.fetch,
-  _threadContext?: string,
-): Promise<JudgeDecision> {
-  const url = cfg.judgeUrl || "";
-  const endpoint = normalizeSystemOneUrl(url);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.judgeTimeoutMs || 3000);
-
-  const clippedResponse = response.length > 500 ? `${response.slice(0, 500)}...` : response;
-  const payload = {
-    model: cfg.judgeModel || "default",
-    state: `User: ${prompt}\nAssistant: ${clippedResponse}`,
-    questions: {
-      memory_action: {
-        type: "choice",
-        instructions: "Should this turn be remembered as a permanent user preference, personal detail, or architectural invariant?",
-        criteria: {
-          yes: "Remember this turn",
-          no: "Skip this turn",
-        },
-      },
-    },
-  };
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (cfg.judgeKey && cfg.judgeKey.trim() !== "") {
-    headers["Authorization"] = `Bearer ${cfg.judgeKey.trim()}`;
-  }
-
-  try {
-    const res = await fetchFn(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const dec = parseJevAnswer(data);
-    if (!dec.summary && (dec.action === "remember" || dec.action === "update")) {
-      dec.summary = prompt.trim().slice(0, 250);
-    }
-    return dec;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * Embedding verdict on the USER prompt, or null when embeddings are unavailable. `remember`
  * needs `captureMinSimilarity` AND `captureMinMargin` over `skip`; anything weaker is `skip`
@@ -214,10 +125,10 @@ export async function classifyCaptureByEmbedding(
 
 export async function evaluateTurnWithJudge(
   prompt: string,
-  response: string,
+  _response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-  threadContext?: string,
+  _threadContext?: string,
 ): Promise<JudgeResult> {
   if (cfg.captureMode === "off") {
     return {
@@ -241,20 +152,7 @@ export async function evaluateTurnWithJudge(
     }
   }
 
-  if (judgeConfigured(cfg)) {
-    try {
-      const decision = await callLlmJudge(prompt, response, cfg, fetchFn, threadContext);
-      return {
-        decision,
-        source: "llm",
-      };
-    } catch (err: unknown) {
-      debugLog("capture", "callLlmJudge failed in test/mock", { error: String(err) });
-      // Fall through to deterministic fallback on error
-    }
-  }
-
-  // Deterministic offline fallback
+  // Deterministic offline fallback (no generative LLM execution)
   const fallbackAction = cfg.judgeFallback === "capture" ? "remember" : "skip";
   return {
     decision: {

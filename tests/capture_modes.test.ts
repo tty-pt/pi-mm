@@ -167,21 +167,22 @@ Deno.test("capture_modes: Mode C - 'judge' binary decision and fallback handling
   const sockPath = join(tmpDir, "cormd.sock");
   const fspec = filespecFor(tmpDir, false);
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
+  const classifyServer = Deno.serve({ port: 0 }, async (req) => {
     const body = await req.json();
-    assert.strictEqual(body.questions.memory_action.type, "choice");
-    const state = (body.state as string || "").toLowerCase();
-    const userLine = state.split("\n").find((l: string) => l.startsWith("current user:") || l.startsWith("user:")) || "";
-    let choice = "yes";
-    if (userLine.includes("weather") || userLine.includes("hello")) {
-      choice = "no";
+    const text = (body.text as string || "").toLowerCase();
+    let choice = "remember";
+    if (text.includes("weather") || text.includes("hello")) {
+      choice = "skip";
     }
     return new Response(JSON.stringify({
-      answers: { memory_action: { type: "choice", choice } },
+      choice,
+      similarity: choice === "remember" ? 0.95 : 0.80,
+      margin: 0.25,
+      scores: { remember: choice === "remember" ? 0.95 : 0.60, skip: choice === "skip" ? 0.80 : 0.60 },
     }), { headers: { "Content-Type": "application/json" } });
   });
 
-  const judgeUrl = `http://127.0.0.1:${jevServer.addr.port}`;
+  const baseUrl = `http://127.0.0.1:${classifyServer.addr.port}`;
 
   try {
     await ensureDaemon({ cormdBin, filespec: fspec, socketPath: sockPath, axisPath, cwd: tmpDir });
@@ -199,7 +200,7 @@ Deno.test("capture_modes: Mode C - 'judge' binary decision and fallback handling
       memDir: tmpDir,
       axisLibs: axisPath,
       captureMode: "judge" as const,
-      judgeUrl,
+      captureEmbedUrl: baseUrl,
       judgeFallback: "skip" as const,
     };
 
@@ -248,7 +249,7 @@ Deno.test("capture_modes: Mode C - 'judge' binary decision and fallback handling
     const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
     process.kill(lockData.pid, "SIGTERM");
   } finally {
-    await jevServer.shutdown();
+    await classifyServer.shutdown();
     try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
   }
 });

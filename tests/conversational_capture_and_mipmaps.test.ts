@@ -64,20 +64,26 @@ Deno.test("conversational_capture_and_mipmaps: Scenario A & B - Two-stage captur
   const embedUrl = `http://127.0.0.1:${embedPort}/v1/embeddings`;
   const embedModel = "mock-model";
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
-    const body = await req.json();
-    const state = (body.state as string || "").toLowerCase();
-    const userLine = state.split("\n").find((l: string) => l.startsWith("current user:") || l.startsWith("user:")) || "";
-    let choice = "yes";
-    if (userLine.includes("do you remember") || userLine.includes("bye")) {
-      choice = "no";
+  const classifyServer = Deno.serve({ port: 0 }, async (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+      const body = await req.json();
+      const text = (body.text as string || "").toLowerCase();
+      let choice = "remember";
+      if (text.includes("do you remember") || text.includes("bye")) {
+        choice = "skip";
+      }
+      return new Response(JSON.stringify({
+        choice,
+        similarity: choice === "remember" ? 0.95 : 0.70,
+        margin: 0.25,
+        scores: { remember: choice === "remember" ? 0.95 : 0.60, skip: choice === "skip" ? 0.90 : 0.60 },
+      }), { headers: { "Content-Type": "application/json" } });
     }
-    return new Response(JSON.stringify({
-      answers: { memory_action: { type: "choice", choice } },
-    }), { headers: { "Content-Type": "application/json" } });
+    return new Response("Not found", { status: 404 });
   });
 
-  const judgeUrl = `http://127.0.0.1:${jevServer.addr.port}`;
+  const classifyUrl = `http://127.0.0.1:${classifyServer.addr.port}`;
 
   try {
     const fspec = filespecFor(tmpDir, true);
@@ -114,7 +120,7 @@ Deno.test("conversational_capture_and_mipmaps: Scenario A & B - Two-stage captur
       memDir: tmpDir,
       embedUrl,
       embedModel,
-      judgeUrl,
+      captureEmbedUrl: classifyUrl,
       captureMode: "judge" as const,
     };
 
@@ -315,7 +321,7 @@ Deno.test("conversational_capture_and_mipmaps: Scenario A & B - Two-stage captur
     const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
     process.kill(lockData.pid, "SIGTERM");
   } finally {
-    await jevServer.shutdown();
+    await classifyServer.shutdown();
     await embedServer.shutdown();
     try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
   }
