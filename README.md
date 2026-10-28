@@ -71,12 +71,48 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `judgeProtocol` | `"systemone"` | Judge wire protocol (`"systemone"`, `"systemzero"`, `"auto"`). SystemOne (closed multiple-choice, option-letter logits) is the default because SystemZero's binary logit probe scored only 3/8 with `qwen` and 6/8 with `olmoe` on a quest-vs-chat check |
 | `judgeModel` | `"olmoe"` | Model used for judge calls |
 | `judgeUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for the local decision judge |
+| `captureMode` | `"all"`, or `"judge"` when `judgeUrl` is set in your settings | What automatic conversational capture stores: `"all"` (every user turn), `"keyword"` (only turns starting with a capture keyword), `"judge"` (turns the decision tier says are worth remembering), `"off"` |
+| `captureEmbed` | `"auto"` | Classify turns by embeddings in `captureMode: "judge"` (`"off"` restores the judge-only path). Env: `PI_MM_CAPTURE_EMBED` |
+| `captureEmbedUrl` | the `judgeUrl` host | Server for classification embeddings. Independent of `embedUrl`, which feeds the memory index with its own model |
+| `captureEmbedModel` | `"bge-base"` | Classification embedding model (a multilingual model improves non-English recall) |
+| `captureMinSimilarity` | `0.6` | Cosine floor for any embedding verdict (0..1) |
+| `captureMinMargin` | `0.075` | How far a "remember" verdict must beat "skip" (0..1); raise it to store less, lower it to store more |
+| `captureExemplars` | `{}` | Your own example sentences, `{ "remember": [...], "skip": [...] }`, any language, merged with the shipped ones |
 | `autoStartAuren` | `true` | Automatically launch `axil-auren` in the background if offline |
 | `autoDownloadModels` | `"manual"` | Model download policy (`"manual"` prompts for heavy models, `"auto"` downloads without prompting) |
 | `semanticSearch` | `true` | Enable dense vector embeddings and semantic recall via `libsepal` |
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
 | `advancedTools` | `false` | Expose the 9 advanced low-level memory inspection tools |
+
+### Automatic Capture: What Decides What
+
+`captureMode` decides **whether anything is judged at all**. Recall questions ("do you remember ...") are never captured, in any mode. In `keyword` and `judge` modes a turn that starts with a capture keyword (`@remember`, `remember:`, `note:` by default) is always stored, without consulting anything; in `all` mode every other turn is stored too.
+
+| `captureMode` | What stores a turn | If that is unavailable |
+| :--- | :--- | :--- |
+| `all` | Every user turn. No judge and no embeddings are consulted. | n/a |
+| `keyword` | Only turns that start with a capture keyword | n/a |
+| `judge` | **Embeddings** of your message (nearest remember/skip example) | The generative judge, then `judgeFallback` (`skip` stores nothing, `capture` stores the turn) |
+| `off` | Nothing automatic | n/a |
+
+`captureMode` resolves to `all` unless you set it or put a `judgeUrl` in your settings (which implies `judge`). **If you never set either, the embedding tier below never runs.**
+
+Why embeddings for `judge` mode: on English/Portuguese turns the default judge model (`olmoe`) answered "remember" to 40 of the 44 turns that were not worth remembering (greetings, thanks, recall probes, task requests; counted over two corpora of 22 such turns each), i.e. it stored almost everything. Measured on the held-out corpus of 44 new turns:
+
+| | Embeddings (`bge-base`) | Judge (`olmoe`) |
+| :--- | :--- | :--- |
+| Accuracy | 26/44 (59%) | 24/44 (55%) |
+| False "remember" (a wrong store) | **0** | **20** |
+| Real memories recognised | **4/22** (7/22 on the development corpus) | 22/22 |
+| Latency (p50) | ~15 ms | ~1.9 s |
+
+Read that honestly: **embeddings are high-precision and low-recall.** They store few turns and almost never the wrong one, so most casual statements are *not* captured automatically; say `@remember ...` for the ones that matter, add `captureExemplars` in your own phrasing, or lower `captureMinMargin` to store more. The first held-out run failed the adoption rule (3 false "remember"); the exemplar set was then extended by form and a hypothesis recorded before a fresh corpus confirmed it. `bge-base` is English-only, so Portuguese statements mostly fall back to "skip" until you add examples or use a multilingual model.
+
+Measure your own phrasing (opt-in, never part of `npm test`; prints accuracy, false "remember", latency and every miss for both strategies):
+`PI_MM_EVAL_JUDGE=1 deno test --allow-all --sloppy-imports tests/eval/` (set `PI_MM_EVAL_URL` for a non-default server).
+
+`npm test` is hermetic: it preloads `tests/no-live-network.ts`, which refuses any request to the real auren port (4242) or to a non-loopback host, and runs with `PI_MM_AUTO_START_AUREN=0` so no local server is started. Run with `PI_MM_ALLOW_LIVE=1` to lift the guard.
 
 ---
 

@@ -4,7 +4,15 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+- **Embedding classification of conversational turns** (`captureMode: "judge"`). `evaluateTurnWithJudge` first classifies the user's prompt by nearest-exemplar embeddings (shipped examples in `src/judge/capture-exemplars.ts`, extended by form after the first held-out run), then falls back to the judge, then to `judgeFallback`. Works with embeddings alone (no `judgeUrl` needed). New self-contained modules `src/judge/embed.ts` and `src/judge/nearest.ts` (pi-mm never imports pi-quest). Settings: `captureEmbed` (`auto`|`off`), `captureEmbedUrl`, `captureEmbedModel`, `captureMinSimilarity` (0.6), `captureMinMargin` (0.075), `captureExemplars` (`remember`/`skip`, any language); env `PI_MM_CAPTURE_EMBED`, `PI_MM_CAPTURE_EMBED_URL`, `PI_MM_CAPTURE_EMBED_MODEL`, `PI_MM_CAPTURE_MIN_MARGIN`, `PI_MM_CAPTURE_MIN_SIMILARITY`. `JudgeDecisionSource` gains `"embed"`. **Measured** (44 EN/PT turns, `bge-base` vs `olmoe`, held-out corpus B): embeddings 26/44 (59%) with **0 false "remember"**; the judge 24/44 (55%) with **20 false "remember"** (it answers "remember" to 40 of 44 non-memories on the two corpora combined). The trade is recall: embeddings recognise 4/22 real memories on B (7/22 on the development corpus A), judge 22/22, so fewer turns are stored automatically; explicit `@remember` is unchanged. The first held-out run (corpus A, default exemplars) **failed** the adoption rule with 3 false "remember" and no margin fixed it, so the exemplars were extended by form and the hypothesis (default margin, new exemplars, zero false "remember") was recorded before corpus B was written. `captureEmbed: "off"` restores the judge-only path.
+- Measurement harness `tests/eval/harness.ts` (ported from pi-quest) and the opt-in live evaluation `tests/eval/capture-eval.test.ts` (`PI_MM_EVAL_JUDGE=1`); its corpus/exemplar disjointness checks run in `npm test`.
+- README: `captureMode` and the new settings are documented, with a "what decides what" table and the numbers above.
+
 ### Changed
+- **`npm test` is hermetic.** The previous suite quietly made 14 requests to the live auren server (the zero-config discovery probe and `/mm doctor`'s health check). The test script now preloads `tests/no-live-network.ts` (refuses non-loopback hosts and port 4242; ephemeral loopback fake servers still work) and sets `PI_MM_AUTO_START_AUREN=0` (without it, refused discovery made one smoke test take 62 s by trying to start a local server). Both are asserted by `tests/no_live_network.test.ts`; `PI_MM_ALLOW_LIVE=1` lifts the guard. Measured: 0 requests to the live server during the suite.
+- Note: in a project that sets neither `captureMode` nor `judgeUrl`, `captureMode` resolves to `"all"` and none of the above applies.
+
 - `judgeModel` defaults to `olmoe` (the protocol already defaulted to `systemone`), so a fresh install uses the model/protocol pair that measured best; documented in the README configuration table. axil-auren now answers an unparseable judge reply with `choice: null`, which the judge client treats as unavailable.
 
 ## [0.4.0] - 2026-10-27

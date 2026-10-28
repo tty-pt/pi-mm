@@ -51,6 +51,21 @@ export interface MmConfig {
   judgeKey?: string;
   judgeTimeoutMs?: number;
   judgeFallback?: JudgeFallback;
+  /**
+   * Embedding classification of conversational turns ("auto" | "off"). Independent of
+   * `embedUrl`/`embedModel`, which configure the memory index (different server/model).
+   */
+  captureEmbed?: "auto" | "off";
+  /** Embeddings server for classification; defaults to the judge url. */
+  captureEmbedUrl?: string;
+  /** Classification embedding model (default "bge-base"). */
+  captureEmbedModel?: string;
+  /** Best-vs-runner-up cosine margin a "remember" embedding verdict must clear (default 0.075). */
+  captureMinMargin?: number;
+  /** Minimum cosine similarity to the nearest exemplar for any verdict (default 0.6). */
+  captureMinSimilarity?: number;
+  /** Operator exemplars (kinds `remember` / `skip`, any language), merged with the shipped ones. */
+  captureExemplars?: Record<string, string[]>;
   consolidateL2Threshold?: number;
   consolidateL3Threshold?: number;
   consolidateMaxAgeHours?: number;
@@ -222,6 +237,12 @@ export function loadConfig(raw: unknown): MmConfig {
     judgeKey: typeof jKey === "string" && jKey.trim() !== "" ? jKey.trim() : undefined,
     judgeTimeoutMs: typeof jTimeout === "number" && jTimeout > 0 ? jTimeout : DEFAULT_CONFIG.judgeTimeoutMs,
     judgeFallback: effectiveFallback,
+    captureEmbed: embedMode(record["captureEmbed"]),
+    captureEmbedUrl: typeof record["captureEmbedUrl"] === "string" && record["captureEmbedUrl"].trim() !== "" ? record["captureEmbedUrl"].trim() : undefined,
+    captureEmbedModel: typeof record["captureEmbedModel"] === "string" && record["captureEmbedModel"].trim() !== "" ? record["captureEmbedModel"].trim() : undefined,
+    captureMinMargin: unitInterval(record["captureMinMargin"]),
+    captureMinSimilarity: unitInterval(record["captureMinSimilarity"]),
+    captureExemplars: parseCaptureExemplars(record["captureExemplars"]),
     consolidateL2Threshold: typeof l2Thresh === "number" && l2Thresh > 0 ? l2Thresh : DEFAULT_CONFIG.consolidateL2Threshold,
     consolidateL3Threshold: typeof l3Thresh === "number" && l3Thresh > 0 ? l3Thresh : DEFAULT_CONFIG.consolidateL3Threshold,
     consolidateMaxAgeHours: typeof maxAge === "number" && maxAge > 0 ? maxAge : undefined,
@@ -393,6 +414,12 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     judgeKey: cfg.judgeKey ?? (typeof envJKey === "string" && envJKey.trim() !== "" ? envJKey.trim() : undefined),
     judgeTimeoutMs: timeoutNum && !isNaN(timeoutNum) && timeoutNum > 0 ? timeoutNum : cfg.judgeTimeoutMs,
     judgeFallback: jFallback,
+    captureEmbed: cfg.captureEmbed ?? embedMode(env["PI_MM_CAPTURE_EMBED"] ?? env["MM_CAPTURE_EMBED"]),
+    captureEmbedUrl: cfg.captureEmbedUrl ?? (env["PI_MM_CAPTURE_EMBED_URL"]?.trim() || undefined),
+    captureEmbedModel: cfg.captureEmbedModel ?? (env["PI_MM_CAPTURE_EMBED_MODEL"]?.trim() || undefined),
+    captureMinMargin: cfg.captureMinMargin ?? unitInterval(env["PI_MM_CAPTURE_MIN_MARGIN"] ?? env["MM_CAPTURE_MIN_MARGIN"]),
+    captureMinSimilarity: cfg.captureMinSimilarity ?? unitInterval(env["PI_MM_CAPTURE_MIN_SIMILARITY"] ?? env["MM_CAPTURE_MIN_SIMILARITY"]),
+    captureExemplars: cfg.captureExemplars,
     consolidateL2Threshold: l2ThreshNum && !isNaN(l2ThreshNum) && l2ThreshNum > 0 ? l2ThreshNum : cfg.consolidateL2Threshold,
     consolidateL3Threshold: l3ThreshNum && !isNaN(l3ThreshNum) && l3ThreshNum > 0 ? l3ThreshNum : cfg.consolidateL3Threshold,
     consolidateMaxAgeHours: maxAgeNum && !isNaN(maxAgeNum) && maxAgeNum > 0 ? maxAgeNum : cfg.consolidateMaxAgeHours,
@@ -411,6 +438,38 @@ export function sepalConfigured(cfg: MmConfig): boolean {
   if (cfg.semanticSearch === false) return false;
   return typeof cfg.embedUrl === "string" && cfg.embedUrl.trim() !== "" &&
     typeof cfg.embedModel === "string" && cfg.embedModel.trim() !== "";
+}
+
+export const DEFAULT_CAPTURE_MIN_MARGIN = 0.075;
+export const DEFAULT_CAPTURE_MIN_SIMILARITY = 0.6;
+
+export function captureMinMargin(cfg: MmConfig): number {
+  return cfg.captureMinMargin ?? DEFAULT_CAPTURE_MIN_MARGIN;
+}
+
+export function captureMinSimilarity(cfg: MmConfig): number {
+  return cfg.captureMinSimilarity ?? DEFAULT_CAPTURE_MIN_SIMILARITY;
+}
+
+function unitInterval(raw: unknown): number | undefined {
+  const n = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
+}
+
+function embedMode(raw: unknown): "auto" | "off" | undefined {
+  return raw === "auto" || raw === "off" ? raw : undefined;
+}
+
+function parseCaptureExemplars(raw: unknown): Record<string, string[]> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const kind of ["remember", "skip"]) {
+    const list = (raw as Record<string, unknown>)[kind];
+    if (!Array.isArray(list)) continue;
+    const items = list.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+    if (items.length > 0) out[kind] = items;
+  }
+  return out;
 }
 
 export function judgeConfigured(cfg: MmConfig): boolean {

@@ -1,5 +1,7 @@
 import type { MmConfig } from "../config.ts";
-import { judgeConfigured } from "../config.ts";
+import { captureMinMargin, captureMinSimilarity, judgeConfigured } from "../config.ts";
+import { CAPTURE_EXEMPLARS, CAPTURE_KINDS } from "./capture-exemplars.ts";
+import { gate, mergeExemplars, nearestExemplar } from "./nearest.ts";
 import { debugLog } from "../debug.ts";
 import type { JudgeAction, JudgeDecision, JudgeResult } from "./types.ts";
 
@@ -327,6 +329,27 @@ export async function callLlmJudge(
   }
 }
 
+/**
+ * Embedding verdict on the USER prompt, or null when embeddings are unavailable. `remember`
+ * needs `captureMinSimilarity` AND `captureMinMargin` over `skip`; anything weaker is `skip`
+ * (a missed memory costs one @remember, a false one writes to the store).
+ */
+export async function classifyCaptureByEmbedding(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<"remember" | "skip" | null> {
+  const examples = mergeExemplars(CAPTURE_EXEMPLARS, cfg.captureExemplars ?? {}, CAPTURE_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: captureMinSimilarity(cfg),
+    minMargin: captureMinMargin(cfg),
+    harmless: "skip",
+    actionable: new Set(["remember"]),
+  }) as "remember" | "skip";
+}
+
 export async function evaluateTurnWithJudge(
   prompt: string,
   response: string,
@@ -338,6 +361,20 @@ export async function evaluateTurnWithJudge(
     return {
       decision: { action: "skip", reason: "Automatic conversational capture is disabled (captureMode=off)" },
       source: "disabled",
+    };
+  }
+
+  // Embeddings decide when available: deterministic and ~15 ms. The generative judge on the
+  // default model answered "remember" to 40 of 44 non-memories in held-out evaluation.
+  const embedded = await classifyCaptureByEmbedding(prompt, cfg, fetchFn);
+  if (embedded !== null) {
+    return {
+      decision: {
+        action: embedded,
+        summary: embedded === "remember" ? prompt.trim().slice(0, 250) : undefined,
+        reason: embedded === "remember" ? "Nearest remember exemplar (embeddings)" : "Nearest skip exemplar or below the remember gate (embeddings)",
+      },
+      source: "embed",
     };
   }
 

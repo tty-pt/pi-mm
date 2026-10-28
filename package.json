@@ -35,7 +35,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "deno test --allow-all --sloppy-imports --node-modules-dir=none tests/",
+    "test": "PI_MM_AUTO_START_AUREN=0 deno test --preload tests/no-live-network.ts --allow-all --sloppy-imports --node-modules-dir=none tests/",
     "lint": "deno lint src/ tests/ scripts/",
     "benchmark": "deno run --allow-all scripts/benchmark-mm.ts",
     "demo": "deno run --allow-all scripts/demo-bootstrap.ts",
