@@ -17,6 +17,13 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - Recall Catch Rate: 63.6% (14/22) vs 13.6% (3/22) (4.7× improvement).
   - Task Specificity: 100.0% (22/22) vs 100.0% (22/22) with 0 false positives.
   - Latency: 17 ms p50, 34 ms p95.
+- **Embedding-Only Model Provisioning & Redundancy Prevention** (`src/auren-bootstrap.ts`):
+  - In `shouldAutoDownload`, restricted automatic model downloads strictly to models declaring embedding capabilities (`capabilities: ["embed"]`), eliminating downloads of heavy, unused inference/chat/judge models (`qwen`, `olmoe`).
+  - In `run`, verified if any embedding model is already present on disk (`~/.models/`); if present, auto-download is skipped entirely. If absent, only the primary preferred embedding model (`bge-base`, 117 MB) is downloaded.
+- **Non-Blocking Visual Feedback on Downloads & Model Usage** (`src/auren-bootstrap.ts`, `src/hooks/events.ts`):
+  - Enriched `describeProgress` to report model identifier and progress percentage (`⬇ bge-base (42%)`).
+  - Added `describeModelStatus` reporting download progress during fetching, active model status (`⚡ bge-base`) when running on port 4242, or clearing when idle.
+  - Wired into reserved status bar key `"mm-judge"` with deduplicated, single-shot informational toasts on download start and completion.
 - **Multi-surface evaluation harness and script** (`scripts/eval-surfaces.ts`, `npm run eval:surfaces`). Evaluates classification accuracy, false positives, and latency across standing directives (`directive_intent`), overview queries (`overview_routing`), and quest kinds (`kind_classification`):
   - Benchmarks embedding classification against baseline regex/heuristics on held-out bilingual test sets.
   - Confirms zero state-changing regressions on invariant tracking and memory overview injection.

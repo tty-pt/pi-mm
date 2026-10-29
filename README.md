@@ -24,7 +24,7 @@ pi install npm:@tty-pt/pi-mm
 
 `pi-mm` works out of the box:
 1. **Automatic Daemon Startup**: Checks if `axil-auren` is running on port 4242. If offline, it brings up the local server automatically.
-2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads lightweight fast models (`bge-base`, `bge-small`, `qwen2.5-0.5b`) with sha256 verification, while interactively requesting consent for large MoE models (`olmoe`).
+2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads the required fast embedding model (`bge-base`, 117 MB) with sha256 verification. Heavy and unused inference/chat models are never downloaded. Shows non-blocking visual progress (`⬇ bge-base (42%)`) and usage status (`⚡ bge-base`) in the status bar (`mm-judge`).
 3. **Proactive Dependency Checks**: On `session_start`, `pi-mm` automatically checks core C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `axil`, `axil-auren`) and displays actionable remediation toasts if anything is missing.
 
 ### Verify Memory Health

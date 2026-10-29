@@ -1144,7 +1144,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
         const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
         if (isProject) {
           try {
-            const { findSepalLib, ensureAuren, describeProgress, DOCS_SEPAL } = await import("../auren.ts");
+            const { findSepalLib, ensureAuren, describeProgress, describeModelStatus, DOCS_SEPAL } = await import("../auren.ts");
             const { checkAllEngineVersions, formatRemediationToast } = await import("../versions.ts");
             const notify = typeof ui?.notify === "function" ? ui.notify.bind(ui) : undefined;
             const told = new Set<string>();
@@ -1174,6 +1174,17 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
                 confirm: confirmFn ? (m: string) => confirmFn.call((ctxUnknown as { ui: object }).ui, "pi-mm: local model", m) : undefined,
                 onUpdate: (st) => {
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
+                  const statusText = describeModelStatus(st);
+                  if (ui?.setStatus) {
+                    ui.setStatus("mm-judge", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
+                  }
+                  if (st.downloads.length > 0) {
+                    const dl = st.downloads[0];
+                    tell(`download:${dl.id}`, `[pi-mm] Downloading local embedding model "${dl.id}" for fast in-memory classification...`, "info");
+                  }
+                  if (st.running && st.activeModel) {
+                    tell(`active:${st.activeModel}`, `[pi-mm] Local model active: ${st.activeModel} (port 4242, in-memory classification)`, "info");
+                  }
                   for (const n of st.notices) {
                     if (n.code === "downloading") continue;
                     tell(`${n.code}:${n.message}`, `[pi-mm] ${n.message} See: ${n.link}`, n.severity);

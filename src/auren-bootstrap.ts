@@ -220,6 +220,8 @@ export function shouldAutoDownload(
   consent: boolean | undefined,
 ): boolean | "ask" {
   if (setting === "never") return false;
+  // Auto-download only models with embedding capabilities; inference/chat models are not needed
+  if (!model.capabilities.includes("embed")) return false;
   if (setting === "auto") return true;
   if (model.tier === "small") return true;
   if (consent === true) return true;
@@ -669,6 +671,7 @@ export interface BootstrapState {
   phase: "idle" | "checking" | "downloading" | "starting" | "ready" | "unavailable";
   running: boolean;
   started: boolean;
+  activeModel?: string;
   downloads: DownloadProgress[];
   failures: Array<{ id: string; error: string }>;
   pendingConsent: CatalogModel[];
@@ -707,12 +710,19 @@ export function getBootstrapState(): BootstrapState {
   return { ...liveState, downloads: [...liveState.downloads], failures: [...liveState.failures], notices: [...liveState.notices] };
 }
 
-/** Compact progress text for a status bar, e.g. "⬇ 42%"; undefined when nothing is downloading. */
+/** Compact progress text for a status bar, e.g. "⬇ bge-base (42%)"; undefined when nothing is downloading. */
 export function describeProgress(state: BootstrapState = liveState): string | undefined {
   if (state.downloads.length === 0) return undefined;
-  const done = state.downloads.reduce((a, d) => a + d.done, 0);
-  const total = state.downloads.reduce((a, d) => a + d.total, 0);
-  return `⬇ ${total > 0 ? Math.floor((done / total) * 100) : 0}%`;
+  const dl = state.downloads[0];
+  const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
+  return `⬇ ${dl.id} (${pct}%)`;
+}
+
+/** Model usage status text for a status bar or reporting widget. */
+export function describeModelStatus(state: BootstrapState = liveState): string | undefined {
+  if (state.downloads.length > 0) return describeProgress(state);
+  if (state.running && state.activeModel) return `⚡ ${state.activeModel}`;
+  return undefined;
 }
 
 function readPrefs(home: string): { largeModels?: boolean } {
@@ -758,7 +768,17 @@ export function resetBootstrapForTests(): void {
   inflight = null;
   lastFinishedAt = 0;
   activeHooks = {};
-  Object.assign(liveState, { phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] });
+  Object.assign(liveState, {
+    phase: "idle",
+    running: false,
+    started: false,
+    activeModel: undefined,
+    downloads: [],
+    failures: [],
+    pendingConsent: [],
+    configPath: null,
+    notices: [],
+  });
 }
 
 async function run(opts: EnsureOptions): Promise<BootstrapState> {
@@ -771,6 +791,9 @@ async function run(opts: EnsureOptions): Promise<BootstrapState> {
   const autoStart = settings.autoStart !== false;
 
   const publish = () => {
+    const present = presentModels(catalog, home);
+    const active = present.find((m) => m.capabilities.includes("embed"))?.id ?? present[0]?.id;
+    liveState.activeModel = liveState.running ? active : undefined;
     liveState.notices = diagnoseAuren({
       ...opts,
       running: liveState.running,
@@ -816,45 +839,53 @@ async function run(opts: EnsureOptions): Promise<BootstrapState> {
   // 2. Fetch missing default models, but only when the operator has not brought their own config.
   if (managed) {
     const prefs = readPrefs(home);
-    const missing = catalog.filter((m) => !existsSync(join(modelsDir(home), m.file))).sort((a, b) => a.bytes - b.bytes);
-    for (const model of missing) {
-      let decision = shouldAutoDownload(model, policy, prefs.largeModels);
-      if (decision === "ask") {
-        if (activeHooks.confirm) {
-          const ok = await activeHooks.confirm(
-            `pi can download the local model "${model.id}" (${(model.bytes / 1073741824).toFixed(1)} GB) for better decision judging. Download it now?`,
-          );
-          prefs.largeModels = ok;
-          writePrefs(home, prefs);
-          decision = ok;
-        } else {
-          liveState.pendingConsent.push(model);
-          continue;
-        }
-      }
-      if (decision !== true) continue;
-
-      liveState.phase = "downloading";
-      const progress: DownloadProgress = { id: model.id, done: 0, total: model.bytes };
-      liveState.downloads = [...liveState.downloads, progress];
-      let lastPublish = 0;
-      const r = await downloadModel(model, {
-        home,
-        fetchImpl: opts.fetchImpl,
-        onProgress: (done, total) => {
-          progress.done = done;
-          progress.total = total;
-          const now = Date.now();
-          if (now - lastPublish > 500) {
-            lastPublish = now;
-            publish();
+    const presentEmbeddings = catalog.filter((m) => m.capabilities.includes("embed") && existsSync(join(modelsDir(home), m.file)));
+    if (presentEmbeddings.length === 0) {
+      // Auto-download only the single preferred missing embedding model
+      const missingEmbeddings = catalog
+        .filter((m) => m.capabilities.includes("embed"))
+        .filter((m) => !existsSync(join(modelsDir(home), m.file)));
+      const targetModel = missingEmbeddings.find((m) => m.id === "bge-base") ?? missingEmbeddings[0];
+      const missing = targetModel ? [targetModel] : [];
+      for (const model of missing) {
+        let decision = shouldAutoDownload(model, policy, prefs.largeModels);
+        if (decision === "ask") {
+          if (activeHooks.confirm) {
+            const ok = await activeHooks.confirm(
+              `pi can download the local model "${model.id}" (${(model.bytes / 1073741824).toFixed(1)} GB) for fast in-memory classification. Download it now?`,
+            );
+            prefs.largeModels = ok;
+            writePrefs(home, prefs);
+            decision = ok;
+          } else {
+            liveState.pendingConsent.push(model);
+            continue;
           }
-        },
-      });
-      liveState.downloads = liveState.downloads.filter((d) => d.id !== model.id);
-      if (r.status === "failed") liveState.failures.push({ id: model.id, error: r.error ?? "unknown error" });
-      if (r.status === "downloaded") await ensureServer(true);
-      publish();
+        }
+        if (decision !== true) continue;
+
+        liveState.phase = "downloading";
+        const progress: DownloadProgress = { id: model.id, done: 0, total: model.bytes };
+        liveState.downloads = [...liveState.downloads, progress];
+        let lastPublish = 0;
+        const r = await downloadModel(model, {
+          home,
+          fetchImpl: opts.fetchImpl,
+          onProgress: (done, total) => {
+            progress.done = done;
+            progress.total = total;
+            const now = Date.now();
+            if (now - lastPublish > 500) {
+              lastPublish = now;
+              publish();
+            }
+          },
+        });
+        liveState.downloads = liveState.downloads.filter((d) => d.id !== model.id);
+        if (r.status === "failed") liveState.failures.push({ id: model.id, error: r.error ?? "unknown error" });
+        if (r.status === "downloaded") await ensureServer(true);
+        publish();
+      }
     }
   }
 
