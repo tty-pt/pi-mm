@@ -178,6 +178,7 @@ Prebuilt packages are available via [tty.pt packages](https://github.com/tty-pt/
 npm --prefix .pi/extensions/pi-mm test             # Run hermetic test suite (450+ tests)
 npm --prefix .pi/extensions/pi-mm run lint         # Lint all TypeScript source and scripts
 npm --prefix .pi/extensions/pi-mm run eval:recall  # Benchmark recall intent classification against live auren
+npm --prefix .pi/extensions/pi-mm run eval:surfaces # Benchmark directive, overview, and kind classification
 npm --prefix .pi/extensions/pi-mm run test:playbook # Non-destructive bootstrap verification playbook
 npm --prefix .pi/extensions/pi-mm run demo          # Interactive live bootstrap demonstration
 npm --prefix .pi/extensions/pi-mm run zip           # Package distribution bundle
