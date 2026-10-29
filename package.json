@@ -39,6 +39,7 @@
     "lint": "deno lint src/ tests/ scripts/",
     "benchmark": "deno run --allow-all scripts/benchmark-mm.ts",
     "eval:recall": "deno run --allow-all scripts/eval-recall.ts",
+    "eval:surfaces": "deno run --allow-all scripts/eval-surfaces.ts",
     "demo": "deno run --allow-all scripts/demo-bootstrap.ts",
     "test:playbook": "bash scripts/test-bootstrap-playbook.sh",
     "zip": "deno run --allow-all scripts/zip_bundle.ts"
