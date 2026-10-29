@@ -393,14 +393,11 @@ Deno.test("resolveSocketPath: default, explicit, runtimeDir, and DrvFs auto-fall
   );
 });
 
-Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
+Deno.test("applyEnv: AUREN_URL sets embedUrl, judgeUrl, and synthUrl", () => {
   const envRec = {
     AUREN_URL: "http://localhost:4242",
     AUREN_MODEL: "auren-model",
     AUREN_KEY: "auren-token",
-    QLLM_URL: "http://localhost:9999",
-    QLLM_MODEL: "qllm-model",
-    QLLM_KEY: "qllm-token",
   };
   const filled = applyEnv(DEFAULT_CONFIG, envRec);
   check(filled.embedUrl === "http://localhost:4242/v1/embeddings", "AUREN_URL sets embedUrl");
@@ -408,15 +405,6 @@ Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
   check(filled.synthUrl === "http://localhost:4242/v1/chat/completions", "AUREN_URL sets synthUrl");
   check(filled.embedModel === "auren-model", "AUREN_MODEL sets embedModel");
   check(filled.embedKey === "auren-token", "AUREN_KEY sets embedKey");
-
-  // Fallback to QLLM_URL when AUREN_URL is absent
-  const fallbackRec = {
-    QLLM_URL: "http://localhost:9999",
-    QLLM_MODEL: "qllm-model",
-  };
-  const fallbackFilled = applyEnv(DEFAULT_CONFIG, fallbackRec);
-  check(fallbackFilled.embedUrl === "http://localhost:9999/v1/embeddings", "QLLM_URL fallback embedUrl");
-  check(fallbackFilled.embedModel === "qllm-model", "QLLM_MODEL fallback embedModel");
 });
 Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, validate and honour env", () => {
   const d = loadConfig(undefined);

@@ -356,8 +356,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   let defaultSynthModel = envSynthModel;
   let defaultSynthKey = envSynthKey;
 
-  // Auren endpoint fallback (or legacy QLLM_URL)
-  const aurenBase = env["AUREN_URL"] ?? env["QLLM_URL"];
+  // Auren endpoint fallback
+  const aurenBase = env["AUREN_URL"];
   if (aurenBase && aurenBase.trim() !== "") {
     const trimmedBase = aurenBase.trim().replace(/\/+$/, "");
     if (!defaultJudgeUrl) {
@@ -371,8 +371,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
       defaultSynthUrl = trimmedBase.endsWith("/v1/chat/completions") ? trimmedBase :
                        (trimmedBase.endsWith("/chat/completions") ? trimmedBase : `${trimmedBase}/v1/chat/completions`);
     }
-    const aurenModel = env["AUREN_MODEL"] ?? env["QLLM_MODEL"];
-    const aurenKey = env["AUREN_KEY"] ?? env["QLLM_KEY"];
+    const aurenModel = env["AUREN_MODEL"];
+    const aurenKey = env["AUREN_KEY"];
     if (!defaultJudgeModel && aurenModel) defaultJudgeModel = aurenModel;
     if (!defaultEmbedModel && aurenModel) defaultEmbedModel = aurenModel;
     if (!defaultSynthModel && aurenModel) defaultSynthModel = aurenModel;
