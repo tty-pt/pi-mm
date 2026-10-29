@@ -17,7 +17,7 @@ import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
 import { recordAssociations } from "../associative.ts";
-import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
+import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
 import { detectSubsystemMentions } from "./auto_recall.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
@@ -690,7 +690,7 @@ export interface ActiveConversationTurn {
 export const activeConversationTurn: ActiveConversationTurn = {};
 export const reinforcementScheduler = new ReinforcementScheduler();
 
-export { isStandingDirective, STANDING_DIRECTIVE_PATTERN };
+export { isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN };
 
 export interface ConversationalClassification {
   meaningful: boolean;
@@ -1084,9 +1084,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           filespec: fspec,
           axes: axes.split(":"),
           semanticSearch: embed,
+          captureEmbedUrl: env.cfg.captureEmbedUrl ?? env.cfg.judgeUrl,
+          captureEmbedModel: env.cfg.captureEmbedModel,
           judgeMode: env.cfg.judgeMode,
-          judgeUrl: env.cfg.judgeUrl,
-          judgeModel: env.cfg.judgeModel,
           judgeFallback: env.cfg.judgeFallback,
         });
 
@@ -1099,9 +1099,8 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           axisRoster: axes.split(":"),
           cormdRunning: isDaemonLockHeld(cwd),
           cormdSocket: socketPath(env),
-          judgeMode: env.cfg.judgeMode,
-          judgeUrl: env.cfg.judgeUrl,
-          judgeModel: env.cfg.judgeModel,
+          captureEmbedUrl: env.cfg.captureEmbedUrl ?? env.cfg.judgeUrl,
+          captureEmbedModel: env.cfg.captureEmbedModel,
           judgeFallback: env.cfg.judgeFallback,
           semanticSearch: embed,
           embedUrl: env.cfg.embedUrl,
@@ -1145,7 +1144,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
         const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
         if (isProject) {
           try {
-            const { findSepalLib, ensureAuren, describeProgress, DOCS_SEPAL } = await import("../auren.ts");
+            const { findSepalLib, ensureAuren, describeProgress, describeModelStatus, DOCS_SEPAL } = await import("../auren.ts");
             const { checkAllEngineVersions, formatRemediationToast } = await import("../versions.ts");
             const notify = typeof ui?.notify === "function" ? ui.notify.bind(ui) : undefined;
             const told = new Set<string>();
@@ -1175,6 +1174,17 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
                 confirm: confirmFn ? (m: string) => confirmFn.call((ctxUnknown as { ui: object }).ui, "pi-mm: local model", m) : undefined,
                 onUpdate: (st) => {
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
+                  const statusText = describeModelStatus(st);
+                  if (ui?.setStatus) {
+                    ui.setStatus("mm-judge", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
+                  }
+                  if (st.downloads.length > 0) {
+                    const dl = st.downloads[0];
+                    tell(`download:${dl.id}`, `[pi-mm] Downloading local embedding model "${dl.id}" for fast in-memory classification...`, "info");
+                  }
+                  if (st.running && st.activeModel) {
+                    tell(`active:${st.activeModel}`, `[pi-mm] Local model active: ${st.activeModel} (port 4242, in-memory classification)`, "info");
+                  }
                   for (const n of st.notices) {
                     if (n.code === "downloading") continue;
                     tell(`${n.code}:${n.message}`, `[pi-mm] ${n.message} See: ${n.link}`, n.severity);
@@ -1312,7 +1322,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
       if (prompt) {
         try {
           const env = await envSource(ctx);
-          const mode = env.cfg.captureMode ?? (env.cfg.judgeMode === "off" ? "off" : (env.cfg.judgeUrl ? "judge" : "all"));
+          const mode = env.cfg.captureMode ?? (env.cfg.judgeMode === "off" ? "off" : ((env.cfg.captureEmbedUrl || env.cfg.judgeUrl) ? "judge" : "all"));
 
           let shouldStoreConversational = false;
           let contentToStore = prompt;
@@ -1368,7 +1378,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
 
           if (shouldStoreConversational) {
             const isDirective = prompt.toLowerCase().includes("@remember") || prompt.toLowerCase().startsWith("remember:");
-            const isStanding = isStandingDirective(prompt);
+            const isStanding = await evaluateStandingDirective(prompt, env.cfg);
             const l0Classification: ConversationalClassification = {
               meaningful: true,
               type: isStanding ? "invariant" : "note",
@@ -1476,9 +1486,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     }
 
     const recallRes = await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
-    const recalledRefs = (recallRes?.message?.details as { refs?: unknown[] })?.refs;
-    if (recalledRefs && recalledRefs.length > 0) {
-      notifyMmEvent(ctxUnknown as PiCtx, "recalled", recalledRefs.length);
+    const details = recallRes?.message?.details as { refs?: unknown[]; recallIntent?: boolean } | undefined;
+    if (details?.refs && details.refs.length > 0) {
+      notifyMmEvent(ctxUnknown as PiCtx, "recalled", details.refs.length);
+    }
+    if (details?.recallIntent) {
+      debugLog("recall", "recall_intent_classified", { prompt: event.prompt });
     }
     return recallRes;
   });

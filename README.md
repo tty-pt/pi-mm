@@ -24,7 +24,7 @@ pi install npm:@tty-pt/pi-mm
 
 `pi-mm` works out of the box:
 1. **Automatic Daemon Startup**: Checks if `axil-auren` is running on port 4242. If offline, it brings up the local server automatically.
-2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads lightweight fast models (`bge-base`, `bge-small`, `qwen2.5-0.5b`) with sha256 verification, while interactively requesting consent for large MoE models (`olmoe`).
+2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads the required fast embedding model (`bge-base`, 117 MB) with sha256 verification. Heavy and unused inference/chat models are never downloaded. Shows non-blocking visual progress (`⬇ bge-base (42%)`) and usage status (`⚡ bge-base`) in the status bar (`mm-judge`).
 3. **Proactive Dependency Checks**: On `session_start`, `pi-mm` automatically checks core C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `axil`, `axil-auren`) and displays actionable remediation toasts if anything is missing.
 
 ### Verify Memory Health
@@ -67,14 +67,92 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `judgeMode` | `"auto"` | Decision judge protocol (`"auto"`, `"systemzero"`, `"systemone"`, `"heuristic"`, `"off"`) |
-| `judgeUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for the local decision judge |
+| `captureEmbedUrl` | `"http://127.0.0.1:4242"` | Endpoint URL for in-memory semantic classification (`POST /v1/classify`). Independent of `embedUrl`, which feeds the memory index |
+| `captureEmbedModel` | `"bge-base"` | Classification embedding model (a multilingual model improves non-English recall) |
+| `captureMode` | `"all"`, or `"judge"` when `captureEmbedUrl` is set in your settings | What automatic conversational capture stores: `"all"` (every user turn), `"keyword"` (only turns starting with a capture keyword), `"judge"` (turns the embedding classifier says are worth remembering), `"off"` |
+| `captureEmbed` | `"auto"` | Classify turns by embeddings in `captureMode: "judge"`. Env: `PI_MM_CAPTURE_EMBED` |
+| `captureMinSimilarity` | `0.6` | Cosine floor for any embedding verdict (0..1) |
+| `captureMinMargin` | `0.075` | How far a "remember" verdict must beat "skip" (0..1); raise it to store less, lower it to store more |
+| `captureExemplars` | `{}` | Your own example sentences, `{ "remember": [...], "skip": [...] }`, any language, merged with the shipped ones |
+| `judgeFallback` | `"skip"` | Deterministic fallback when the classifier server is offline (`"skip"` or `"capture"`) |
 | `autoStartAuren` | `true` | Automatically launch `axil-auren` in the background if offline |
 | `autoDownloadModels` | `"manual"` | Model download policy (`"manual"` prompts for heavy models, `"auto"` downloads without prompting) |
 | `semanticSearch` | `true` | Enable dense vector embeddings and semantic recall via `libsepal` |
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
 | `advancedTools` | `false` | Expose the 9 advanced low-level memory inspection tools |
+| `recallEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect recall intent (`"auto"` or `"off"`). Env: `PI_MM_RECALL_EMBED` |
+| `recallMinSimilarity` | `0.6` | Cosine floor for recall intent embedding classification (0..1) |
+| `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
+| `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
+| `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
+| `directiveEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect standing directives/rules (`"auto"` or `"off"`). Env: `PI_MM_DIRECTIVE_EMBED` |
+| `directiveMinSimilarity` | `0.6` | Cosine floor for standing directive classification (0..1) |
+| `directiveMinMargin` | `0.08` | How far a `"standing_directive"` verdict must beat `"transient_task"` (0..1) |
+| `directiveExemplars` | `{}` | Custom examples `{ "standing_directive": [...], "transient_task": [...] }` merged with shipped ones |
+| `directiveFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
+| `overviewEmbed` | `"auto"` | Classify direct memory inquiries by embeddings (`POST /v1/classify`) to detect open-ended overviews (`"auto"` or `"off"`). Env: `PI_MM_OVERVIEW_EMBED` |
+| `overviewMinSimilarity` | `0.6` | Cosine floor for overview routing classification (0..1) |
+| `overviewMinMargin` | `0.08` | How far an `"overview_query"` verdict must beat `"specific_query"` (0..1) |
+| `overviewExemplars` | `{}` | Custom examples `{ "overview_query": [...], "specific_query": [...] }` merged with shipped ones |
+| `overviewFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
+| `judgeProtocol` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
+| `judgeModel` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
+| `judgeUrl` | *(deprecated)* | Deprecated; mapped to `captureEmbedUrl` |
+
+### Automatic Capture: What Decides What
+
+`captureMode` decides **whether anything is judged at all**. Recall questions ("do you remember ...") are never captured, in any mode. In `keyword` and `judge` modes a turn that starts with a capture keyword (`@remember`, `remember:`, `note:` by default) is always stored, without consulting anything; in `all` mode every other turn is stored too.
+
+| `captureMode` | What stores a turn | If that is unavailable |
+| :--- | :--- | :--- |
+| `all` | Every user turn. No classifier and no embeddings are consulted. | n/a |
+| `keyword` | Only turns that start with a capture keyword | n/a |
+| `judge` | **In-Memory Embedding Classification** via `POST /v1/classify` | Deterministic `judgeFallback` (`skip` stores nothing, `capture` stores the turn) |
+| `off` | Nothing automatic | n/a |
+
+`captureMode` resolves to `all` unless you set it or put a `judgeUrl` in your settings (which implies `judge`). **If you never set either, the embedding tier below never runs.**
+
+Why embeddings for `judge` mode: on English/Portuguese turns the default judge model (`olmoe`) answered "remember" to 40 of the 44 turns that were not worth remembering (greetings, thanks, recall probes, task requests; counted over two corpora of 22 such turns each), i.e. it stored almost everything. Measured on the held-out corpus of 44 new turns:
+
+| | Embeddings (`bge-base`) | Judge (`olmoe`) |
+| :--- | :--- | :--- |
+| Accuracy | 26/44 (59%) | 24/44 (55%) |
+| False "remember" (a wrong store) | **0** | **20** |
+| Real memories recognised | **4/22** (7/22 on the development corpus) | 22/22 |
+| Latency (p50) | ~15 ms | ~1.9 s |
+
+Read that honestly: **embeddings are high-precision and low-recall.** They store few turns and almost never the wrong one, so most casual statements are *not* captured automatically; say `@remember ...` for the ones that matter, add `captureExemplars` in your own phrasing, or lower `captureMinMargin` to store more. The first held-out run failed the adoption rule (3 false "remember"); the exemplar set was then extended by form and a hypothesis recorded before a fresh corpus confirmed it. `bge-base` is English-only, so Portuguese statements mostly fall back to "skip" until you add examples or use a multilingual model.
+
+Measure your own phrasing (opt-in, never part of `npm test`; prints accuracy, false "remember", latency and every miss for both strategies):
+`PI_MM_EVAL_JUDGE=1 deno test --allow-all --sloppy-imports tests/eval/` (set `PI_MM_EVAL_URL` for a non-default server).
+
+### Proactive Recall Intent: What Drives Context Injection
+
+In addition to write-path capture judging, `pi-mm` intelligently classifies the **read path** before each agent turn (`before_agent_start`). When a user asks about past architectural choices, previous debugging sessions, decisions, rules, or lore, `pi-mm` uses `POST /v1/classify` against a curated bilingual exemplar corpus (`recall_past` vs `standalone`):
+
+1. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
+2. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
+3. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic regex heuristics (`recallFallback: "regex"`).
+
+#### Empirical Benchmark: Regex Heuristics vs. Embeddings
+
+Measured on a held-out, bilingual (English + Portuguese) corpus of **44 realistic turns** (22 `recall_past` queries, 22 `standalone` engineering tasks), completely disjoint from training exemplars (`npm run eval:recall` against `axil-auren` with `bge-base`):
+
+| Metric | Previous Heuristic Gate (`isMemoryRecallPrompt`) | `axil-auren` Embeddings (`POST /v1/classify`) | Impact / Delta |
+| :--- | :--- | :--- | :--- |
+| **Overall Accuracy** | **56.8%** (25/44) | **81.8%** (36/44) | **+25.0% accuracy** |
+| **Recall Catch Rate (`recall_past`)** | **13.6%** (3/22) | **63.6%** (14/22) | **4.7× improvement** (+11 caught) |
+| **Task Specificity (`standalone`)** | **100.0%** (22/22) | **100.0%** (22/22) | **Zero regressions / zero false recall** |
+| **False Positives** | **0** | **0** | **Zero unwanted memory spam** |
+| **Latency (p50 / p95)** | < 1 ms | **17 ms / 34 ms** | Fast, imperceptible C SIMD execution |
+
+Run the recall evaluation suite against your live `axil-auren` instance:
+```bash
+npm --prefix .pi/extensions/pi-mm run eval:recall
+```
+
+`npm test` is hermetic: it preloads `tests/no-live-network.ts`, which refuses any request to the real auren port (4242) or to a non-loopback host, and runs with `PI_MM_AUTO_START_AUREN=0` so no local server is started. Run with `PI_MM_ALLOW_LIVE=1` to lift the guard.
 
 ---
 
@@ -97,7 +175,10 @@ Prebuilt packages are available via [tty.pt packages](https://github.com/tty-pt/
 ## 6. Development & Verification
 
 ```bash
-npm --prefix .pi/extensions/pi-mm test             # Run test suite (400+ tests)
+npm --prefix .pi/extensions/pi-mm test             # Run hermetic test suite (450+ tests)
+npm --prefix .pi/extensions/pi-mm run lint         # Lint all TypeScript source and scripts
+npm --prefix .pi/extensions/pi-mm run eval:recall  # Benchmark recall intent classification against live auren
+npm --prefix .pi/extensions/pi-mm run eval:surfaces # Benchmark directive, overview, and kind classification
 npm --prefix .pi/extensions/pi-mm run test:playbook # Non-destructive bootstrap verification playbook
 npm --prefix .pi/extensions/pi-mm run demo          # Interactive live bootstrap demonstration
 npm --prefix .pi/extensions/pi-mm run zip           # Package distribution bundle

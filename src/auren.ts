@@ -19,6 +19,7 @@ export {
   ensureAuren,
   getBootstrapState,
   describeProgress,
+  describeModelStatus,
   diagnoseAuren,
   serverLogPath,
   findUserConfig,

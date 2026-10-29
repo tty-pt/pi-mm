@@ -37,7 +37,7 @@ const PC_ALIASES: Record<EngineName, string[]> = {
   libsepal: ["sepal.pc", "sepallib.pc", "libsepal.pc"],
   liblemma: ["lemma.pc", "liblemma.pc"],
   libjoint: ["joint.pc", "libjoint.pc"],
-  "axil-auren": ["auren.pc", "axil-auren.pc", "axil-qllm.pc", "libaxil-auren.pc"],
+  "axil-auren": ["auren.pc", "axil-auren.pc", "libaxil-auren.pc"],
 };
 
 export type VersionSource = "pkgconfig" | "git" | "daemon" | "fallback";

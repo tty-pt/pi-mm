@@ -1,4 +1,4 @@
-import { readMmConfig, loadConfig, applyEnv, resolveCormBin, resolveAxisPath, resolveSocketPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
+import { readMmConfig, loadConfig, applyEnv, captureMinMargin, captureMinSimilarity, resolveCormBin, resolveAxisPath, resolveSocketPath, resolveAdvancedTools, sepalConfigured, DEFAULT_CONFIG } from "../src/config.ts";
 import { resolveMemDir } from "../src/tools/index.ts";
 import { join } from "node:path";
 
@@ -393,14 +393,11 @@ Deno.test("resolveSocketPath: default, explicit, runtimeDir, and DrvFs auto-fall
   );
 });
 
-Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
+Deno.test("applyEnv: AUREN_URL sets embedUrl, judgeUrl, and synthUrl", () => {
   const envRec = {
     AUREN_URL: "http://localhost:4242",
     AUREN_MODEL: "auren-model",
     AUREN_KEY: "auren-token",
-    QLLM_URL: "http://localhost:9999",
-    QLLM_MODEL: "qllm-model",
-    QLLM_KEY: "qllm-token",
   };
   const filled = applyEnv(DEFAULT_CONFIG, envRec);
   check(filled.embedUrl === "http://localhost:4242/v1/embeddings", "AUREN_URL sets embedUrl");
@@ -408,15 +405,6 @@ Deno.test("applyEnv: AUREN_URL takes precedence over QLLM_URL", () => {
   check(filled.synthUrl === "http://localhost:4242/v1/chat/completions", "AUREN_URL sets synthUrl");
   check(filled.embedModel === "auren-model", "AUREN_MODEL sets embedModel");
   check(filled.embedKey === "auren-token", "AUREN_KEY sets embedKey");
-
-  // Fallback to QLLM_URL when AUREN_URL is absent
-  const fallbackRec = {
-    QLLM_URL: "http://localhost:9999",
-    QLLM_MODEL: "qllm-model",
-  };
-  const fallbackFilled = applyEnv(DEFAULT_CONFIG, fallbackRec);
-  check(fallbackFilled.embedUrl === "http://localhost:9999/v1/embeddings", "QLLM_URL fallback embedUrl");
-  check(fallbackFilled.embedModel === "qllm-model", "QLLM_MODEL fallback embedModel");
 });
 Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, validate and honour env", () => {
   const d = loadConfig(undefined);
@@ -427,4 +415,28 @@ Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, v
   check(bad.autoStartAuren === true && bad.autoDownloadModels === "ask", "invalid values fall back");
   const e = applyEnv(loadConfig(undefined), { PI_MM_AUTO_START_AUREN: "0", PI_MM_AUTO_DOWNLOAD_MODELS: "auto" });
   check(e.autoStartAuren === false && e.autoDownloadModels === "auto", "env overrides");
+});
+
+Deno.test("capture embedding settings: defaults, validation and env", () => {
+  const d = loadConfig(undefined);
+  check(d.captureEmbed === undefined && d.captureMinMargin === undefined && d.captureMinSimilarity === undefined, "unset stays unset so env can fill it");
+  check(captureMinMargin(d) === 0.075 && captureMinSimilarity(d) === 0.6, "calibrated defaults applied where used");
+  check(Object.keys(d.captureExemplars ?? {}).length === 0, "no operator exemplars by default");
+  const c = loadConfig({
+    captureEmbed: "off",
+    captureEmbedUrl: " http://emb.test ",
+    captureEmbedModel: " bge-small ",
+    captureMinMargin: "0.2",
+    captureMinSimilarity: 0.7,
+    captureExemplars: { remember: ["vou mudar", "", 3], skip: ["ok"], bogus: ["x"] },
+  });
+  check(c.captureEmbed === "off" && c.captureEmbedUrl === "http://emb.test" && c.captureEmbedModel === "bge-small", "settings applied");
+  check(c.captureMinMargin === 0.2 && c.captureMinSimilarity === 0.7, "thresholds, numeric strings accepted");
+  check(JSON.stringify(c.captureExemplars) === JSON.stringify({ remember: ["vou mudar"], skip: ["ok"] }), "exemplars sanitized to remember/skip");
+  const bad = loadConfig({ captureEmbed: "maybe", captureMinMargin: 5, captureMinSimilarity: -1 });
+  check(bad.captureEmbed === undefined && captureMinMargin(bad) === 0.075 && captureMinSimilarity(bad) === 0.6, "invalid values fall back");
+  const env = applyEnv(loadConfig(undefined), { PI_MM_CAPTURE_EMBED: "off", PI_MM_CAPTURE_MIN_MARGIN: "0.3" });
+  check(env.captureEmbed === "off" && env.captureMinMargin === 0.3, "env fills unset settings");
+  const kept = applyEnv(loadConfig({ captureEmbed: "auto", captureMinMargin: 0.1 }), { PI_MM_CAPTURE_EMBED: "off", PI_MM_CAPTURE_MIN_MARGIN: "0.3" });
+  check(kept.captureEmbed === "auto" && kept.captureMinMargin === 0.1, "settings win over env");
 });

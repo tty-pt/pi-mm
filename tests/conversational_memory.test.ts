@@ -64,18 +64,26 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
   const embedUrl = `http://127.0.0.1:${embedPort}/v1/embeddings`;
   const embedModel = "mock-semantic-model";
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
-    const body = await req.json();
-    const state = (body.state as string || "").toLowerCase();
-    const userLine = state.split("\n").find((l: string) => l.startsWith("current user:") || l.startsWith("user:")) || "";
-    let choice = "yes";
-    if (userLine.includes("hello") || userLine.includes("good afternoon") || userLine.includes("what time") || userLine.includes("bye")) {
-      choice = "no";
+  const classifyServer = Deno.serve({ port: 0 }, async (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+      const body = await req.json();
+      const text = (body.text as string || "").toLowerCase();
+      let choice = "remember";
+      if (text.includes("hello") || text.includes("good afternoon") || text.includes("what time") || text.includes("bye")) {
+        choice = "skip";
+      }
+      return new Response(JSON.stringify({
+        choice,
+        similarity: choice === "remember" ? 0.95 : 0.70,
+        margin: 0.25,
+        scores: { remember: choice === "remember" ? 0.95 : 0.60, skip: choice === "skip" ? 0.90 : 0.60 },
+      }), { headers: { "Content-Type": "application/json" } });
     }
-    return new Response(JSON.stringify({
-      answers: { memory_action: { type: "choice", choice } },
-    }), { headers: { "Content-Type": "application/json" } });
+    return new Response("Not found", { status: 404 });
   });
+
+  const classifyUrl = `http://127.0.0.1:${classifyServer.addr.port}`;
 
   try {
     const fspec = filespecFor(tmpDir, true);
@@ -122,7 +130,7 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
           axisLibs: axisPath,
           embedUrl,
           embedModel,
-          judgeUrl: `http://127.0.0.1:${jevServer.addr.port}`,
+          captureEmbedUrl: classifyUrl,
           captureMode: "judge" as const,
         },
         runner: daemonRunner,
@@ -289,7 +297,7 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
     const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
     process.kill(lockData.pid, "SIGTERM");
   } finally {
-    await jevServer.shutdown();
+    await classifyServer.shutdown();
     await embedServer.shutdown();
     try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
   }
@@ -490,18 +498,26 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
   const embedUrl = `http://127.0.0.1:${embedPort}/v1/embeddings`;
   const embedModel = "mock-semantic-model";
 
-  const jevServer = Deno.serve({ port: 0 }, async (req) => {
-    const body = await req.json();
-    const state = (body.state as string || "").toLowerCase();
-    const userLine = state.split("\n").find((l: string) => l.startsWith("current user:") || l.startsWith("user:")) || "";
-    let choice = "yes";
-    if (userLine.includes("good afternoon") || userLine.includes("hello") || userLine.includes("bye")) {
-      choice = "no";
+  const classifyServer2 = Deno.serve({ port: 0 }, async (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+      const body = await req.json();
+      const text = (body.text as string || "").toLowerCase();
+      let choice = "remember";
+      if (text.includes("good afternoon") || text.includes("hello") || text.includes("bye")) {
+        choice = "skip";
+      }
+      return new Response(JSON.stringify({
+        choice,
+        similarity: choice === "remember" ? 0.95 : 0.70,
+        margin: 0.25,
+        scores: { remember: choice === "remember" ? 0.95 : 0.60, skip: choice === "skip" ? 0.90 : 0.60 },
+      }), { headers: { "Content-Type": "application/json" } });
     }
-    return new Response(JSON.stringify({
-      answers: { memory_action: { type: "choice", choice } },
-    }), { headers: { "Content-Type": "application/json" } });
+    return new Response("Not found", { status: 404 });
   });
+
+  const classifyUrl2 = `http://127.0.0.1:${classifyServer2.addr.port}`;
 
   try {
     const fspec = filespecFor(tmpDir, true);
@@ -546,7 +562,7 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
         axisLibs: axisPath,
         embedUrl,
         embedModel,
-        judgeUrl: `http://127.0.0.1:${jevServer.addr.port}`,
+        captureEmbedUrl: classifyUrl2,
         captureMode: "judge" as const,
       },
       runner: daemonRunner,
@@ -686,7 +702,7 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
     const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
     process.kill(lockData.pid, "SIGTERM");
   } finally {
-    await jevServer.shutdown();
+    await classifyServer2.shutdown();
     await embedServer.shutdown();
     try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
   }

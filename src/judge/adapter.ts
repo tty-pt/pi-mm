@@ -1,7 +1,20 @@
 import type { MmConfig } from "../config.ts";
-import { judgeConfigured } from "../config.ts";
-import { debugLog } from "../debug.ts";
-import type { JudgeAction, JudgeDecision, JudgeResult } from "./types.ts";
+import {
+  captureMinMargin,
+  captureMinSimilarity,
+  directiveMinMargin,
+  directiveMinSimilarity,
+  overviewMinMargin,
+  overviewMinSimilarity,
+  recallMinMargin,
+  recallMinSimilarity,
+} from "../config.ts";
+import { CAPTURE_EXEMPLARS, CAPTURE_KINDS } from "./capture-exemplars.ts";
+import { RECALL_EXEMPLARS, RECALL_KINDS } from "./recall-exemplars.ts";
+import { DIRECTIVE_EXEMPLARS, DIRECTIVE_KINDS } from "./directive-exemplars.ts";
+import { OVERVIEW_EXEMPLARS, OVERVIEW_KINDS } from "./overview-exemplars.ts";
+import { gate, mergeExemplars, nearestExemplar } from "./nearest.ts";
+import type { JudgeResult } from "./types.ts";
 
 export interface MmHealthReport {
   judgeOk: boolean;
@@ -16,7 +29,7 @@ export interface MmHealthReport {
 }
 
 export async function checkMmHealth(cfg: MmConfig): Promise<MmHealthReport> {
-  const rawUrl = cfg.judgeUrl ? cfg.judgeUrl.trim() : "http://127.0.0.1:4242";
+  const rawUrl = (cfg.captureEmbedUrl ?? cfg.judgeUrl ?? "http://127.0.0.1:4242").trim();
   const base = rawUrl.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/v1$/, "");
   const judgeStart = Date.now();
   const controller = new AbortController();
@@ -101,238 +114,96 @@ export async function checkMmHealth(cfg: MmConfig): Promise<MmHealthReport> {
   };
 }
 
-export function normalizeSystemZeroUrl(baseUrlOrUrl: string): string {
-  const trimmed = baseUrlOrUrl.trim();
-  if (trimmed.includes("/systemzero")) {
-    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
-  }
-  return `${trimmed.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/v1$/, "")}/api/v1/systemzero/`;
-}
-
-export async function callSystemZeroJudge(
+/**
+ * Embedding verdict on the USER prompt, or null when embeddings are unavailable. `remember`
+ * needs `captureMinSimilarity` AND `captureMinMargin` over `skip`; anything weaker is `skip`
+ * (a missed memory costs one @remember, a false one writes to the store).
+ */
+export async function classifyCaptureByEmbedding(
   prompt: string,
-  response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-  threadContext?: string,
-): Promise<JudgeDecision> {
-  const rawUrl = cfg.judgeUrl;
-  if (!rawUrl) throw new Error("No judgeUrl configured");
-
-  const url = normalizeSystemZeroUrl(rawUrl);
-  const timeoutMs = cfg.judgeTimeoutMs ?? 15000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (cfg.judgeKey) {
-    headers["Authorization"] = `Bearer ${cfg.judgeKey}`;
-  }
-
-  const clippedResponse = response.length > 500 ? response.slice(0, 500) + "..." : response;
-  const stateText = threadContext
-    ? `${threadContext}\nCurrent User: ${prompt}\nCurrent Assistant: ${clippedResponse}`
-    : `User: ${prompt}\nAssistant: ${clippedResponse}`;
-
-  const reqBody = {
-    model: cfg.judgeModel || "default",
-    prompt: `Is this user-provided information meaningful personal facts, experiences, preferences, technical discoveries, or decisions worth remembering for future conversations (versus casual chitchat or questions)?\n${stateText}\nAnswer [y/n]:`,
-    threshold: 0.5,
-  };
-
-  try {
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(reqBody),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`SystemZero HTTP error ${res.status}: ${res.statusText}${errText ? ` - ${errText.slice(0, 100)}` : ""}`);
-    }
-
-    const data = await res.json() as Record<string, unknown>;
-    const decision = data["decision"];
-    if (typeof decision !== "boolean" && data["choice"] === undefined) {
-      throw new Error(`Invalid SystemZero response: expected boolean 'decision' or string 'choice'`);
-    }
-    const action: JudgeAction = decision === true || String(data["choice"]).toLowerCase() === "y" || String(data["choice"]).toLowerCase() === "yes" || String(data["choice"]).toLowerCase() === "remember" ? "remember" : "skip";
-    return {
-      action,
-      summary: prompt.trim().slice(0, 250),
-      reason: `SystemZero decision: ${action} (p=${data["probability"]})`,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+): Promise<"remember" | "skip" | null> {
+  const examples = mergeExemplars(CAPTURE_EXEMPLARS, cfg.captureExemplars ?? {}, CAPTURE_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: captureMinSimilarity(cfg),
+    minMargin: captureMinMargin(cfg),
+    harmless: "skip",
+    actionable: new Set(["remember"]),
+  }) as "remember" | "skip";
 }
 
-export function normalizeJevUrl(baseUrlOrUrl: string): string {
-  const trimmed = baseUrlOrUrl.trim();
-  if (trimmed.includes("/systemone")) {
-    return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
-  }
-  return `${trimmed.replace(/\/+$/, "")}/api/v1/systemone/`;
-}
-
-export function parseJevAction(data: unknown): JudgeAction {
-  if (typeof data !== "object" || data === null) {
-    throw new Error("Jev response must be an object");
-  }
-  const rec = data as Record<string, unknown>;
-  let answerVal: unknown;
-
-  // 1. Primary documented path: answers.memory_action.choice
-  if (typeof rec.answers === "object" && rec.answers !== null && !Array.isArray(rec.answers)) {
-    const ansObj = rec.answers as Record<string, unknown>;
-    const memAction = ansObj["memory_action"] ?? ansObj["action"] ?? Object.values(ansObj)[0];
-    if (typeof memAction === "object" && memAction !== null) {
-      const objVal = memAction as Record<string, unknown>;
-      answerVal = objVal["choice"] ?? objVal["answer"] ?? objVal["value"];
-    } else {
-      answerVal = memAction;
-    }
-  }
-
-  // 2. Defensive fallback: array answers
-  if (answerVal === undefined && Array.isArray(rec.answers)) {
-    const list = rec.answers;
-    if (list.length === 0) {
-      throw new Error("Jev response contains empty answers list");
-    }
-    const matched = list.find(
-      (a: unknown) =>
-        typeof a === "object" && a !== null &&
-        ((a as Record<string, unknown>).id === "memory_action" || (a as Record<string, unknown>).question_id === "memory_action"),
-    );
-    if (matched && typeof matched === "object") {
-      const matchRec = matched as Record<string, unknown>;
-      answerVal = matchRec.choice ?? matchRec.answer ?? matchRec.value;
-    } else if (typeof list[0] === "string") {
-      answerVal = list[0];
-    } else if (typeof list[0] === "object" && list[0] !== null) {
-      const firstRec = list[0] as Record<string, unknown>;
-      answerVal = firstRec.choice ?? firstRec.answer ?? firstRec.value;
-    }
-  }
-
-  if (typeof answerVal !== "string") {
-    throw new Error(`Jev response missing choice answer: ${JSON.stringify(data).slice(0, 100)}`);
-  }
-
-  const normalized = answerVal.trim().toLowerCase();
-  if (normalized === "yes" || normalized === "remember" || normalized.startsWith("yes")) {
-    return "remember";
-  }
-  if (normalized === "update" || normalized.startsWith("update")) {
-    return "update";
-  }
-  if (normalized === "no" || normalized === "skip" || normalized.startsWith("no")) {
-    return "skip";
-  }
-  throw new Error(`Invalid Jev choice answer: '${answerVal}' (expected 'yes' or 'no')`);
-}
-
-export async function callJevJudge(
+/**
+ * Embedding verdict on the USER prompt for recall intent, or null when embeddings are unavailable.
+ * `recall_past` needs `recallMinSimilarity` AND `recallMinMargin` over `standalone`;
+ * anything weaker becomes `standalone` (harmless).
+ */
+export async function classifyRecallByEmbedding(
   prompt: string,
-  response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-  threadContext?: string,
-): Promise<JudgeDecision> {
-  const rawUrl = cfg.judgeUrl;
-  if (!rawUrl) throw new Error("No judgeUrl configured");
-
-  const url = normalizeJevUrl(rawUrl);
-  const timeoutMs = cfg.judgeTimeoutMs ?? 15000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (cfg.judgeKey) {
-    headers["Authorization"] = `Bearer ${cfg.judgeKey}`;
-  }
-
-  const clippedResponse = response.length > 500 ? response.slice(0, 500) + "..." : response;
-  const stateText = threadContext
-    ? `${threadContext}\nCurrent User: ${prompt}\nCurrent Assistant: ${clippedResponse}`
-    : `User: ${prompt}\nAssistant: ${clippedResponse}`;
-
-  const reqBody: Record<string, unknown> = {
-    model: cfg.judgeModel || "default",
-    state: stateText,
-    questions: {
-      memory_action: {
-        type: "choice",
-        instructions: "Is this user-provided information worth remembering for future conversations? Answer yes or no.",
-        criteria: {
-          yes: "The user stated meaningful new personal facts, experiences, preferences, technical discoveries, or decisions worth remembering.",
-          no: "The user is asking a question, inquiry, or recall test (e.g. 'do you remember', 'what did I say'), or the exchange is transient chitchat, routine acknowledgements, or casual filler.",
-        },
-      },
-    },
-  };
-
-  try {
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(reqBody),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`Jev service HTTP error ${res.status}: ${errText.slice(0, 100)}`);
-    }
-
-    const data = await res.json();
-    const action = parseJevAction(data);
-
-    return {
-      action,
-      summary: prompt.trim().slice(0, 250),
-      reason: `Classified as ${action === "remember" ? "yes" : "no"} by Jev System One`,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+): Promise<"recall_past" | "standalone" | null> {
+  const examples = mergeExemplars(RECALL_EXEMPLARS, cfg.recallExemplars ?? {}, RECALL_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: recallMinSimilarity(cfg),
+    minMargin: recallMinMargin(cfg),
+    harmless: "standalone",
+    actionable: new Set(["recall_past"]),
+  }) as "recall_past" | "standalone";
 }
 
-export async function callLlmJudge(
+/**
+ * Embedding verdict on the USER prompt for standing directive / invariant status.
+ * `standing_directive` needs `directiveMinSimilarity` AND `directiveMinMargin` over `transient_task`;
+ * anything weaker becomes `transient_task` (harmless).
+ */
+export async function classifyDirectiveByEmbedding(
   prompt: string,
-  response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-  threadContext?: string,
-): Promise<JudgeDecision> {
-  const url = cfg.judgeUrl || "";
-  if (cfg.judgeProtocol === "systemzero" || url.includes("/systemzero")) {
-    return callSystemZeroJudge(prompt, response, cfg, fetchFn, threadContext);
-  }
-  if (cfg.judgeProtocol === "systemone" || url.includes("/systemone")) {
-    return callJevJudge(prompt, response, cfg, fetchFn, threadContext);
-  }
-  // "auto": Try systemzero first, fall back to systemone on error
-  try {
-    return await callSystemZeroJudge(prompt, response, cfg, fetchFn, threadContext);
-  } catch {
-    return callJevJudge(prompt, response, cfg, fetchFn, threadContext);
-  }
+): Promise<"standing_directive" | "transient_task" | null> {
+  const examples = mergeExemplars(DIRECTIVE_EXEMPLARS, cfg.directiveExemplars ?? {}, DIRECTIVE_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: directiveMinSimilarity(cfg),
+    minMargin: directiveMinMargin(cfg),
+    harmless: "transient_task",
+    actionable: new Set(["standing_directive"]),
+  }) as "standing_directive" | "transient_task";
+}
+
+/**
+ * Embedding verdict on whether a memory query is requesting an open-ended retrospective overview.
+ * `overview_query` needs `overviewMinSimilarity` AND `overviewMinMargin` over `specific_query`;
+ * anything weaker becomes `specific_query` (harmless targeted search).
+ */
+export async function classifyOverviewByEmbedding(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<"overview_query" | "specific_query" | null> {
+  const examples = mergeExemplars(OVERVIEW_EXEMPLARS, cfg.overviewExemplars ?? {}, OVERVIEW_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: overviewMinSimilarity(cfg),
+    minMargin: overviewMinMargin(cfg),
+    harmless: "specific_query",
+    actionable: new Set(["overview_query"]),
+  }) as "overview_query" | "specific_query";
 }
 
 export async function evaluateTurnWithJudge(
   prompt: string,
-  response: string,
+  _response: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-  threadContext?: string,
+  _threadContext?: string,
 ): Promise<JudgeResult> {
   if (cfg.captureMode === "off") {
     return {
@@ -341,37 +212,29 @@ export async function evaluateTurnWithJudge(
     };
   }
 
-  if (!judgeConfigured(cfg)) {
-    const fallbackAction = cfg.judgeFallback === "capture" ? "remember" : "skip";
-    return {
-      decision: {
-        action: fallbackAction,
-        reason: `Judge endpoint not configured; fallback is '${cfg.judgeFallback ?? "skip"}'`,
-      },
-      source: "fallback",
-      degraded: true,
-    };
+  // Pure embeddings classification: fast, deterministic, ~15 ms.
+  if (cfg.captureEmbed !== "off") {
+    const embedded = await classifyCaptureByEmbedding(prompt, cfg, fetchFn);
+    if (embedded !== null) {
+      return {
+        decision: {
+          action: embedded,
+          summary: embedded === "remember" ? prompt.trim().slice(0, 250) : undefined,
+          reason: embedded === "remember" ? "Nearest remember exemplar (embeddings)" : "Nearest skip exemplar or below the remember gate (embeddings)",
+        },
+        source: "embed",
+      };
+    }
   }
 
-  try {
-    const decision = await callLlmJudge(prompt, response, cfg, fetchFn, threadContext);
-    return {
-      decision,
-      source: "llm",
-    };
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    const fallbackAction = cfg.judgeFallback === "capture" ? "remember" : "skip";
-    debugLog("judgement", "Judge service unavailable", { error: errMsg, fallback: cfg.judgeFallback ?? "skip" });
-
-    return {
-      decision: {
-        action: fallbackAction,
-        reason: `Judge failed (${errMsg}), fallback is '${cfg.judgeFallback ?? "skip"}'`,
-      },
-      source: "fallback",
-      degraded: true,
-      error: errMsg,
-    };
-  }
+  // Deterministic offline fallback (no generative LLM execution)
+  const fallbackAction = cfg.judgeFallback === "capture" ? "remember" : "skip";
+  return {
+    decision: {
+      action: fallbackAction,
+      reason: `Embeddings unavailable; fallback is '${cfg.judgeFallback ?? "skip"}'`,
+    },
+    source: "fallback",
+    degraded: true,
+  };
 }

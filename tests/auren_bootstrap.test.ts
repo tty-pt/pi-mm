@@ -13,6 +13,10 @@ import {
   releaseLock,
   writeDefaultConfig,
   diagnoseAuren,
+  describeProgress,
+  describeModelStatus,
+  ensureAuren,
+  resetBootstrapForTests,
 } from "../src/auren-bootstrap.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -33,7 +37,7 @@ function fakeModel(over: Partial<CatalogModel> & { id: string; file: string }): 
     bytes: 0,
     sha256: "0".repeat(64),
     tier: "small",
-    capabilities: ["chat", "judge"],
+    capabilities: ["embed"],
     config: { n_ctx: 2048 },
     ...over,
   };
@@ -350,6 +354,72 @@ Deno.test("diagnoseAuren: names the exact missing piece with a doc link", () => 
     const dl = diagnoseAuren({ home, cwd, env: { PATH: "" }, libDirs: [], running: true, downloads: [{ id: "olmoe", done: 5, total: 10 }] });
     check(dl.some((x) => x.code === "downloading"), "downloading is reported as info");
   } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+Deno.test("shouldAutoDownload: inference models without embed capability are never auto-downloaded", () => {
+  const chatSmall = fakeModel({ id: "qwen", file: "qwen.gguf", tier: "small", capabilities: ["chat", "judge"] });
+  const chatLarge = fakeModel({ id: "olmoe", file: "olmoe.gguf", tier: "large", capabilities: ["chat", "judge"] });
+  check(shouldAutoDownload(chatSmall, "auto", undefined) === false, "small chat model returns false with auto");
+  check(shouldAutoDownload(chatSmall, "ask", undefined) === false, "small chat model returns false with ask");
+  check(shouldAutoDownload(chatLarge, "auto", true) === false, "large chat model returns false even with consent");
+  check(shouldAutoDownload(chatLarge, "ask", undefined) === false, "large chat model returns false with ask");
+});
+
+Deno.test("describeProgress and describeModelStatus: non-blocking visual feedback formatting", () => {
+  check(describeProgress({ phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] }) === undefined, "no progress when not downloading");
+  check(describeModelStatus({ phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] }) === undefined, "no status when idle");
+
+  const dlState = {
+    phase: "downloading" as const,
+    running: false,
+    started: false,
+    downloads: [{ id: "bge-base", done: 50, total: 100 }],
+    failures: [],
+    pendingConsent: [],
+    configPath: null,
+    notices: [],
+  };
+  check(describeProgress(dlState) === "⬇ bge-base (50%)", "progress includes model id and percentage");
+  check(describeModelStatus(dlState) === "⬇ bge-base (50%)", "model status reflects download progress");
+
+  const runningState = {
+    phase: "ready" as const,
+    running: true,
+    started: false,
+    activeModel: "bge-base",
+    downloads: [],
+    failures: [],
+    pendingConsent: [],
+    configPath: null,
+    notices: [],
+  };
+  check(describeModelStatus(runningState) === "⚡ bge-base", "model status reflects active running model");
+});
+
+Deno.test("ensureAuren: skips downloading when an embedding model is already present on disk", async () => {
+  const home = tmpHome();
+  const cwd = tmpHome();
+  resetBootstrapForTests();
+  try {
+    touch(join(modelsDir(home), "bge-small-en-v1.5.gguf"), "mock");
+    let fetched = false;
+    const fetchImpl: typeof fetch = () => {
+      fetched = true;
+      return Promise.reject(new Error("should not fetch"));
+    };
+    const st = await ensureAuren({
+      home,
+      cwd,
+      fetchImpl,
+      settings: { autoStart: false, autoDownloadModels: "auto" },
+    });
+    check(!fetched, "no download fetch was attempted because embedding model is already present");
+    check(st.downloads.length === 0, "no downloads in progress");
+  } finally {
+    resetBootstrapForTests();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
