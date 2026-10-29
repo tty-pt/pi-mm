@@ -87,6 +87,10 @@ By default, only the 3 primary tools above are registered for clean model focus.
    Do not claim verification without tests or verified diffs. Unverified fixes will be marked `tested`, while verified fixes will be marked `supported`.
 8. **Contradict or supersede without erasing history:**
    When new evidence disproves an old conclusion, use `memory_review(oldRef, "update_lifecycle", { lifecycle: "superseded", reason, evidenceRef: newRef })`.
+9. **Standing Directives & Invariants:**
+   Operational rules, architectural constraints, and standing policies stated by the operator are automatically detected via semantic embeddings (`directiveEmbed: "auto"`) and stored as anchored L2 invariants. You can also explicitly record rules via `/mm rule <directive>` or by passing `standing: true` to `memory_record`.
+10. **Overview vs. Targeted Recall:**
+   When asked open-ended synthesis or retrospective questions (*"what have we accomplished so far?"*, *"resumo do que investigamos"*), `pi-mm` automatically injects all-time overview mipmaps (`overviewEmbed: "auto"`). Use targeted queries for specific compiler errors or code symbols.
 
 ## Examples
 
