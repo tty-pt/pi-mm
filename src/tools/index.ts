@@ -76,6 +76,9 @@ export async function readToolEnv(cwd: string, runner: CormRunner): Promise<Tool
 
 export function defaultEnvSource(pi: Pi): EnvSource {
   const shellRunner = new ShellCormRunner((command, args, options) => pi.exec(command, args, options));
+  // Memoize active runner per socketPath to avoid repeat probe/ensureDaemon on every single turn/hook
+  const runnerCache = new Map<string, Promise<CormRunner>>();
+
   return async (ctx) => {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
@@ -89,7 +92,6 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const pathDirs = (env["PATH"] ?? "").split(":");
     const cormdRes = resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
 
-    let runner: CormRunner = shellRunner;
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
 
@@ -118,21 +120,39 @@ export function defaultEnvSource(pi: Pi): EnvSource {
       }
     }
 
+    let runner: CormRunner;
     if (cormdRes.path !== "" && isProject) {
-      try {
-        await ensureDaemon({
-          cormdBin: cormdRes.path,
-          filespec: fspec,
-          socketPath,
-          axisPath: axes,
-          embedEnv: eEnv,
-          cwd: mDir,
-        });
-        runner = new DaemonCormRunner(socketPath, shellRunner);
-      } catch {
-        // Fall back gracefully to daemon runner (which falls back to shell runner)
-        runner = new DaemonCormRunner(socketPath, shellRunner);
+      // Fast non-blocking socket check:
+      // If the daemon socket is already alive and serving the correct database, use DaemonCormRunner immediately (0ms).
+      // If socket is absent or not responding within 50ms, kick off ensureDaemon() in the background and return
+      // DaemonCormRunner (which immediately falls back to ShellCormRunner for any urgent foreground operation without stalling).
+      let runnerPromise = runnerCache.get(socketPath);
+      if (!runnerPromise) {
+        runnerPromise = (async () => {
+          try {
+            await ensureDaemon({
+              cormdBin: cormdRes.path,
+              filespec: fspec,
+              socketPath,
+              axisPath: axes,
+              embedEnv: eEnv,
+              cwd: mDir,
+            });
+            return new DaemonCormRunner(socketPath, shellRunner);
+          } catch {
+            return new DaemonCormRunner(socketPath, shellRunner);
+          }
+        })();
+        runnerCache.set(socketPath, runnerPromise);
       }
+
+      // If socket is already established and responding, wait on runnerPromise with a tight 50ms budget;
+      // otherwise, decouple and return DaemonCormRunner immediately so pi startup is never delayed.
+      const fastReady = await Promise.race([
+        runnerPromise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
+      ]);
+      runner = fastReady ?? new DaemonCormRunner(socketPath, shellRunner);
     } else {
       runner = new DaemonCormRunner(socketPath, shellRunner);
     }
