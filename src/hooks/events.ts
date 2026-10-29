@@ -17,7 +17,7 @@ import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
 import { recordAssociations } from "../associative.ts";
-import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
+import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
 import { detectSubsystemMentions } from "./auto_recall.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
@@ -690,7 +690,7 @@ export interface ActiveConversationTurn {
 export const activeConversationTurn: ActiveConversationTurn = {};
 export const reinforcementScheduler = new ReinforcementScheduler();
 
-export { isStandingDirective, STANDING_DIRECTIVE_PATTERN };
+export { isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN };
 
 export interface ConversationalClassification {
   meaningful: boolean;
@@ -1367,7 +1367,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
 
           if (shouldStoreConversational) {
             const isDirective = prompt.toLowerCase().includes("@remember") || prompt.toLowerCase().startsWith("remember:");
-            const isStanding = isStandingDirective(prompt);
+            const isStanding = await evaluateStandingDirective(prompt, env.cfg);
             const l0Classification: ConversationalClassification = {
               meaningful: true,
               type: isStanding ? "invariant" : "note",

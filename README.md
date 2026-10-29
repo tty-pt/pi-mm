@@ -86,6 +86,16 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
 | `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
 | `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
+| `directiveEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect standing directives/rules (`"auto"` or `"off"`). Env: `PI_MM_DIRECTIVE_EMBED` |
+| `directiveMinSimilarity` | `0.6` | Cosine floor for standing directive classification (0..1) |
+| `directiveMinMargin` | `0.08` | How far a `"standing_directive"` verdict must beat `"transient_task"` (0..1) |
+| `directiveExemplars` | `{}` | Custom examples `{ "standing_directive": [...], "transient_task": [...] }` merged with shipped ones |
+| `directiveFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
+| `overviewEmbed` | `"auto"` | Classify direct memory inquiries by embeddings (`POST /v1/classify`) to detect open-ended overviews (`"auto"` or `"off"`). Env: `PI_MM_OVERVIEW_EMBED` |
+| `overviewMinSimilarity` | `0.6` | Cosine floor for overview routing classification (0..1) |
+| `overviewMinMargin` | `0.08` | How far an `"overview_query"` verdict must beat `"specific_query"` (0..1) |
+| `overviewExemplars` | `{}` | Custom examples `{ "overview_query": [...], "specific_query": [...] }` merged with shipped ones |
+| `overviewFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
 | `judgeProtocol` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeModel` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeUrl` | *(deprecated)* | Deprecated; mapped to `captureEmbedUrl` |

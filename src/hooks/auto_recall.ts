@@ -10,8 +10,8 @@ import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } f
 import { isCleanSummaryText } from "../payload.ts";
 import { isQuestionMemory } from "../tools/ranking.ts";
 import { buildMemoryOverview } from "../tools/overview.ts";
-import { classifyRecallByEmbedding } from "../judge/adapter.ts";
-import { recallEmbed, recallFallback, type MmConfig } from "../config.ts";
+import { classifyOverviewByEmbedding, classifyRecallByEmbedding } from "../judge/adapter.ts";
+import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, type MmConfig } from "../config.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -122,6 +122,26 @@ export function isDirectMemoryQuestion(prompt?: string): boolean {
     return true;
   }
   return false;
+}
+
+export async function evaluateDirectMemoryQuestion(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn?: typeof fetch,
+): Promise<boolean> {
+  if (overviewEmbed(cfg) !== "off") {
+    try {
+      const verdict = await classifyOverviewByEmbedding(prompt, cfg, fetchFn);
+      if (verdict === "overview_query") return true;
+      if (verdict === "specific_query") return false;
+    } catch {
+      // Endpoint error or timeout
+    }
+    const fb = overviewFallback(cfg);
+    if (fb === "skip") return false;
+    return isDirectMemoryQuestion(prompt);
+  }
+  return isDirectMemoryQuestion(prompt);
 }
 
 export async function evaluateRecallIntent(
@@ -493,7 +513,7 @@ export async function handleBeforeAgentStart(
       return null;
     }
 
-    const isDirectQuestion = isDirectMemoryQuestion(prompt);
+    const isDirectQuestion = await evaluateDirectMemoryQuestion(prompt, env.cfg, options?.fetchFn);
     if (isDirectQuestion) {
       const overview = await buildMemoryOverview(env, { limit: 8, maxScan: 200 });
       if (overview.totalRecords > 0) {

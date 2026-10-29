@@ -80,6 +80,18 @@ export interface MmConfig {
   recallExemplars?: Record<string, string[]>;
   /** Fallback strategy when the classifier endpoint is unreachable ("regex" | "skip", default "regex"). */
   recallFallback?: "regex" | "skip";
+  /** Embedding classification of user prompts to detect standing operational directives ("auto" | "off", default "auto"). */
+  directiveEmbed?: "auto" | "off";
+  directiveMinMargin?: number;
+  directiveMinSimilarity?: number;
+  directiveExemplars?: Record<string, string[]>;
+  directiveFallback?: "regex" | "skip";
+  /** Embedding classification of direct memory inquiries to distinguish open-ended overviews from targeted queries ("auto" | "off", default "auto"). */
+  overviewEmbed?: "auto" | "off";
+  overviewMinMargin?: number;
+  overviewMinSimilarity?: number;
+  overviewExemplars?: Record<string, string[]>;
+  overviewFallback?: "regex" | "skip";
   consolidateL2Threshold?: number;
   consolidateL3Threshold?: number;
   consolidateMaxAgeHours?: number;
@@ -137,6 +149,16 @@ export const DEFAULT_CONFIG: MmConfig = {
   recallMinSimilarity: 0.60,
   recallExemplars: undefined,
   recallFallback: "regex",
+  directiveEmbed: undefined,
+  directiveMinMargin: 0.08,
+  directiveMinSimilarity: 0.60,
+  directiveExemplars: undefined,
+  directiveFallback: "regex",
+  overviewEmbed: undefined,
+  overviewMinMargin: 0.08,
+  overviewMinSimilarity: 0.60,
+  overviewExemplars: undefined,
+  overviewFallback: "regex",
   reinforcement: DEFAULT_REINFORCEMENT_CONFIG,
 };
 
@@ -269,6 +291,16 @@ export function loadConfig(raw: unknown): MmConfig {
     recallMinSimilarity: unitInterval(record["recallMinSimilarity"]) ?? DEFAULT_CONFIG.recallMinSimilarity,
     recallExemplars: parseRecallExemplars(record["recallExemplars"]),
     recallFallback: record["recallFallback"] === "skip" || record["recallFallback"] === "regex" ? record["recallFallback"] : DEFAULT_CONFIG.recallFallback,
+    directiveEmbed: embedMode(record["directiveEmbed"]),
+    directiveMinMargin: unitInterval(record["directiveMinMargin"]) ?? DEFAULT_CONFIG.directiveMinMargin,
+    directiveMinSimilarity: unitInterval(record["directiveMinSimilarity"]) ?? DEFAULT_CONFIG.directiveMinSimilarity,
+    directiveExemplars: parseDirectiveExemplars(record["directiveExemplars"]),
+    directiveFallback: record["directiveFallback"] === "skip" || record["directiveFallback"] === "regex" ? record["directiveFallback"] : DEFAULT_CONFIG.directiveFallback,
+    overviewEmbed: embedMode(record["overviewEmbed"]),
+    overviewMinMargin: unitInterval(record["overviewMinMargin"]) ?? DEFAULT_CONFIG.overviewMinMargin,
+    overviewMinSimilarity: unitInterval(record["overviewMinSimilarity"]) ?? DEFAULT_CONFIG.overviewMinSimilarity,
+    overviewExemplars: parseOverviewExemplars(record["overviewExemplars"]),
+    overviewFallback: record["overviewFallback"] === "skip" || record["overviewFallback"] === "regex" ? record["overviewFallback"] : DEFAULT_CONFIG.overviewFallback,
     consolidateL2Threshold: typeof l2Thresh === "number" && l2Thresh > 0 ? l2Thresh : DEFAULT_CONFIG.consolidateL2Threshold,
     consolidateL3Threshold: typeof l3Thresh === "number" && l3Thresh > 0 ? l3Thresh : DEFAULT_CONFIG.consolidateL3Threshold,
     consolidateMaxAgeHours: typeof maxAge === "number" && maxAge > 0 ? maxAge : undefined,
@@ -453,6 +485,20 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     recallFallback: (env["PI_MM_RECALL_FALLBACK"] === "skip" || env["PI_MM_RECALL_FALLBACK"] === "regex"
       ? env["PI_MM_RECALL_FALLBACK"]
       : (env["MM_RECALL_FALLBACK"] === "skip" || env["MM_RECALL_FALLBACK"] === "regex" ? env["MM_RECALL_FALLBACK"] : cfg.recallFallback)),
+    directiveEmbed: embedMode(env["PI_MM_DIRECTIVE_EMBED"] ?? env["MM_DIRECTIVE_EMBED"]) ?? cfg.directiveEmbed,
+    directiveMinMargin: unitInterval(env["PI_MM_DIRECTIVE_MIN_MARGIN"] ?? env["MM_DIRECTIVE_MIN_MARGIN"]) ?? cfg.directiveMinMargin,
+    directiveMinSimilarity: unitInterval(env["PI_MM_DIRECTIVE_MIN_SIMILARITY"] ?? env["MM_DIRECTIVE_MIN_SIMILARITY"]) ?? cfg.directiveMinSimilarity,
+    directiveExemplars: cfg.directiveExemplars,
+    directiveFallback: (env["PI_MM_DIRECTIVE_FALLBACK"] === "skip" || env["PI_MM_DIRECTIVE_FALLBACK"] === "regex"
+      ? env["PI_MM_DIRECTIVE_FALLBACK"]
+      : (env["MM_DIRECTIVE_FALLBACK"] === "skip" || env["MM_DIRECTIVE_FALLBACK"] === "regex" ? env["MM_DIRECTIVE_FALLBACK"] : cfg.directiveFallback)),
+    overviewEmbed: embedMode(env["PI_MM_OVERVIEW_EMBED"] ?? env["MM_OVERVIEW_EMBED"]) ?? cfg.overviewEmbed,
+    overviewMinMargin: unitInterval(env["PI_MM_OVERVIEW_MIN_MARGIN"] ?? env["MM_OVERVIEW_MIN_MARGIN"]) ?? cfg.overviewMinMargin,
+    overviewMinSimilarity: unitInterval(env["PI_MM_OVERVIEW_MIN_SIMILARITY"] ?? env["MM_OVERVIEW_MIN_SIMILARITY"]) ?? cfg.overviewMinSimilarity,
+    overviewExemplars: cfg.overviewExemplars,
+    overviewFallback: (env["PI_MM_OVERVIEW_FALLBACK"] === "skip" || env["PI_MM_OVERVIEW_FALLBACK"] === "regex"
+      ? env["PI_MM_OVERVIEW_FALLBACK"]
+      : (env["MM_OVERVIEW_FALLBACK"] === "skip" || env["MM_OVERVIEW_FALLBACK"] === "regex" ? env["MM_OVERVIEW_FALLBACK"] : cfg.overviewFallback)),
     consolidateL2Threshold: l2ThreshNum && !isNaN(l2ThreshNum) && l2ThreshNum > 0 ? l2ThreshNum : cfg.consolidateL2Threshold,
     consolidateL3Threshold: l3ThreshNum && !isNaN(l3ThreshNum) && l3ThreshNum > 0 ? l3ThreshNum : cfg.consolidateL3Threshold,
     consolidateMaxAgeHours: maxAgeNum && !isNaN(maxAgeNum) && maxAgeNum > 0 ? maxAgeNum : cfg.consolidateMaxAgeHours,
@@ -502,6 +548,70 @@ export function recallMinSimilarity(cfg: MmConfig): number {
 
 export function recallFallback(cfg: MmConfig): "regex" | "skip" {
   return cfg.recallFallback ?? DEFAULT_RECALL_FALLBACK;
+}
+
+export const DEFAULT_DIRECTIVE_MIN_MARGIN = 0.08;
+export const DEFAULT_DIRECTIVE_MIN_SIMILARITY = 0.60;
+export const DEFAULT_DIRECTIVE_FALLBACK = "regex";
+
+export const DEFAULT_OVERVIEW_MIN_MARGIN = 0.08;
+export const DEFAULT_OVERVIEW_MIN_SIMILARITY = 0.60;
+export const DEFAULT_OVERVIEW_FALLBACK = "regex";
+
+export function directiveEmbed(cfg: MmConfig): "auto" | "off" {
+  return cfg.directiveEmbed ?? "auto";
+}
+
+export function directiveMinMargin(cfg: MmConfig): number {
+  return cfg.directiveMinMargin ?? DEFAULT_DIRECTIVE_MIN_MARGIN;
+}
+
+export function directiveMinSimilarity(cfg: MmConfig): number {
+  return cfg.directiveMinSimilarity ?? DEFAULT_DIRECTIVE_MIN_SIMILARITY;
+}
+
+export function directiveFallback(cfg: MmConfig): "regex" | "skip" {
+  return cfg.directiveFallback ?? DEFAULT_DIRECTIVE_FALLBACK;
+}
+
+export function overviewEmbed(cfg: MmConfig): "auto" | "off" {
+  return cfg.overviewEmbed ?? "auto";
+}
+
+export function overviewMinMargin(cfg: MmConfig): number {
+  return cfg.overviewMinMargin ?? DEFAULT_OVERVIEW_MIN_MARGIN;
+}
+
+export function overviewMinSimilarity(cfg: MmConfig): number {
+  return cfg.overviewMinSimilarity ?? DEFAULT_OVERVIEW_MIN_SIMILARITY;
+}
+
+export function overviewFallback(cfg: MmConfig): "regex" | "skip" {
+  return cfg.overviewFallback ?? DEFAULT_OVERVIEW_FALLBACK;
+}
+
+function parseDirectiveExemplars(raw: unknown): Record<string, string[]> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const kind of ["standing_directive", "transient_task"]) {
+    const list = (raw as Record<string, unknown>)[kind];
+    if (!Array.isArray(list)) continue;
+    const items = list.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+    if (items.length > 0) out[kind] = items;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parseOverviewExemplars(raw: unknown): Record<string, string[]> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const kind of ["overview_query", "specific_query"]) {
+    const list = (raw as Record<string, unknown>)[kind];
+    if (!Array.isArray(list)) continue;
+    const items = list.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+    if (items.length > 0) out[kind] = items;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function unitInterval(raw: unknown): number | undefined {
@@ -566,6 +676,20 @@ export function describeCapabilities(cfg: MmConfig): string {
     parts.push(`recall=embed (/v1/classify @ ${target}, fallback: ${cfg.recallFallback ?? "regex"})`);
   } else {
     parts.push("recall=regex");
+  }
+
+  if (directiveEmbed(cfg) !== "off") {
+    const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
+    parts.push(`directive=embed (/v1/classify @ ${target}, fallback: ${cfg.directiveFallback ?? "regex"})`);
+  } else {
+    parts.push("directive=regex");
+  }
+
+  if (overviewEmbed(cfg) !== "off") {
+    const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
+    parts.push(`overview=embed (/v1/classify @ ${target}, fallback: ${cfg.overviewFallback ?? "regex"})`);
+  } else {
+    parts.push("overview=regex");
   }
 
   if (cfg.judgeMode === "heuristic" || (!cfg.judgeUrl && cap === "all")) {

@@ -1,7 +1,18 @@
 import type { MmConfig } from "../config.ts";
-import { captureMinMargin, captureMinSimilarity, recallMinMargin, recallMinSimilarity } from "../config.ts";
+import {
+  captureMinMargin,
+  captureMinSimilarity,
+  directiveMinMargin,
+  directiveMinSimilarity,
+  overviewMinMargin,
+  overviewMinSimilarity,
+  recallMinMargin,
+  recallMinSimilarity,
+} from "../config.ts";
 import { CAPTURE_EXEMPLARS, CAPTURE_KINDS } from "./capture-exemplars.ts";
 import { RECALL_EXEMPLARS, RECALL_KINDS } from "./recall-exemplars.ts";
+import { DIRECTIVE_EXEMPLARS, DIRECTIVE_KINDS } from "./directive-exemplars.ts";
+import { OVERVIEW_EXEMPLARS, OVERVIEW_KINDS } from "./overview-exemplars.ts";
 import { gate, mergeExemplars, nearestExemplar } from "./nearest.ts";
 import type { JudgeResult } from "./types.ts";
 
@@ -143,6 +154,48 @@ export async function classifyRecallByEmbedding(
     harmless: "standalone",
     actionable: new Set(["recall_past"]),
   }) as "recall_past" | "standalone";
+}
+
+/**
+ * Embedding verdict on the USER prompt for standing directive / invariant status.
+ * `standing_directive` needs `directiveMinSimilarity` AND `directiveMinMargin` over `transient_task`;
+ * anything weaker becomes `transient_task` (harmless).
+ */
+export async function classifyDirectiveByEmbedding(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<"standing_directive" | "transient_task" | null> {
+  const examples = mergeExemplars(DIRECTIVE_EXEMPLARS, cfg.directiveExemplars ?? {}, DIRECTIVE_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: directiveMinSimilarity(cfg),
+    minMargin: directiveMinMargin(cfg),
+    harmless: "transient_task",
+    actionable: new Set(["standing_directive"]),
+  }) as "standing_directive" | "transient_task";
+}
+
+/**
+ * Embedding verdict on whether a memory query is requesting an open-ended retrospective overview.
+ * `overview_query` needs `overviewMinSimilarity` AND `overviewMinMargin` over `specific_query`;
+ * anything weaker becomes `specific_query` (harmless targeted search).
+ */
+export async function classifyOverviewByEmbedding(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<"overview_query" | "specific_query" | null> {
+  const examples = mergeExemplars(OVERVIEW_EXEMPLARS, cfg.overviewExemplars ?? {}, OVERVIEW_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: overviewMinSimilarity(cfg),
+    minMargin: overviewMinMargin(cfg),
+    harmless: "specific_query",
+    actionable: new Set(["overview_query"]),
+  }) as "overview_query" | "specific_query";
 }
 
 export async function evaluateTurnWithJudge(

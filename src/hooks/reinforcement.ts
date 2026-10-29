@@ -1,7 +1,8 @@
-import type { ReinforcementConfig } from "../config.ts";
-import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
+import type { MmConfig, ReinforcementConfig } from "../config.ts";
+import { DEFAULT_REINFORCEMENT_CONFIG, directiveEmbed, directiveFallback } from "../config.ts";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { classifyDirectiveByEmbedding } from "../judge/adapter.ts";
 
 export interface StandingDirectiveItem {
   ref: number;
@@ -15,6 +16,27 @@ export const STANDING_DIRECTIVE_PATTERN = /(?:always\s+remember(?:\s+to)?|never\
 export function isStandingDirective(prompt?: string): boolean {
   if (!prompt || typeof prompt !== "string") return false;
   return STANDING_DIRECTIVE_PATTERN.test(prompt);
+}
+
+export async function evaluateStandingDirective(
+  prompt?: string,
+  cfg?: MmConfig,
+  fetchFn?: typeof fetch,
+): Promise<boolean> {
+  if (!prompt || typeof prompt !== "string") return false;
+  if (cfg && directiveEmbed(cfg) !== "off") {
+    try {
+      const verdict = await classifyDirectiveByEmbedding(prompt, cfg, fetchFn);
+      if (verdict === "standing_directive") return true;
+      if (verdict === "transient_task") return false;
+    } catch {
+      // Endpoint error or timeout
+    }
+    const fb = directiveFallback(cfg);
+    if (fb === "skip") return false;
+    return isStandingDirective(prompt);
+  }
+  return isStandingDirective(prompt);
 }
 
 export interface ReinforcementTriggerResult {
