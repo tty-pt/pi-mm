@@ -2,18 +2,31 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
-## [Unreleased]
+## [0.5.0] - 2026-10-29
 
 ### Added
+- **Embedding classification of recall intent** (`recallEmbed: "auto"`). In `before_agent_start`, evaluates user prompts using nearest-exemplar embeddings via `axil-auren`'s `POST /v1/classify` (shipped bilingual EN/PT exemplars in `src/judge/recall-exemplars.ts`) to detect whether the user is querying past technical decisions, investigations, preferences, or lore (`recall_past` vs `standalone`). When recall intent is confirmed:
+  1. Lifts unprompted context filtering in `auto_recall.ts`, allowing hybrid scan and vector search to retrieve relevant memories even without hardcoded subsystem mentions.
+  2. Nudges the agent with actionable tool guidance in `systemPromptOptions.sections["memory_context"]`, instructing the model to consult `memory_recall` (and `zoomRef` if specific memories are retrieved) before guessing or invoking unrelated bash/grep tools.
+  3. Seamless fallback to deterministic regex heuristics (`isMemoryRecallPrompt`) when the classifier server is offline or unconfigured.
+  New configuration options: `recallEmbed` (`"auto"` | `"off"`), `recallMinSimilarity` (0.60), `recallMinMargin` (0.08), `recallExemplars`, `recallFallback` (`"regex"` | `"skip"`), and environment variable overrides `PI_MM_RECALL_EMBED`, `PI_MM_RECALL_MIN_MARGIN`, `PI_MM_RECALL_MIN_SIMILARITY`, `PI_MM_RECALL_FALLBACK`.
+- **Empirical recall intent evaluation harness and script** (`scripts/eval-recall.ts`, `npm run eval:recall`). Measures head-to-head performance of the new embedding classifier against the previous heuristic gate over a held-out, bilingual corpus of 44 turns:
+  - Accuracy: 81.8% (36/44) vs 56.8% (25/44) (+25.0% accuracy gain).
+  - Recall Catch Rate: 63.6% (14/22) vs 13.6% (3/22) (4.7× improvement).
+  - Task Specificity: 100.0% (22/22) vs 100.0% (22/22) with 0 false positives.
+  - Latency: 17 ms p50, 34 ms p95.
+- Comprehensive unit and integration test suite in `tests/recall_intent.test.ts` covering bilingual exemplars, mock `/v1/classify` endpoints, threshold gating, offline fallback, and end-to-end `handleBeforeAgentStart` context injection and agent nudging.
 - **Embedding classification of conversational turns** (`captureMode: "judge"`). `evaluateTurnWithJudge` first classifies the user's prompt by nearest-exemplar embeddings (shipped examples in `src/judge/capture-exemplars.ts`, extended by form after the first held-out run), then falls back to the judge, then to `judgeFallback`. Works with embeddings alone (no `judgeUrl` needed). New self-contained modules `src/judge/embed.ts` and `src/judge/nearest.ts` (pi-mm never imports pi-quest). Settings: `captureEmbed` (`auto`|`off`), `captureEmbedUrl`, `captureEmbedModel`, `captureMinSimilarity` (0.6), `captureMinMargin` (0.075), `captureExemplars` (`remember`/`skip`, any language); env `PI_MM_CAPTURE_EMBED`, `PI_MM_CAPTURE_EMBED_URL`, `PI_MM_CAPTURE_EMBED_MODEL`, `PI_MM_CAPTURE_MIN_MARGIN`, `PI_MM_CAPTURE_MIN_SIMILARITY`. `JudgeDecisionSource` gains `"embed"`. **Measured** (44 EN/PT turns, `bge-base` vs `olmoe`, held-out corpus B): embeddings 26/44 (59%) with **0 false "remember"**; the judge 24/44 (55%) with **20 false "remember"** (it answers "remember" to 40 of 44 non-memories on the two corpora combined). The trade is recall: embeddings recognise 4/22 real memories on B (7/22 on the development corpus A), judge 22/22, so fewer turns are stored automatically; explicit `@remember` is unchanged. The first held-out run (corpus A, default exemplars) **failed** the adoption rule with 3 false "remember" and no margin fixed it, so the exemplars were extended by form and the hypothesis (default margin, new exemplars, zero false "remember") was recorded before corpus B was written. `captureEmbed: "off"` restores the judge-only path.
 - Measurement harness `tests/eval/harness.ts` (ported from pi-quest) and the opt-in live evaluation `tests/eval/capture-eval.test.ts` (`PI_MM_EVAL_JUDGE=1`); its corpus/exemplar disjointness checks run in `npm test`.
 - README: `captureMode` and the new settings are documented, with a "what decides what" table and the numbers above.
 
 ### Changed
 - **`npm test` is hermetic.** The previous suite quietly made 14 requests to the live auren server (the zero-config discovery probe and `/mm doctor`'s health check). The test script now preloads `tests/no-live-network.ts` (refuses non-loopback hosts and port 4242; ephemeral loopback fake servers still work) and sets `PI_MM_AUTO_START_AUREN=0` (without it, refused discovery made one smoke test take 62 s by trying to start a local server). Both are asserted by `tests/no_live_network.test.ts`; `PI_MM_ALLOW_LIVE=1` lifts the guard. Measured: 0 requests to the live server during the suite.
+- **Daemon Runner Decoupling and Memoization** (`src/tools/index.ts`): Decoupled `cormd` daemon startup latency and memoized daemon runner instance to eliminate process spawn overhead and improve tool execution responsiveness.
 - Note: in a project that sets neither `captureMode` nor `judgeUrl`, `captureMode` resolves to `"all"` and none of the above applies.
 
 - `judgeModel` defaults to `olmoe` (the protocol already defaulted to `systemone`), so a fresh install uses the model/protocol pair that measured best; documented in the README configuration table. axil-auren now answers an unparseable judge reply with `choice: null`, which the judge client treats as unavailable.
+- Removed legacy generative judge helpers `callLlmJudge`, `normalizeSystemOneUrl`, and `parseJevAnswer` from `src/judge/adapter.ts`.
 
 ## [0.4.0] - 2026-10-27
 

@@ -10,6 +10,8 @@ import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } f
 import { isCleanSummaryText } from "../payload.ts";
 import { isQuestionMemory } from "../tools/ranking.ts";
 import { buildMemoryOverview } from "../tools/overview.ts";
+import { classifyRecallByEmbedding } from "../judge/adapter.ts";
+import { recallEmbed, recallFallback, type MmConfig } from "../config.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -122,6 +124,26 @@ export function isDirectMemoryQuestion(prompt?: string): boolean {
   return false;
 }
 
+export async function evaluateRecallIntent(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn?: typeof fetch,
+): Promise<boolean> {
+  if (recallEmbed(cfg) !== "off") {
+    try {
+      const verdict = await classifyRecallByEmbedding(prompt, cfg, fetchFn);
+      if (verdict === "recall_past") return true;
+      if (verdict === "standalone") return false;
+    } catch {
+      // Endpoint error or timeout
+    }
+    const fb = recallFallback(cfg);
+    if (fb === "skip") return false;
+    return isMemoryRecallPrompt(prompt);
+  }
+  return isMemoryRecallPrompt(prompt);
+}
+
 export function formatCompactMemoryEntry(cand: FusedCandidate): string {
   const ref = cand.ref;
   const env = cand.envelope;
@@ -207,11 +229,12 @@ export function buildInjectedContext(
   budget = DEFAULT_AUTO_RECALL_BUDGET,
   excerptsMap?: Map<number, SessionExcerpt[]>,
   prompt?: string,
+  recallIntentConfirmed = false,
 ): string {
   // Exclude contradicted and superseded records, raw tool episodes (L0),
   // corrupted/unprintable summaries, and question-memories from conversational context
   const isDirectQuestion = isDirectMemoryQuestion(prompt);
-  const isExplicitRecall = isMemoryRecallPrompt(prompt);
+  const isExplicitRecall = recallIntentConfirmed || isMemoryRecallPrompt(prompt);
   const valid = candidates.filter((c) => {
     const lc = c.envelope?.lifecycle ?? c.lifecycle;
     const level = c.envelope?.level ?? c.level;
@@ -430,11 +453,17 @@ export interface BeforeAgentStartResult {
   systemPrompt?: string;
 }
 
+export interface BeforeAgentStartOptions {
+  budget?: number;
+  timeoutMs?: number;
+  fetchFn?: typeof fetch;
+}
+
 export async function handleBeforeAgentStart(
   event: BeforeAgentStartEvent,
   ctx: PiCtx,
   envSource: EnvSource,
-  options?: { budget?: number; timeoutMs?: number },
+  options?: BeforeAgentStartOptions,
 ): Promise<BeforeAgentStartResult | null> {
   if (event.messageType !== "user" || typeof event.prompt !== "string") {
     return null;
@@ -502,11 +531,13 @@ export async function handleBeforeAgentStart(
       }
     }
 
+    const isRecallIntent = await evaluateRecallIntent(prompt, env.cfg, options?.fetchFn);
     const timeout = options?.timeoutMs ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS;
     const candidates = await runScanWithTimeout(env, prompt, timeout);
     debugLog("recall", "runScanWithTimeout returned candidates", {
       candidateCount: candidates?.length ?? 0,
       refs: candidates?.map((c) => c.ref),
+      isRecallIntent,
     });
 
     const mentionedSubsystems = detectSubsystemMentions(prompt);
@@ -527,7 +558,7 @@ export async function handleBeforeAgentStart(
       ? await enrichCandidatesWithSessionHistory(allCandidates, prompt, ctx.cwd)
       : undefined;
     const contextContent = allCandidates.length > 0
-      ? buildInjectedContext(allCandidates, budget, excerptsMap, prompt)
+      ? buildInjectedContext(allCandidates, budget, excerptsMap, prompt, isRecallIntent)
       : "";
 
     traceEvent("auto_recall", allCandidates.length > 0 ? "ok" : "skip", {
@@ -536,40 +567,64 @@ export async function handleBeforeAgentStart(
       candidateCount: allCandidates.length,
       selectedRefs: allCandidates.map((c) => c.ref),
       contextReturned: Boolean(contextContent),
+      recallIntent: isRecallIntent,
     }, { sessionId });
 
-    if (allCandidates.length === 0) return null;
-
-    if (!contextContent) {
-      debugLog("recall", "Auto-recall produced empty contextContent after filtering");
+    if (allCandidates.length === 0 || !contextContent) {
+      if (isRecallIntent) {
+        const notice = `[Persistent Memory Notice]\nThe user appears to be inquiring about past technical decisions, prior investigations, or lore. No direct memory entries were automatically matched. Consider using memory_recall({ query: "${prompt.slice(0, 80).replace(/"/g, "'")}" }) to check persistent memory before answering.`;
+        if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+          if (!event.systemPromptOptions.sections) {
+            event.systemPromptOptions.sections = {};
+          }
+          event.systemPromptOptions.sections["memory_context"] = notice;
+        }
+        return {
+          message: {
+            role: "custom",
+            customType: "memory_context",
+            content: notice,
+            display: true,
+            details: { recallIntent: true, emptyMatch: true },
+            timestamp: Date.now(),
+          },
+        };
+      }
       return null;
     }
 
+    let finalContent = contextContent;
+    if (isRecallIntent) {
+      finalContent += `\n\n[Memory Intent Detected]\nThe user's query references past technical decisions, investigations, or project lore. Relevant background has been checked; use memory_recall({ query: "${prompt.slice(0, 80).replace(/"/g, "'")}" }) or memory_recall({ zoomRef: <ref> }) if you need to inspect full evidence trees or historical approaches.`;
+    }
+
     debugLog("recall", "Auto-recall successfully injected context into prompt", {
-      contextLength: contextContent.length,
+      contextLength: finalContent.length,
       refs: candidates.map((c) => c.ref),
+      recallIntent: isRecallIntent,
     });
 
     traceEvent("context_injected", "ok", {
       query: prompt,
       deliveredRefs: candidates.map((c) => c.ref),
-      contextLength: contextContent.length,
+      contextLength: finalContent.length,
+      recallIntent: isRecallIntent,
     }, { sessionId });
 
     if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
       if (!event.systemPromptOptions.sections) {
         event.systemPromptOptions.sections = {};
       }
-      event.systemPromptOptions.sections["memory_context"] = contextContent;
+      event.systemPromptOptions.sections["memory_context"] = finalContent;
     }
 
     return {
       message: {
         role: "custom",
         customType: "memory_context",
-        content: contextContent,
+        content: finalContent,
         display: true,
-        details: { refs: candidates.map((c) => c.ref) },
+        details: { refs: candidates.map((c) => c.ref), recallIntent: isRecallIntent },
         timestamp: Date.now(),
       },
     };

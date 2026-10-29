@@ -1,6 +1,7 @@
 import type { MmConfig } from "../config.ts";
-import { captureMinMargin, captureMinSimilarity } from "../config.ts";
+import { captureMinMargin, captureMinSimilarity, recallMinMargin, recallMinSimilarity } from "../config.ts";
 import { CAPTURE_EXEMPLARS, CAPTURE_KINDS } from "./capture-exemplars.ts";
+import { RECALL_EXEMPLARS, RECALL_KINDS } from "./recall-exemplars.ts";
 import { gate, mergeExemplars, nearestExemplar } from "./nearest.ts";
 import type { JudgeResult } from "./types.ts";
 
@@ -121,6 +122,27 @@ export async function classifyCaptureByEmbedding(
     harmless: "skip",
     actionable: new Set(["remember"]),
   }) as "remember" | "skip";
+}
+
+/**
+ * Embedding verdict on the USER prompt for recall intent, or null when embeddings are unavailable.
+ * `recall_past` needs `recallMinSimilarity` AND `recallMinMargin` over `standalone`;
+ * anything weaker becomes `standalone` (harmless).
+ */
+export async function classifyRecallByEmbedding(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<"recall_past" | "standalone" | null> {
+  const examples = mergeExemplars(RECALL_EXEMPLARS, cfg.recallExemplars ?? {}, RECALL_KINDS);
+  const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
+  if (verdict === null) return null;
+  return gate(verdict, {
+    minSimilarity: recallMinSimilarity(cfg),
+    minMargin: recallMinMargin(cfg),
+    harmless: "standalone",
+    actionable: new Set(["recall_past"]),
+  }) as "recall_past" | "standalone";
 }
 
 export async function evaluateTurnWithJudge(

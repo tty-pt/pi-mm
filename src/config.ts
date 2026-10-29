@@ -66,6 +66,20 @@ export interface MmConfig {
   captureMinSimilarity?: number;
   /** Operator exemplars (kinds `remember` / `skip`, any language), merged with the shipped ones. */
   captureExemplars?: Record<string, string[]>;
+  /**
+   * Embedding classification of user prompts to detect recall intent ("auto" | "off", default "auto").
+   * When enabled, prompts expressing interest in past decisions, lore, or preferences
+   * proactively unlock auto-recall and receive agent tool recommendations.
+   */
+  recallEmbed?: "auto" | "off";
+  /** Best-vs-runner-up cosine margin a "recall_past" embedding verdict must clear (default 0.08). */
+  recallMinMargin?: number;
+  /** Minimum cosine similarity to the nearest exemplar for a recall verdict (default 0.60). */
+  recallMinSimilarity?: number;
+  /** Operator exemplars (kinds `recall_past` / `standalone`, any language), merged with shipped ones. */
+  recallExemplars?: Record<string, string[]>;
+  /** Fallback strategy when the classifier endpoint is unreachable ("regex" | "skip", default "regex"). */
+  recallFallback?: "regex" | "skip";
   consolidateL2Threshold?: number;
   consolidateL3Threshold?: number;
   consolidateMaxAgeHours?: number;
@@ -118,6 +132,11 @@ export const DEFAULT_CONFIG: MmConfig = {
   ephemeralSepal: false,
   autoStartAuren: true,
   autoDownloadModels: "ask",
+  recallEmbed: undefined,
+  recallMinMargin: 0.08,
+  recallMinSimilarity: 0.60,
+  recallExemplars: undefined,
+  recallFallback: "regex",
   reinforcement: DEFAULT_REINFORCEMENT_CONFIG,
 };
 
@@ -245,6 +264,11 @@ export function loadConfig(raw: unknown): MmConfig {
     captureMinMargin: unitInterval(record["captureMinMargin"]),
     captureMinSimilarity: unitInterval(record["captureMinSimilarity"]),
     captureExemplars: parseCaptureExemplars(record["captureExemplars"]),
+    recallEmbed: embedMode(record["recallEmbed"]),
+    recallMinMargin: unitInterval(record["recallMinMargin"]) ?? DEFAULT_CONFIG.recallMinMargin,
+    recallMinSimilarity: unitInterval(record["recallMinSimilarity"]) ?? DEFAULT_CONFIG.recallMinSimilarity,
+    recallExemplars: parseRecallExemplars(record["recallExemplars"]),
+    recallFallback: record["recallFallback"] === "skip" || record["recallFallback"] === "regex" ? record["recallFallback"] : DEFAULT_CONFIG.recallFallback,
     consolidateL2Threshold: typeof l2Thresh === "number" && l2Thresh > 0 ? l2Thresh : DEFAULT_CONFIG.consolidateL2Threshold,
     consolidateL3Threshold: typeof l3Thresh === "number" && l3Thresh > 0 ? l3Thresh : DEFAULT_CONFIG.consolidateL3Threshold,
     consolidateMaxAgeHours: typeof maxAge === "number" && maxAge > 0 ? maxAge : undefined,
@@ -422,6 +446,13 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     captureMinMargin: cfg.captureMinMargin ?? unitInterval(env["PI_MM_CAPTURE_MIN_MARGIN"] ?? env["MM_CAPTURE_MIN_MARGIN"]),
     captureMinSimilarity: cfg.captureMinSimilarity ?? unitInterval(env["PI_MM_CAPTURE_MIN_SIMILARITY"] ?? env["MM_CAPTURE_MIN_SIMILARITY"]),
     captureExemplars: cfg.captureExemplars,
+    recallEmbed: embedMode(env["PI_MM_RECALL_EMBED"] ?? env["MM_RECALL_EMBED"]) ?? cfg.recallEmbed,
+    recallMinMargin: unitInterval(env["PI_MM_RECALL_MIN_MARGIN"] ?? env["MM_RECALL_MIN_MARGIN"]) ?? cfg.recallMinMargin,
+    recallMinSimilarity: unitInterval(env["PI_MM_RECALL_MIN_SIMILARITY"] ?? env["MM_RECALL_MIN_SIMILARITY"]) ?? cfg.recallMinSimilarity,
+    recallExemplars: cfg.recallExemplars,
+    recallFallback: (env["PI_MM_RECALL_FALLBACK"] === "skip" || env["PI_MM_RECALL_FALLBACK"] === "regex"
+      ? env["PI_MM_RECALL_FALLBACK"]
+      : (env["MM_RECALL_FALLBACK"] === "skip" || env["MM_RECALL_FALLBACK"] === "regex" ? env["MM_RECALL_FALLBACK"] : cfg.recallFallback)),
     consolidateL2Threshold: l2ThreshNum && !isNaN(l2ThreshNum) && l2ThreshNum > 0 ? l2ThreshNum : cfg.consolidateL2Threshold,
     consolidateL3Threshold: l3ThreshNum && !isNaN(l3ThreshNum) && l3ThreshNum > 0 ? l3ThreshNum : cfg.consolidateL3Threshold,
     consolidateMaxAgeHours: maxAgeNum && !isNaN(maxAgeNum) && maxAgeNum > 0 ? maxAgeNum : cfg.consolidateMaxAgeHours,
@@ -445,12 +476,32 @@ export function sepalConfigured(cfg: MmConfig): boolean {
 export const DEFAULT_CAPTURE_MIN_MARGIN = 0.075;
 export const DEFAULT_CAPTURE_MIN_SIMILARITY = 0.6;
 
+export const DEFAULT_RECALL_MIN_MARGIN = 0.08;
+export const DEFAULT_RECALL_MIN_SIMILARITY = 0.60;
+export const DEFAULT_RECALL_FALLBACK = "regex";
+
 export function captureMinMargin(cfg: MmConfig): number {
   return cfg.captureMinMargin ?? DEFAULT_CAPTURE_MIN_MARGIN;
 }
 
 export function captureMinSimilarity(cfg: MmConfig): number {
   return cfg.captureMinSimilarity ?? DEFAULT_CAPTURE_MIN_SIMILARITY;
+}
+
+export function recallEmbed(cfg: MmConfig): "auto" | "off" {
+  return cfg.recallEmbed ?? "auto";
+}
+
+export function recallMinMargin(cfg: MmConfig): number {
+  return cfg.recallMinMargin ?? DEFAULT_RECALL_MIN_MARGIN;
+}
+
+export function recallMinSimilarity(cfg: MmConfig): number {
+  return cfg.recallMinSimilarity ?? DEFAULT_RECALL_MIN_SIMILARITY;
+}
+
+export function recallFallback(cfg: MmConfig): "regex" | "skip" {
+  return cfg.recallFallback ?? DEFAULT_RECALL_FALLBACK;
 }
 
 function unitInterval(raw: unknown): number | undefined {
@@ -472,6 +523,18 @@ function parseCaptureExemplars(raw: unknown): Record<string, string[]> | undefin
     if (items.length > 0) out[kind] = items;
   }
   return out;
+}
+
+function parseRecallExemplars(raw: unknown): Record<string, string[]> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const kind of ["recall_past", "standalone"]) {
+    const list = (raw as Record<string, unknown>)[kind];
+    if (!Array.isArray(list)) continue;
+    const items = list.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+    if (items.length > 0) out[kind] = items;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function judgeConfigured(cfg: MmConfig): boolean {
@@ -496,6 +559,13 @@ export function describeCapabilities(cfg: MmConfig): string {
     parts.push(`capture=embed (/v1/classify @ ${target}, fallback: ${cfg.judgeFallback ?? "skip"})`);
   } else {
     parts.push("capture=all");
+  }
+
+  if (recallEmbed(cfg) !== "off") {
+    const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
+    parts.push(`recall=embed (/v1/classify @ ${target}, fallback: ${cfg.recallFallback ?? "regex"})`);
+  } else {
+    parts.push("recall=regex");
   }
 
   if (cfg.judgeMode === "heuristic" || (!cfg.judgeUrl && cap === "all")) {

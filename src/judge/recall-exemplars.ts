@@ -1,0 +1,112 @@
+// HIGH_LEVEL: #judge — shipped exemplars for recall intent classification (recall_past vs standalone).
+// Nearest-exemplar search over the user's prompt (plus the operator's `recallExemplars`)
+// decides whether the turn is asking to recall past decisions, preferences, investigations,
+// or lore ("does it make sense to remember the past?").
+// When positive, auto-recall unlocks memory retrieval and recommends memory_recall tools.
+export const RECALL_KINDS: ReadonlySet<string> = new Set(["recall_past", "standalone"]);
+
+export const RECALL_EXEMPLARS: Record<string, string[]> = {
+  recall_past: [
+    // Prior technical decisions & rationale
+    "Why did we choose static buffers over dynamic allocation?",
+    "What was the reason we dropped the old token auth?",
+    "Why didn't we use an external library for the vector store?",
+    "What did we decide about the database schema migration?",
+    "Why did we pick React instead of Vue for the dashboard?",
+    "What was our reasoning for avoiding threads in the network loop?",
+    "Why did we settle on 48kHz for the audio pipeline?",
+    "Did we decide on trunk-based development or gitflow?",
+    // Historical bug fixes & past investigations
+    "How did we fix the flaky timeout in the test suite?",
+    "We had a race condition in the worker queue before, what was causing it?",
+    "What caused the segmentation fault in the parser yesterday?",
+    "How did we solve the memory leak in the connection pool?",
+    "We investigated an SSL handshake failure earlier, what did we find?",
+    "What was the fix for the timezone offset issue?",
+    // Project constraints, rules, conventions, and lore
+    "What conventions do we follow for module headers?",
+    "What port does the production service bind to according to our notes?",
+    "What were the latency limits the team agreed on?",
+    "What are our standing rules for database mutations?",
+    "Remind me of the coding guidelines for the C modules",
+    "What is the policy on error codes versus exceptions here?",
+    // User preferences & personal context
+    "Do you remember what editor theme I prefer?",
+    "What did I mention about my timezone or working hours?",
+    "What is my son's name that I told you earlier?",
+    "What foods did I say I am allergic to?",
+    "Which laptop and OS did I say I work on?",
+    // Session continuity & state
+    "Where did we leave off last time?",
+    "Did we finish implementing the validator or is there pending work?",
+    "What tasks did we complete in the previous session?",
+    "Have we already discussed the cache invalidation strategy?",
+    "Did I already give you the API keys or do you need them?",
+    // Portuguese equivalents
+    "Por que razão escolhemos buffers estáticos em vez de alocação dinâmica?",
+    "Qual foi o motivo pelo qual abandonámos a autenticação antiga por token?",
+    "O que decidimos sobre a migração do esquema da base de dados?",
+    "Como é que resolvemos aquele bug de timeout nos testes na semana passada?",
+    "Tivemos uma race condition na fila de trabalho, o que é que a causava?",
+    "O que causou o segmentation fault no parser ontem?",
+    "Quais são as convenções que seguimos para os headers dos módulos?",
+    "Qual é a porta em que o serviço de produção corre de acordo com as notas?",
+    "Lembras-te de qual é o meu tema de editor favorito?",
+    "O que é que eu te disse sobre o meu fuso horário ou horário de trabalho?",
+    "Lembras-te do nome do meu filho que te falei antes?",
+    "Onde tínhamos ficado na última sessão?",
+    "Já tínhamos terminado a implementação do validador ou ainda falta algo?",
+    "Já tínhamos falado sobre a estratégia de invalidação de cache?",
+  ],
+  standalone: [
+    // Direct code edits & refactoring tasks
+    "Refactor parse_header to use a switch statement",
+    "Add a null check to the buffer pointer before dereferencing",
+    "Create a new helper function to calculate the hash of the payload",
+    "Rename variable count to totalItems in this file",
+    "Extract this loop into a separate private method",
+    "Format this JSON file and sort the keys alphabetically",
+    "Replace the deprecated API call with the modern equivalent",
+    "Optimize this inner loop to reduce cache misses",
+    // Environment probes & shell execution
+    "Run the test suite and show me any failing assertions",
+    "Execute make in the root directory",
+    "Check git status and list uncommitted modifications",
+    "Print the first twenty lines of config.json",
+    "Search the repository for references to corm_open",
+    "Check if the build output directory exists",
+    "Show me the diff between HEAD and the previous commit",
+    // General technical queries & textbook explanations
+    "How does quicksort work under the hood?",
+    "Explain the difference between TCP and UDP sockets",
+    "What is a memory barrier in C11?",
+    "How does an epoll event loop handle edge-triggered events?",
+    "What are the benefits of immutable data structures?",
+    "How do B-trees differ from LSM trees for storage engines?",
+    // Conversational niceties & task steering
+    "Hello, how are you today?",
+    "Good morning",
+    "Thanks, that helped a lot",
+    "Looks good to me, proceed with the changes",
+    "Cancel that and let's start over",
+    "Understood, thanks for the explanation",
+    "Yes, go ahead and commit the files",
+    // Portuguese equivalents
+    "Refatora parse_header para usar uma instrução switch",
+    "Adiciona uma verificação de ponteiro nulo antes de desreferenciar",
+    "Cria uma nova função auxiliar para calcular o hash do payload",
+    "Muda o nome da variável count para totalItems neste ficheiro",
+    "Corre os testes e mostra-me os erros",
+    "Executa make no diretório raiz",
+    "Verifica o git status e mostra as alterações pendentes",
+    "Imprime as primeiras vinte linhas do ficheiro config.json",
+    "Como funciona o quicksort?",
+    "Explica a diferença entre sockets TCP e UDP",
+    "O que é uma barreira de memória em C11?",
+    "Olá, como estás hoje?",
+    "Bom dia",
+    "Muito obrigado, ajudou imenso",
+    "Parece-me bem, pode avançar com as alterações",
+    "Sim, avança e faz commit",
+  ],
+};

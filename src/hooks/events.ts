@@ -1475,9 +1475,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     }
 
     const recallRes = await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
-    const recalledRefs = (recallRes?.message?.details as { refs?: unknown[] })?.refs;
-    if (recalledRefs && recalledRefs.length > 0) {
-      notifyMmEvent(ctxUnknown as PiCtx, "recalled", recalledRefs.length);
+    const details = recallRes?.message?.details as { refs?: unknown[]; recallIntent?: boolean } | undefined;
+    if (details?.refs && details.refs.length > 0) {
+      notifyMmEvent(ctxUnknown as PiCtx, "recalled", details.refs.length);
+    }
+    if (details?.recallIntent) {
+      debugLog("recall", "recall_intent_classified", { prompt: event.prompt });
     }
     return recallRes;
   });

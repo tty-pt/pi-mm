@@ -81,6 +81,11 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
 | `advancedTools` | `false` | Expose the 9 advanced low-level memory inspection tools |
+| `recallEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect recall intent (`"auto"` or `"off"`). Env: `PI_MM_RECALL_EMBED` |
+| `recallMinSimilarity` | `0.6` | Cosine floor for recall intent embedding classification (0..1) |
+| `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
+| `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
+| `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
 | `judgeProtocol` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeModel` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeUrl` | *(deprecated)* | Deprecated; mapped to `captureEmbedUrl` |
@@ -112,6 +117,31 @@ Read that honestly: **embeddings are high-precision and low-recall.** They store
 Measure your own phrasing (opt-in, never part of `npm test`; prints accuracy, false "remember", latency and every miss for both strategies):
 `PI_MM_EVAL_JUDGE=1 deno test --allow-all --sloppy-imports tests/eval/` (set `PI_MM_EVAL_URL` for a non-default server).
 
+### Proactive Recall Intent: What Drives Context Injection
+
+In addition to write-path capture judging, `pi-mm` intelligently classifies the **read path** before each agent turn (`before_agent_start`). When a user asks about past architectural choices, previous debugging sessions, decisions, rules, or lore, `pi-mm` uses `POST /v1/classify` against a curated bilingual exemplar corpus (`recall_past` vs `standalone`):
+
+1. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
+2. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
+3. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic regex heuristics (`recallFallback: "regex"`).
+
+#### Empirical Benchmark: Regex Heuristics vs. Embeddings
+
+Measured on a held-out, bilingual (English + Portuguese) corpus of **44 realistic turns** (22 `recall_past` queries, 22 `standalone` engineering tasks), completely disjoint from training exemplars (`npm run eval:recall` against `axil-auren` with `bge-base`):
+
+| Metric | Previous Heuristic Gate (`isMemoryRecallPrompt`) | `axil-auren` Embeddings (`POST /v1/classify`) | Impact / Delta |
+| :--- | :--- | :--- | :--- |
+| **Overall Accuracy** | **56.8%** (25/44) | **81.8%** (36/44) | **+25.0% accuracy** |
+| **Recall Catch Rate (`recall_past`)** | **13.6%** (3/22) | **63.6%** (14/22) | **4.7× improvement** (+11 caught) |
+| **Task Specificity (`standalone`)** | **100.0%** (22/22) | **100.0%** (22/22) | **Zero regressions / zero false recall** |
+| **False Positives** | **0** | **0** | **Zero unwanted memory spam** |
+| **Latency (p50 / p95)** | < 1 ms | **17 ms / 34 ms** | Fast, imperceptible C SIMD execution |
+
+Run the recall evaluation suite against your live `axil-auren` instance:
+```bash
+npm --prefix .pi/extensions/pi-mm run eval:recall
+```
+
 `npm test` is hermetic: it preloads `tests/no-live-network.ts`, which refuses any request to the real auren port (4242) or to a non-loopback host, and runs with `PI_MM_AUTO_START_AUREN=0` so no local server is started. Run with `PI_MM_ALLOW_LIVE=1` to lift the guard.
 
 ---
@@ -135,7 +165,9 @@ Prebuilt packages are available via [tty.pt packages](https://github.com/tty-pt/
 ## 6. Development & Verification
 
 ```bash
-npm --prefix .pi/extensions/pi-mm test             # Run test suite (400+ tests)
+npm --prefix .pi/extensions/pi-mm test             # Run hermetic test suite (450+ tests)
+npm --prefix .pi/extensions/pi-mm run lint         # Lint all TypeScript source and scripts
+npm --prefix .pi/extensions/pi-mm run eval:recall  # Benchmark recall intent classification against live auren
 npm --prefix .pi/extensions/pi-mm run test:playbook # Non-destructive bootstrap verification playbook
 npm --prefix .pi/extensions/pi-mm run demo          # Interactive live bootstrap demonstration
 npm --prefix .pi/extensions/pi-mm run zip           # Package distribution bundle

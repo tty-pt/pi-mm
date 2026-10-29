@@ -1,6 +1,6 @@
 {
   "name": "@tty-pt/pi-mm",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Memory Mipmaps extension for Pi Coding Agent — persistent, hierarchical recall with automatic bounded context injection and streamlined memory_recall, memory_record, memory_review tools.",
   "keywords": [
     "pi-package",
@@ -38,6 +38,7 @@
     "test": "PI_MM_AUTO_START_AUREN=0 deno test --preload tests/no-live-network.ts --allow-all --sloppy-imports --node-modules-dir=none tests/",
     "lint": "deno lint src/ tests/ scripts/",
     "benchmark": "deno run --allow-all scripts/benchmark-mm.ts",
+    "eval:recall": "deno run --allow-all scripts/eval-recall.ts",
     "demo": "deno run --allow-all scripts/demo-bootstrap.ts",
     "test:playbook": "bash scripts/test-bootstrap-playbook.sh",
     "zip": "deno run --allow-all scripts/zip_bundle.ts"
