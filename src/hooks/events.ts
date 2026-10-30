@@ -1141,7 +1141,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           sessionSavedCount = 0;
           const idleTxt = ui.theme?.fg ? ui.theme.fg("muted", "🧠 0") : "🧠 0";
           ui.setStatus("pi-mm", idleTxt);
-          ui.setStatus("mm-judge", undefined);
+          ui.setStatus("auren-model", ui.theme?.fg ? ui.theme.fg("muted", "🔌 off") : "🔌 off");
         }
 
         const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
@@ -1179,7 +1179,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
                   const statusText = describeModelStatus(st);
                   if (ui?.setStatus) {
-                    ui.setStatus("mm-judge", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
+                    ui.setStatus("auren-model", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
                   }
                   if (st.downloads.length > 0) {
                     const dl = st.downloads[0];

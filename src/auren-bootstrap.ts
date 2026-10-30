@@ -718,11 +718,13 @@ export function describeProgress(state: BootstrapState = liveState): string | un
   return `⬇ ${dl.id} (${pct}%)`;
 }
 
+export const AUREN_STATUS_SLOT = "auren-model";
+
 /** Model usage status text for a status bar or reporting widget. */
-export function describeModelStatus(state: BootstrapState = liveState): string | undefined {
-  if (state.downloads.length > 0) return describeProgress(state);
+export function describeModelStatus(state: BootstrapState = liveState): string {
+  if (state.downloads.length > 0) return describeProgress(state) ?? "🔌 off";
   if (state.running && state.activeModel) return `⚡ ${state.activeModel}`;
-  return undefined;
+  return "🔌 off";
 }
 
 function readPrefs(home: string): { largeModels?: boolean } {

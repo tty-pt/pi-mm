@@ -5,6 +5,9 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 ## [0.5.1] - 2026-10-30
 
 ### Added
+- **Unified Model Status Slot & Disconnected Power-Off State** (`src/auren-bootstrap.ts`, `src/hooks/events.ts`):
+  - Standardized local model status widget on shared slot ID `"auren-model"` with `AUREN_STATUS_SLOT`.
+  - Added `"🔌 off"` state in `describeModelStatus` when the daemon is offline or disconnected, replacing invisible cleared slots with explicit power-off feedback.
 - **Daemon Circuit Breaker & Resilient Timeout Wrapper** (`src/judge/circuit.ts`, `src/judge/embed.ts`, `src/judge/nearest.ts`):
   - Added shared circuit breaker wrapper `withCircuitBreaker` protecting all `axil-auren` calls against connection refusal, hung sockets, and daemon downtime.
   - Implemented fast-fail backoff (`CIRCUIT_BACKOFF_MS = 30_000`) and tight default timeout (`DEFAULT_CLASSIFY_TIMEOUT_MS = 250`).
