@@ -884,13 +884,12 @@ Deno.test("configurable intelligence: 6. Real live Jev integration test", async 
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 6b. Real embedding endpoint and Sepal semantic retrieval", async () => {
   const env = Deno.env.toObject();
-  const rawCfg = applyEnv(DEFAULT_CONFIG, env);
-  const hasLiveEmbed = Boolean(rawCfg.embedUrl && rawCfg.embedUrl.trim() !== "");
-
-  if (!hasLiveEmbed) {
-    console.log("[SKIP] Real embedding endpoint not configured (QLLM_URL / CORM_SEPAL_EMBED_URL unset)");
+  const explicitEmbed = env["CORM_SEPAL_EMBED_URL"] ?? env["AUREN_URL"] ?? env["QLLM_URL"];
+  if (!explicitEmbed || explicitEmbed.trim() === "") {
+    console.log("[SKIP] Real embedding endpoint not configured (AUREN_URL / CORM_SEPAL_EMBED_URL unset)");
     return;
   }
+  const rawCfg = applyEnv(DEFAULT_CONFIG, env);
 
   const embedUrl = rawCfg.embedUrl!;
   const embedModel = rawCfg.embedModel || "default";

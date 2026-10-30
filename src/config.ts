@@ -437,15 +437,6 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     semSearch = envSemSearch === "1" || envSemSearch.toLowerCase() === "true";
   }
 
-  let capMode = cfg.captureMode;
-  if (envCapMode === "all" || envCapMode === "keyword" || envCapMode === "judge" || envCapMode === "off") {
-    capMode = envCapMode;
-  } else if (!capMode) {
-    if (envJMode === "off") capMode = "off";
-    else if (envJMode === "heuristic") capMode = "all";
-    else if (envJMode === "auto") capMode = defaultJudgeUrl ? "judge" : "all";
-  }
-
   let capKeyword = cfg.captureKeyword;
   if (typeof envCapKeyword === "string" && envCapKeyword.trim() !== "") {
     capKeyword = envCapKeyword.trim();
@@ -463,7 +454,34 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   }
 
   envJUrl = defaultJudgeUrl ?? (jMode === "auto" && !cfg.judgeUrl ? "http://127.0.0.1:4242" : undefined);
-  const resolvedJudgeUrl = jMode === "off" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
+  const resolvedJudgeUrl = jMode === "off" || jMode === "heuristic" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
+
+  let capMode = cfg.captureMode;
+  if (envCapMode === "all" || envCapMode === "keyword" || envCapMode === "judge" || envCapMode === "off") {
+    capMode = envCapMode;
+  } else if (!capMode) {
+    if (jMode === "off") capMode = "off";
+    else if (jMode === "heuristic") capMode = "all";
+    else if (resolvedJudgeUrl) capMode = "judge";
+    else capMode = "all";
+  }
+
+  const hasPartialEmbedEnv = Boolean((envUrl && !envModel) || (!envUrl && envModel));
+  const resolvedEmbedUrl = cfg.embedUrl ?? (typeof envUrl === "string" && envUrl.trim() !== ""
+    ? envUrl.trim()
+    : (!hasPartialEmbedEnv && resolvedJudgeUrl ? `${resolvedJudgeUrl.replace(/\/+$/, "")}/v1/embeddings` : undefined));
+
+  const resolvedEmbedModel = cfg.embedModel ?? (typeof envModel === "string" && envModel.trim() !== ""
+    ? envModel.trim()
+    : (!hasPartialEmbedEnv && resolvedJudgeUrl ? "bge-base" : undefined));
+
+  const resolvedCaptureEmbedUrl = jMode === "off" || jMode === "heuristic"
+    ? undefined
+    : (cfg.captureEmbedUrl ?? (env["PI_MM_CAPTURE_EMBED_URL"]?.trim() || resolvedJudgeUrl));
+
+  const resolvedSemanticSearch = semSearch !== undefined
+    ? semSearch
+    : (cfg.semanticSearch !== undefined ? cfg.semanticSearch : Boolean(resolvedEmbedUrl));
 
   let jFallback = cfg.judgeFallback;
   if (envJFallback === "capture" || envJFallback === "skip") {
@@ -491,22 +509,22 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     memDir: cfg.memDir,
     scanLimit: cfg.scanLimit,
     advancedTools: typeof envAdv === "string" ? (envAdv === "1" || envAdv === "true") : cfg.advancedTools,
-    embedUrl: cfg.embedUrl ?? (typeof envUrl === "string" && envUrl.trim() !== "" ? envUrl.trim() : undefined),
-    embedModel: cfg.embedModel ?? (typeof envModel === "string" && envModel.trim() !== "" ? envModel.trim() : undefined),
+    embedUrl: resolvedEmbedUrl,
+    embedModel: resolvedEmbedModel,
     embedKey: cfg.embedKey ?? (typeof envKey === "string" && envKey.trim() !== "" ? envKey.trim() : undefined),
-    semanticSearch: semSearch,
+    semanticSearch: resolvedSemanticSearch,
     captureMode: capMode,
     captureKeyword: capKeyword,
     captureKeywords: capKeywords,
     judgeMode: jMode,
     judgeProtocol: envJProto === "systemzero" || envJProto === "systemone" || envJProto === "auto" ? envJProto : cfg.judgeProtocol,
     judgeUrl: resolvedJudgeUrl,
-    judgeModel: cfg.judgeModel ?? (typeof envJModel === "string" && envJModel.trim() !== "" ? envJModel.trim() : undefined),
+    judgeModel: cfg.judgeModel ?? (typeof envJModel === "string" && envJModel.trim() !== "" ? envJModel.trim() : (resolvedJudgeUrl ? "bge-base" : undefined)),
     judgeKey: cfg.judgeKey ?? (typeof envJKey === "string" && envJKey.trim() !== "" ? envJKey.trim() : undefined),
     judgeTimeoutMs: timeoutNum && !isNaN(timeoutNum) && timeoutNum > 0 ? timeoutNum : cfg.judgeTimeoutMs,
     judgeFallback: jFallback,
     captureEmbed: cfg.captureEmbed ?? embedMode(env["PI_MM_CAPTURE_EMBED"] ?? env["MM_CAPTURE_EMBED"]),
-    captureEmbedUrl: cfg.captureEmbedUrl ?? (env["PI_MM_CAPTURE_EMBED_URL"]?.trim() || undefined),
+    captureEmbedUrl: resolvedCaptureEmbedUrl,
     captureEmbedModel: cfg.captureEmbedModel ?? (env["PI_MM_CAPTURE_EMBED_MODEL"]?.trim() || undefined),
     captureMinMargin: cfg.captureMinMargin ?? unitInterval(env["PI_MM_CAPTURE_MIN_MARGIN"] ?? env["MM_CAPTURE_MIN_MARGIN"]),
     captureMinSimilarity: cfg.captureMinSimilarity ?? unitInterval(env["PI_MM_CAPTURE_MIN_SIMILARITY"] ?? env["MM_CAPTURE_MIN_SIMILARITY"]),
