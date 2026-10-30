@@ -2,18 +2,14 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
-## [0.5.5] - 2026-10-30
-
-### Fixed
-- **Daemon unavailability and hung-socket freeze prevention via circuit breaker** (`src/judge/circuit.ts`, `src/judge/embed.ts`, `src/judge/nearest.ts`).
-  - Added shared circuit breaker wrapper `withCircuitBreaker` with in-memory failure backoff (`CIRCUIT_BACKOFF_MS = 30_000`), tight default timeout (`DEFAULT_CLASSIFY_TIMEOUT_MS = 250`), and fail-open handling.
-  - When `axil-auren` is not running or a connection refuses/times out, the circuit breaker immediately trips for that daemon base URL. Subsequent calls within the cooldown window return `null` immediately (measured at ~1 µs, 0 ms overhead) without initiating network or socket requests.
-  - Enforced daemon-wide scope so that `/v1/classify` unavailability prevents redundant connection attempts to `/v1/embeddings`.
-  - Added `tests/circuit_breaker.test.ts` verifying connection refusal fast-fail, timeout abort, and manual/success circuit reset.
-
-## [0.5.4] - 2026-10-30
+## [0.5.1] - 2026-10-30
 
 ### Added
+- **Daemon Circuit Breaker & Resilient Timeout Wrapper** (`src/judge/circuit.ts`, `src/judge/embed.ts`, `src/judge/nearest.ts`):
+  - Added shared circuit breaker wrapper `withCircuitBreaker` protecting all `axil-auren` calls against connection refusal, hung sockets, and daemon downtime.
+  - Implemented fast-fail backoff (`CIRCUIT_BACKOFF_MS = 30_000`) and tight default timeout (`DEFAULT_CLASSIFY_TIMEOUT_MS = 250`).
+  - When `axil-auren` is offline or times out, the circuit breaker opens daemon-wide; subsequent calls fail fast immediately (~1 µs, 0 ms overhead) without touching the network or socket layer, preventing Pi event loop hangs.
+  - Added unit test suite in `tests/circuit_breaker.test.ts` verifying connection refusal, timeout abort, and manual/success circuit reset.
 - **Assistant Cognitive Wondering Detection & Epistemic Steering** (`src/hooks/events.ts`, `src/hooks/wondering.ts`, `src/judge/wondering-exemplars.ts`):
   - Hooked `pi.on("message_end")` to observe assistant turns, extracting text and thinking blocks (`part.thinking` and `part.text`).
   - Added `evaluateAssistantWondering(text, cfg)` using in-memory vector embeddings on `axil-auren` (`POST /v1/classify`, `bge-base`) against bilingual exemplars (`WONDERING_EXEMPLARS`: `wondering` vs `routine_action`).
@@ -21,37 +17,23 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - Zero database queries are executed; the agent is steered to query `memory_recall` via inference.
   - Per-turn deduplication prevents duplicate steering hints.
   - Added empirical evaluation harness (`scripts/eval-wondering.ts`) measuring 100.0% accuracy, 100.0% wondering recall, and 0.0% false positives (p50: 17.9 ms).
-
-## [0.5.3] - 2026-10-30
-
-### Added
 - **Unified Hint-Only Recall Architecture & Epistemic Nudges** (`src/hooks/auto_recall.ts`, `src/config.ts`, `src/judge/recall-exemplars.ts`):
   - Added `recallAction?: "hint" | "query"` setting to `MmConfig` (with environment variable override `PI_MM_RECALL_ACTION`, defaulting to `"hint"` in runtime configuration).
-  - When `isRecallIntent` is confirmed true (via vector embeddings on `axil-auren` `POST /v1/classify`) in hint mode, `auto_recall` executes **zero automated database scans** (`runScanWithTimeout` and `primeSubsystemInvariants` are bypassed completely).
+  - When `isRecallIntent` is confirmed true (via vector embeddings on `axil-auren` `POST /v1/classify`) in hint mode, `auto_recall` executes zero automated database scans (`runScanWithTimeout` and `primeSubsystemInvariants` are bypassed completely).
   - Injects a quiet epistemic hint into `event.systemPromptOptions.sections["memory_context"]` advising the agent to formulate queries via LLM inference and retrieve records using `memory_recall`.
   - Sets `display: false` on the returned custom message, completely eliminating noisy, unprompted UI cards in the user's chat interface.
-  - Expanded `RECALL_EXEMPLARS.recall_past` with architectural wonderings and exploratory questions (*"How does the caching layer work in this project?"*, *"How does FTS handle accent folding here?"*, *"Why are descriptors leaking in corm?"*), ensuring cognitive curiosity is detected and guided without speculative database scans.
+  - Expanded `RECALL_EXEMPLARS.recall_past` with architectural wonderings and exploratory questions (*"How does the caching layer work in this project?"*, *"How does FTS handle accent folding here?"*), ensuring cognitive curiosity is detected and guided without speculative database scans.
   - Preserved `recallAction: "query"` for legacy auto-injected background recall compatibility.
-
-## [0.5.2] - 2026-10-30
 
 ### Fixed
 - **Elimination of Regex Query Stripping in Favor of Stopword Set Filtering** (`src/hooks/auto_recall.ts`, `src/tools/scan.ts`):
-  - Completely removed the `extractRecallSearchQuery` regex prefix-stripping heuristic from `auto_recall.ts`, adhering to the standing directive against regex heuristics (Ref 14579).
-  - Added conversational stop words (`"remember"`, `"recall"`, `"mention"`, `"mentioning"`, `"tell"`, `"told"`, `"say"`, `"said"`, `"speaking"`, `"talk"`, `"talked"`, `"you"`, `"me"`, `"us"`, `"i"`, `"we"`) to `STOP_WORDS` in `src/tools/scan.ts`.
-  - Token-level search naturally eliminates conversational framing words via $O(1)$ set lookup (`!STOP_WORDS.has(w.toLowerCase())`) without regexes.
+  - Added conversational stop words to `STOP_WORDS` in `src/tools/scan.ts`, enabling $O(1)$ set lookup to naturally filter conversational framing tokens without brittle regular expressions.
   - Recall intent is detected cleanly via in-memory vector cosine similarity (`POST /v1/classify`, `bge-base`), and query formulation is delegated to the agent's LLM inference via `memory_recall`.
-
-## [0.5.1] - 2026-10-30
-
-### Fixed
-- **Conversational Recall Query Sanitization & Stopword Elimination** (`src/hooks/auto_recall.ts`):
-  - Added `extractRecallSearchQuery(prompt)` to strip conversational recall framing prefixes (*"do you remember (me mentioning/talking about)?"*, *"what did I say about..."*, *"did I mention..."*, *"lembras-te de..."*) and trailing question punctuation before scanning.
-  - When recall intent is confirmed by the classifier, `runScanWithTimeout` executes search against the sanitized semantic topic keywords rather than the raw conversational prompt, preventing conversational stopwords (like the word *"remember"*) from acting as database query tokens and matching unrelated past sessions.
 - **Unconditional Question-Memory Exclusion in Injected Context** (`src/hooks/auto_recall.ts`):
-  - Removed the `!isExplicitRecall` bypass in `buildInjectedContext`. `isQuestionMemory(c, c.envelope)` is now strictly and unconditionally enforced across all modes, ensuring conversational meta-questions (e.g. *"In general, what do you remember?"*, *"What was my request?"*) are never injected as factual background context.
+  - Enforced `isQuestionMemory` strictly across all modes, ensuring conversational meta-questions (*"In general, what do you remember?"*, *"What was my request?"*) are never injected as factual background context.
 - **Silent Non-Intrusive Guidance on Empty Matches** (`src/hooks/auto_recall.ts`):
-  - When recall intent is detected but no high-confidence memory records match, the emitted notice sets `display: false`, keeping the user's chat clean without displaying empty or spurious memory cards while delivering the guidance notice to `event.systemPromptOptions.sections["memory_context"]`.
+  - When recall intent is detected but no high-confidence memory records match, the notice sets `display: false`, keeping the user's chat clean without displaying empty or spurious memory cards.
+- **Pi freeze on daemon unavailability**: Eliminated sequential 2000ms+ classification delays in `classifyViaEndpoint` when `axil-auren` is uncommunicative or stopped, ensuring zero turn stalls when local AI daemon is offline.
 
 ## [0.5.0] - 2026-10-29
 

@@ -135,9 +135,17 @@ Measure your own phrasing (opt-in, never part of `npm test`; prints accuracy, fa
 
 In addition to write-path capture judging, `pi-mm` intelligently classifies the **read path** before each agent turn (`before_agent_start`). When a user asks about past architectural choices, previous debugging sessions, decisions, rules, or lore, `pi-mm` uses `POST /v1/classify` against a curated bilingual exemplar corpus (`recall_past` vs `standalone`):
 
-1. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
-2. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
-3. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic regex heuristics (`recallFallback: "regex"`).
+1. **Hint-Only Architecture (`recallAction: "hint"`, default)**: When recall intent or architectural wondering is confirmed by embeddings, `auto_recall` executes **zero automated database scans** (`runScanWithTimeout` and `primeSubsystemInvariants` are completely bypassed). Instead, it injects a quiet epistemic hint into `event.systemPromptOptions.sections["memory_context"]` advising the agent to formulate queries via LLM inference and retrieve records using `memory_recall`. It sets `display: false` on the returned custom message, completely eliminating noisy, unprompted UI cards in the user's chat interface. For legacy auto-injected background recall, set `"recallAction": "query"`.
+2. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
+3. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
+4. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic heuristics (`recallFallback: "regex"`).
+
+### Daemon Circuit Breaker & Resilient Timeout
+
+All embedding classification and vector calls to `axil-auren` are wrapped with a resilient in-memory circuit breaker (`src/judge/circuit.ts`):
+- **Fast Timeout**: Imposes a tight default timeout of 250 ms (`DEFAULT_CLASSIFY_TIMEOUT_MS = 250`) on `/v1/classify`, well above normal local inference (~18 ms p50) but fast enough to prevent perceptible turn lag.
+- **Fail-Fast Cooldown**: On connection refusal (`ECONNREFUSED`), socket hang, network error, or 5xx server status, the daemon base URL is placed on a 30-second cooldown (`CIRCUIT_BACKOFF_MS = 30_000`).
+- **Zero Overhead When Offline**: While the circuit is open, subsequent calls bypass network I/O completely and return `null` immediately (measured at ~1 µs, 0 ms overhead), ensuring that Pi never freezes or stalls when `axil-auren` is stopped.
 
 ### Assistant Cognitive Wondering Detection & Self-Hinting
 
