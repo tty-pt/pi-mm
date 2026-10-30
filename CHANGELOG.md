@@ -5,6 +5,10 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 ## [0.5.1] - 2026-10-30
 
 ### Added
+- **Unified `POST /v1/systemone` Protocol & Out-Of-The-Box Zero-Config Defaults** (`src/judge/nearest.ts`, `src/config.ts`):
+  - Updated nearest-exemplar classification to target the unified `POST /v1/systemone` endpoint in `axil-auren`, parsing `{ decision, choice, similarity, confidence, margin }`.
+  - In absence of explicit settings in `settings.json`, automatically defaults `judgeUrl` and `captureEmbedUrl` to `http://127.0.0.1:4242`, `captureMode` to `"judge"`, `embedUrl` to `http://127.0.0.1:4242/v1/embeddings`, and `embedModel` to `"bge-base"`.
+  - Automatically enables `libsepal` vector semantic search out of the box without requiring manual `settings.json` configuration.
 - **Unified Model Status Slot & Disconnected Power-Off State** (`src/auren-bootstrap.ts`, `src/hooks/events.ts`):
   - Standardized local model status widget on shared slot ID `"auren-model"` with `AUREN_STATUS_SLOT`.
   - Added `"🔌 off"` state in `describeModelStatus` when the daemon is offline or disconnected, replacing invisible cleared slots with explicit power-off feedback.
