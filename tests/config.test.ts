@@ -440,3 +440,13 @@ Deno.test("capture embedding settings: defaults, validation and env", () => {
   const kept = applyEnv(loadConfig({ captureEmbed: "auto", captureMinMargin: 0.1 }), { PI_MM_CAPTURE_EMBED: "off", PI_MM_CAPTURE_MIN_MARGIN: "0.3" });
   check(kept.captureEmbed === "auto" && kept.captureMinMargin === 0.1, "settings win over env");
 });
+
+Deno.test("loadConfig: absent judgeUrl defaults to axil-auren bringing a fully working system", () => {
+  const cfg = loadConfig({});
+  check(cfg.judgeUrl === "http://127.0.0.1:4242", "judgeUrl defaults to axil-auren");
+  check(cfg.captureEmbedUrl === "http://127.0.0.1:4242", "captureEmbedUrl defaults to axil-auren");
+  check(cfg.captureMode === "judge", "captureMode defaults to judge");
+  check(cfg.embedUrl === "http://127.0.0.1:4242/v1/embeddings", "embedUrl defaults to auren embeddings");
+  check(cfg.embedModel === "bge-base", "embedModel defaults to bge-base");
+  check(sepalConfigured(cfg) === true, "sepalConfigured is true by default");
+});

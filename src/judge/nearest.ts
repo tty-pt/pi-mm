@@ -97,7 +97,7 @@ async function classifyViaEndpoint(
     labels[ex.kind]?.push(ex.text);
   }
 
-  const url = `${base.replace(/\/+$/, "")}/v1/classify`;
+  const url = `${base.replace(/\/+$/, "")}/v1/systemone`;
 
   return await withCircuitBreaker(
     base,
@@ -115,13 +115,17 @@ async function classifyViaEndpoint(
       if (!res.ok) return null;
       const body = await res.json() as {
         choice?: string;
+        decision?: string;
         similarity?: number;
+        confidence?: number;
         margin?: number;
       };
-      if (typeof body.choice === "string" && typeof body.similarity === "number" && typeof body.margin === "number") {
+      const kind = body.decision ?? body.choice;
+      const sim = body.similarity ?? body.confidence;
+      if (typeof kind === "string" && typeof sim === "number" && typeof body.margin === "number") {
         return {
-          kind: body.choice,
-          similarity: body.similarity,
+          kind,
+          similarity: sim,
           margin: body.margin,
         };
       }

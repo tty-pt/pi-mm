@@ -2,19 +2,20 @@ import { strict as assert } from "node:assert";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import { nearestExemplar } from "../src/judge/nearest.ts";
 
-Deno.test("pi-mm nearestExemplar uses /v1/classify when server responds 200", async () => {
+Deno.test("pi-mm nearestExemplar uses /v1/systemone when server responds 200", async () => {
   const real = globalThis.fetch;
-  let classifyCalled = false;
+  let systemoneCalled = false;
   let embedCalled = false;
 
   globalThis.fetch = ((url: unknown, init?: { body?: string }) => {
     const u = String(url);
-    if (u.includes("/v1/classify")) {
-      classifyCalled = true;
+    if (u.includes("/v1/systemone")) {
+      systemoneCalled = true;
       const parsed = JSON.parse(init?.body ?? "{}");
       assert.equal(parsed.text, "we use postgres");
       assert.ok(parsed.labels?.remember !== undefined);
       return Promise.resolve(new Response(JSON.stringify({
+        decision: "remember",
         choice: "remember",
         similarity: 0.88,
         margin: 0.30,
@@ -38,7 +39,7 @@ Deno.test("pi-mm nearestExemplar uses /v1/classify when server responds 200", as
     assert.equal(res?.kind, "remember");
     assert.equal(res?.similarity, 0.88);
     assert.equal(res?.margin, 0.30);
-    assert.ok(classifyCalled);
+    assert.ok(systemoneCalled);
     assert.ok(!embedCalled);
   } finally {
     globalThis.fetch = real;

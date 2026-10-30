@@ -82,7 +82,7 @@ Deno.test("recall_intent: config defaults and environment parsing", () => {
 
   // Capabilities string
   const descAuto = describeCapabilities(DEFAULT_CONFIG);
-  assert.ok(descAuto.includes("recall=embed (/v1/classify"));
+  assert.ok(descAuto.includes("recall=embed (/v1/systemone") || descAuto.includes("recall=embed (/v1/classify"));
 
   const descOff = describeCapabilities({ ...DEFAULT_CONFIG, recallEmbed: "off" });
   assert.ok(descOff.includes("recall=regex"));

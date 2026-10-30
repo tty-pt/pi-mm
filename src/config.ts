@@ -239,12 +239,20 @@ export function loadConfig(raw: unknown): MmConfig {
   }
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
+  const effectiveJudgeMode: JudgeMode =
+    jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : (DEFAULT_CONFIG.judgeMode ?? "auto");
+
+  const effectiveJudgeUrl =
+    typeof jUrl === "string" && jUrl.trim() !== ""
+      ? jUrl.trim()
+      : (effectiveJudgeMode === "auto" ? "http://127.0.0.1:4242" : undefined);
+
   let effectiveCaptureMode: CaptureMode = "all";
   if (capMode === "all" || capMode === "keyword" || capMode === "judge" || capMode === "off") {
     effectiveCaptureMode = capMode;
-  } else if (jMode === "off") {
+  } else if (effectiveJudgeMode === "off") {
     effectiveCaptureMode = "off";
-  } else if (typeof jUrl === "string" && jUrl.trim() !== "") {
+  } else if (effectiveJudgeUrl) {
     effectiveCaptureMode = "judge";
   } else {
     effectiveCaptureMode = "all";
@@ -278,25 +286,29 @@ export function loadConfig(raw: unknown): MmConfig {
     memDir: typeof dir === "string" && dir.trim() !== "" ? dir.trim() : DEFAULT_CONFIG.memDir,
     scanLimit: typeof limit === "number" && Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_CONFIG.scanLimit,
     advancedTools: typeof adv === "boolean" ? adv : DEFAULT_CONFIG.advancedTools,
-    embedUrl: typeof url === "string" && url.trim() !== "" ? url.trim() : undefined,
-    embedModel: typeof model === "string" && model.trim() !== "" ? model.trim() : undefined,
+    embedUrl: typeof url === "string" && url.trim() !== ""
+      ? url.trim()
+      : (effectiveJudgeUrl ? `${effectiveJudgeUrl.replace(/\/+$/, "")}/v1/embeddings` : undefined),
+    embedModel: typeof model === "string" && model.trim() !== ""
+      ? model.trim()
+      : (effectiveJudgeUrl ? "bge-base" : undefined),
     embedKey: typeof key === "string" && key.trim() !== "" ? key.trim() : undefined,
-    semanticSearch: typeof semSearch === "boolean" ? semSearch : undefined,
+    semanticSearch: typeof semSearch === "boolean" ? semSearch : (effectiveJudgeUrl ? true : undefined),
     captureMode: effectiveCaptureMode,
     captureKeyword: typeof capKeyword === "string" && capKeyword.trim() !== "" ? capKeyword.trim() : DEFAULT_CONFIG.captureKeyword,
     captureKeywords: effectiveKeywords,
-    judgeMode: jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : DEFAULT_CONFIG.judgeMode,
+    judgeMode: effectiveJudgeMode,
     judgeProtocol: jProto === "systemzero" || jProto === "systemone" || jProto === "auto" ? jProto : DEFAULT_CONFIG.judgeProtocol,
-    judgeUrl: typeof jUrl === "string" && jUrl.trim() !== "" ? jUrl.trim() : undefined,
-    judgeModel: typeof jModel === "string" && jModel.trim() !== "" ? jModel.trim() : DEFAULT_CONFIG.judgeModel,
+    judgeUrl: effectiveJudgeUrl,
+    judgeModel: typeof jModel === "string" && jModel.trim() !== "" ? jModel.trim() : "bge-base",
     judgeKey: typeof jKey === "string" && jKey.trim() !== "" ? jKey.trim() : undefined,
     judgeTimeoutMs: typeof jTimeout === "number" && jTimeout > 0 ? jTimeout : DEFAULT_CONFIG.judgeTimeoutMs,
     judgeFallback: effectiveFallback,
     captureEmbed: embedMode(record["captureEmbed"]),
     captureEmbedUrl: typeof record["captureEmbedUrl"] === "string" && record["captureEmbedUrl"].trim() !== ""
       ? record["captureEmbedUrl"].trim()
-      : (typeof jUrl === "string" && jUrl.trim() !== "" ? jUrl.trim() : undefined),
-    captureEmbedModel: typeof record["captureEmbedModel"] === "string" && record["captureEmbedModel"].trim() !== "" ? record["captureEmbedModel"].trim() : undefined,
+      : effectiveJudgeUrl,
+    captureEmbedModel: typeof record["captureEmbedModel"] === "string" && record["captureEmbedModel"].trim() !== "" ? record["captureEmbedModel"].trim() : "bge-base",
     captureMinMargin: unitInterval(record["captureMinMargin"]),
     captureMinSimilarity: unitInterval(record["captureMinSimilarity"]),
     captureExemplars: parseCaptureExemplars(record["captureExemplars"]),
@@ -353,7 +365,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   // Independent judge settings
   const envJMode = env["PI_MM_JUDGE_MODE"] ?? env["MM_JUDGE_MODE"];
   const envJProto = env["PI_MM_JUDGE_PROTOCOL"] ?? env["MM_JUDGE_PROTOCOL"];
-  let defaultJudgeUrl = env["PI_MM_JUDGE_URL"] ?? env["MM_JUDGE_URL"] ?? env["JEV_URL"];
+  let defaultJudgeUrl = env["PI_MM_JUDGE_URL"] ?? env["PI_QUEST_JUDGE_URL"] ?? env["MM_JUDGE_URL"] ?? env["JEV_URL"];
   let defaultJudgeModel = env["PI_MM_JUDGE_MODEL"] ?? env["MM_JUDGE_MODEL"] ?? env["JEV_MODEL"];
   let defaultJudgeKey = env["PI_MM_JUDGE_KEY"] ?? env["MM_JUDGE_KEY"] ?? env["JEV_KEY"];
   const envJTimeout = env["PI_MM_JUDGE_TIMEOUT_MS"] ?? env["MM_JUDGE_TIMEOUT_MS"];
@@ -404,7 +416,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const envKey = defaultEmbedKey;
   const envAdv = env["PI_MM_ADVANCED_TOOLS"];
   const envSemSearch = env["PI_MM_SEMANTIC_SEARCH"] ?? env["MM_SEMANTIC_SEARCH"];
-  const envJUrl = defaultJudgeUrl;
+  let envJUrl = defaultJudgeUrl;
   const envJModel = defaultJudgeModel;
   const envJKey = defaultJudgeKey;
 
@@ -450,6 +462,9 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     jMode = envJMode;
   }
 
+  envJUrl = defaultJudgeUrl ?? (jMode === "auto" && !cfg.judgeUrl ? "http://127.0.0.1:4242" : undefined);
+  const resolvedJudgeUrl = jMode === "off" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
+
   let jFallback = cfg.judgeFallback;
   if (envJFallback === "capture" || envJFallback === "skip") {
     jFallback = envJFallback;
@@ -485,7 +500,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     captureKeywords: capKeywords,
     judgeMode: jMode,
     judgeProtocol: envJProto === "systemzero" || envJProto === "systemone" || envJProto === "auto" ? envJProto : cfg.judgeProtocol,
-    judgeUrl: cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined),
+    judgeUrl: resolvedJudgeUrl,
     judgeModel: cfg.judgeModel ?? (typeof envJModel === "string" && envJModel.trim() !== "" ? envJModel.trim() : undefined),
     judgeKey: cfg.judgeKey ?? (typeof envJKey === "string" && envJKey.trim() !== "" ? envJKey.trim() : undefined),
     judgeTimeoutMs: timeoutNum && !isNaN(timeoutNum) && timeoutNum > 0 ? timeoutNum : cfg.judgeTimeoutMs,
@@ -677,7 +692,7 @@ function parseRecallExemplars(raw: unknown): Record<string, string[]> | undefine
 }
 
 export function judgeConfigured(cfg: MmConfig): boolean {
-  if (cfg.captureMode === "off") return false;
+  if (cfg.captureMode === "off" || cfg.judgeMode === "off") return false;
   return typeof cfg.judgeUrl === "string" && cfg.judgeUrl.trim() !== "";
 }
 
@@ -695,28 +710,28 @@ export function describeCapabilities(cfg: MmConfig): string {
     parts.push(`capture=keyword ("${cfg.captureKeyword ?? "@remember"}")`);
   } else if (cap === "judge") {
     const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
-    parts.push(`capture=embed (/v1/classify @ ${target}, fallback: ${cfg.judgeFallback ?? "skip"})`);
+    parts.push(`capture=embed (/v1/systemone @ ${target}, fallback: ${cfg.judgeFallback ?? "skip"})`);
   } else {
     parts.push("capture=all");
   }
 
   if (recallEmbed(cfg) !== "off") {
     const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
-    parts.push(`recall=embed (/v1/classify @ ${target}, fallback: ${cfg.recallFallback ?? "regex"})`);
+    parts.push(`recall=embed (/v1/systemone @ ${target}, fallback: ${cfg.recallFallback ?? "regex"})`);
   } else {
     parts.push("recall=regex");
   }
 
   if (directiveEmbed(cfg) !== "off") {
     const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
-    parts.push(`directive=embed (/v1/classify @ ${target}, fallback: ${cfg.directiveFallback ?? "regex"})`);
+    parts.push(`directive=embed (/v1/systemone @ ${target}, fallback: ${cfg.directiveFallback ?? "regex"})`);
   } else {
     parts.push("directive=regex");
   }
 
   if (overviewEmbed(cfg) !== "off") {
     const target = cfg.captureEmbedUrl || cfg.judgeUrl || "unconfigured";
-    parts.push(`overview=embed (/v1/classify @ ${target}, fallback: ${cfg.overviewFallback ?? "regex"})`);
+    parts.push(`overview=embed (/v1/systemone @ ${target}, fallback: ${cfg.overviewFallback ?? "regex"})`);
   } else {
     parts.push("overview=regex");
   }

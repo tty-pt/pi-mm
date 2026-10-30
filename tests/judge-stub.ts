@@ -17,7 +17,7 @@ export function makeStubFetch(judge: JudgeAnswer, embed?: EmbedAnswer): StubFetc
   let judges = 0;
   const stub = ((url: unknown, init?: { body?: string }) => {
     const urlStr = String(url);
-    if (urlStr.includes("/v1/classify")) {
+    if (urlStr.includes("/v1/classify") || urlStr.includes("/v1/systemone")) {
       return Promise.resolve(new Response("classify stub down", { status: 404 }));
     }
     if (urlStr.includes("/v1/embeddings")) {

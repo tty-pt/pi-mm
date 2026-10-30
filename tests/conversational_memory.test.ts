@@ -66,7 +66,7 @@ Deno.test("conversational memory: end-to-end knowledge capture, stoma FTS, seman
 
   const classifyServer = Deno.serve({ port: 0 }, async (req) => {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+    if (url.pathname.includes("/v1/systemone") || url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
       const body = await req.json();
       const text = (body.text as string || "").toLowerCase();
       let choice = "remember";
@@ -500,7 +500,7 @@ Deno.test("conversational memory: natural non-technical experience 'I spoke to m
 
   const classifyServer2 = Deno.serve({ port: 0 }, async (req) => {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+    if (url.pathname.includes("/v1/systemone") || url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
       const body = await req.json();
       const text = (body.text as string || "").toLowerCase();
       let choice = "remember";
