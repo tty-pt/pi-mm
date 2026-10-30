@@ -69,16 +69,25 @@ async function querySpatialFilter(
   return res.code === 0 ? new Set(parseResultLines(res.stdout).map((l) => l.ref)) : new Set();
 }
 
-const STOP_WORDS = new Set([
+export const STOP_WORDS = new Set([
   "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "with",
   "by", "from", "of", "about", "into", "through", "after", "before", "is",
   "are", "was", "were", "be", "been", "being", "have", "has", "had", "do",
   "does", "did", "can", "could", "will", "would", "shall", "should", "what",
   "which", "who", "whom", "this", "that", "these", "those", "my", "your",
   "our", "their", "its", "there", "here", "when", "where", "why", "how",
+  "i", "me", "you", "we", "us", "he", "him", "she", "her", "they", "them",
+  "remember", "remembers", "remembered", "remembering",
+  "recall", "recalls", "recalled", "recalling",
+  "mention", "mentions", "mentioned", "mentioning",
+  "tell", "tells", "told", "telling",
+  "say", "says", "said", "saying",
+  "talk", "talks", "talked", "talking",
+  "speak", "speaks", "spoke", "spoken", "speaking",
+  "discuss", "discusses", "discussed", "discussing",
 ]);
 
-async function scanTokenFallback(
+export async function scanTokenFallback(
   env: ToolEnv, cwd: string, expr: string, limit: number, axes: string,
   timeLevel: number, now: Date, until: string | undefined, topic: string,
 ): Promise<ResultLine[]> {

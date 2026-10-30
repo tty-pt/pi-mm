@@ -2,6 +2,15 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.5.2] - 2026-10-30
+
+### Fixed
+- **Elimination of Regex Query Stripping in Favor of Stopword Set Filtering** (`src/hooks/auto_recall.ts`, `src/tools/scan.ts`):
+  - Completely removed the `extractRecallSearchQuery` regex prefix-stripping heuristic from `auto_recall.ts`, adhering to the standing directive against regex heuristics (Ref 14579).
+  - Added conversational stop words (`"remember"`, `"recall"`, `"mention"`, `"mentioning"`, `"tell"`, `"told"`, `"say"`, `"said"`, `"speaking"`, `"talk"`, `"talked"`, `"you"`, `"me"`, `"us"`, `"i"`, `"we"`) to `STOP_WORDS` in `src/tools/scan.ts`.
+  - Token-level search naturally eliminates conversational framing words via $O(1)$ set lookup (`!STOP_WORDS.has(w.toLowerCase())`) without regexes.
+  - Recall intent is detected cleanly via in-memory vector cosine similarity (`POST /v1/classify`, `bge-base`), and query formulation is delegated to the agent's LLM inference via `memory_recall`.
+
 ## [0.5.1] - 2026-10-30
 
 ### Fixed

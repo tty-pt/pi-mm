@@ -16,9 +16,9 @@ import {
   evaluateRecallIntent,
   handleBeforeAgentStart,
   buildInjectedContext,
-  extractRecallSearchQuery,
   type BeforeAgentStartEvent,
 } from "../src/hooks/auto_recall.ts";
+import { STOP_WORDS, scanTokenFallback } from "../src/tools/scan.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
 import type { CormRunner } from "../src/corm.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
@@ -328,27 +328,28 @@ Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent
   assert.ok(event.systemPromptOptions?.sections?.["memory_context"]?.includes("[Persistent Memory Notice]"));
 });
 
-Deno.test("recall_intent: extractRecallSearchQuery sanitizes conversational prefixes and punctuation", () => {
-  const q1 = extractRecallSearchQuery("Do you remember me mentioning my grand dad?");
-  assert.strictEqual(q1, "my grand dad");
+Deno.test("recall_intent: STOP_WORDS filters conversational stop words without regex heuristics", () => {
+  // Conversational verbs and pronouns must be in STOP_WORDS
+  assert.ok(STOP_WORDS.has("remember"), "remember must be a stopword");
+  assert.ok(STOP_WORDS.has("recall"), "recall must be a stopword");
+  assert.ok(STOP_WORDS.has("mention"), "mention must be a stopword");
+  assert.ok(STOP_WORDS.has("mentioning"), "mentioning must be a stopword");
+  assert.ok(STOP_WORDS.has("you"), "you must be a stopword");
+  assert.ok(STOP_WORDS.has("me"), "me must be a stopword");
+  assert.ok(STOP_WORDS.has("i"), "i must be a stopword");
+  assert.ok(STOP_WORDS.has("we"), "we must be a stopword");
+  assert.ok(STOP_WORDS.has("tell"), "tell must be a stopword");
+  assert.ok(STOP_WORDS.has("told"), "told must be a stopword");
+  assert.ok(STOP_WORDS.has("say"), "say must be a stopword");
+  assert.ok(STOP_WORDS.has("said"), "said must be a stopword");
 
-  const q2 = extractRecallSearchQuery("Do you remember: my grand dad?");
-  assert.strictEqual(q2, "my grand dad");
+  // Non-regex token filtering drops conversational words naturally
+  const rawPrompt = "Do you remember me mentioning my grand dad?";
+  const tokens = rawPrompt.split(/\s+/)
+    .map((w) => w.replace(/[^\w-]/g, "").toLowerCase())
+    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
 
-  const q3 = extractRecallSearchQuery("Do you remember, what rule we have about pure C and JS?");
-  assert.strictEqual(q3, "what rule we have about pure C and JS");
-
-  const q4 = extractRecallSearchQuery("Do you remember what I talked about with my grandfather?");
-  assert.strictEqual(q4, "what I talked about with my grandfather");
-
-  const q5 = extractRecallSearchQuery("Did I mention the cherry tree?");
-  assert.strictEqual(q5, "the cherry tree");
-
-  const q6 = extractRecallSearchQuery("What did we decide about transaction boundaries?");
-  assert.strictEqual(q6, "transaction boundaries");
-
-  const q7 = extractRecallSearchQuery("Lembras-te do que combinámos sobre a cache?");
-  assert.strictEqual(q7, "combinámos sobre a cache");
+  assert.deepStrictEqual(tokens, ["grand", "dad"], "Tokens must contain only content words ['grand', 'dad']");
 });
 
 Deno.test("recall_intent: buildInjectedContext strictly filters question-memories even on explicit recall", () => {
@@ -406,12 +407,12 @@ Deno.test("recall_intent: buildInjectedContext strictly filters question-memorie
   assert.ok(context.includes("I talked to my grandfather under the cherry tree"), "Factual memory must be retained");
 });
 
-Deno.test("recall_intent: handleBeforeAgentStart passes sanitized query to scan, not raw prompt", async () => {
-  const queries: string[] = [];
+Deno.test("recall_intent: scanTokenFallback queries only non-stopword tokens, never conversational words", async () => {
+  const tokenQueries: string[] = [];
   const runner: CormRunner = {
     run: (inv: unknown) => {
       const invStr = JSON.stringify(inv);
-      queries.push(invStr);
+      tokenQueries.push(invStr);
       return Promise.resolve({ stdout: "", stderr: "", code: 0 });
     },
   };
@@ -429,38 +430,19 @@ Deno.test("recall_intent: handleBeforeAgentStart passes sanitized query to scan,
     },
   };
 
-  const mockFetchRecall: typeof fetch = () => {
-    return Promise.resolve(new Response(JSON.stringify({
-      choice: "recall_past",
-      similarity: 0.92,
-      margin: 0.30,
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
-  };
+  const topic = "Do you remember me mentioning my grand dad?";
+  await scanTokenFallback(env, "/tmp/fake-cwd", "text", 5, "joint,lemma:a:b", 0, new Date("2026-10-16"), undefined, topic);
 
-  const event: BeforeAgentStartEvent = {
-    messageType: "user",
-    prompt: "Do you remember me mentioning my grand dad?",
-    systemPromptOptions: { sections: {} },
-  };
-
-  await handleBeforeAgentStart(
-    event,
-    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
-    () => Promise.resolve(env),
-    { fetchFn: mockFetchRecall },
-  );
-
-  // Queried topic must be sanitized ("grand", "dad"), NOT conversational stopwords ("remember", "mentioning")
   assert.ok(
-    queries.some((q) => q.includes("--query=dad") || q.includes("--query=grand")),
-    `Queried tokens must contain 'dad' or 'grand', got: ${JSON.stringify(queries)}`,
+    tokenQueries.some((q) => q.includes("--query=dad") || q.includes("--query=grand")),
+    `Token queries must contain 'dad' or 'grand', got: ${JSON.stringify(tokenQueries)}`,
   );
   assert.ok(
-    !queries.some((q) => q.includes("remember")),
-    `Queried tokens must NOT contain 'remember', got: ${JSON.stringify(queries)}`,
+    !tokenQueries.some((q) => q.includes("remember")),
+    `Token queries must NOT query 'remember', got: ${JSON.stringify(tokenQueries)}`,
   );
   assert.ok(
-    !queries.some((q) => q.includes("mentioning")),
-    `Queried tokens must NOT contain 'mentioning', got: ${JSON.stringify(queries)}`,
+    !tokenQueries.some((q) => q.includes("mentioning")),
+    `Token queries must NOT query 'mentioning', got: ${JSON.stringify(tokenQueries)}`,
   );
 });
