@@ -370,7 +370,7 @@ Deno.test("shouldAutoDownload: inference models without embed capability are nev
 
 Deno.test("describeProgress and describeModelStatus: non-blocking visual feedback formatting", () => {
   check(describeProgress({ phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] }) === undefined, "no progress when not downloading");
-  check(describeModelStatus({ phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] }) === undefined, "no status when idle");
+  check(describeModelStatus({ phase: "idle", running: false, started: false, downloads: [], failures: [], pendingConsent: [], configPath: null, notices: [] }) === "🔌 off", "shows off when idle");
 
   const dlState = {
     phase: "downloading" as const,

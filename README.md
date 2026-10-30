@@ -86,6 +86,10 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
 | `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
 | `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
+| `recallAction` | `"hint"` | Action on recall inquiry or architectural wonder: `"hint"` (default, zero DB queries, emits epistemic hint advising agent to use `memory_recall` via inference) or `"query"` (legacy auto-injection). Env: `PI_MM_RECALL_ACTION` |
+| `wonderingEmbed` | `"auto"` | Classify assistant turns and thoughts by embeddings (`POST /v1/classify`) to detect cognitive wonderings and architectural curiosity (`"auto"` or `"off"`). Env: `PI_MM_WONDERING_EMBED` |
+| `wonderingMinSimilarity` | `0.6` | Cosine floor for assistant wondering embedding classification (0..1) |
+| `wonderingMinMargin` | `0.08` | How far a `"wondering"` verdict must beat `"routine_action"` (0..1) |
 | `directiveEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect standing directives/rules (`"auto"` or `"off"`). Env: `PI_MM_DIRECTIVE_EMBED` |
 | `directiveMinSimilarity` | `0.6` | Cosine floor for standing directive classification (0..1) |
 | `directiveMinMargin` | `0.08` | How far a `"standing_directive"` verdict must beat `"transient_task"` (0..1) |
@@ -131,9 +135,27 @@ Measure your own phrasing (opt-in, never part of `npm test`; prints accuracy, fa
 
 In addition to write-path capture judging, `pi-mm` intelligently classifies the **read path** before each agent turn (`before_agent_start`). When a user asks about past architectural choices, previous debugging sessions, decisions, rules, or lore, `pi-mm` uses `POST /v1/classify` against a curated bilingual exemplar corpus (`recall_past` vs `standalone`):
 
-1. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
-2. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
-3. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic regex heuristics (`recallFallback: "regex"`).
+1. **Hint-Only Architecture (`recallAction: "hint"`, default)**: When recall intent or architectural wondering is confirmed by embeddings, `auto_recall` executes **zero automated database scans** (`runScanWithTimeout` and `primeSubsystemInvariants` are completely bypassed). Instead, it injects a quiet epistemic hint into `event.systemPromptOptions.sections["memory_context"]` advising the agent to formulate queries via LLM inference and retrieve records using `memory_recall`. It sets `display: false` on the returned custom message, completely eliminating noisy, unprompted UI cards in the user's chat interface. For legacy auto-injected background recall, set `"recallAction": "query"`.
+2. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
+3. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
+4. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic heuristics (`recallFallback: "regex"`).
+
+### Daemon Circuit Breaker & Resilient Timeout
+
+All embedding classification and vector calls to `axil-auren` are wrapped with a resilient in-memory circuit breaker (`src/judge/circuit.ts`):
+- **Fast Timeout**: Imposes a tight default timeout of 250 ms (`DEFAULT_CLASSIFY_TIMEOUT_MS = 250`) on `/v1/classify`, well above normal local inference (~18 ms p50) but fast enough to prevent perceptible turn lag.
+- **Fail-Fast Cooldown**: On connection refusal (`ECONNREFUSED`), socket hang, network error, or 5xx server status, the daemon base URL is placed on a 30-second cooldown (`CIRCUIT_BACKOFF_MS = 30_000`).
+- **Zero Overhead When Offline**: While the circuit is open, subsequent calls bypass network I/O completely and return `null` immediately (measured at ~1 µs, 0 ms overhead), ensuring that Pi never freezes or stalls when `axil-auren` is stopped.
+
+### Assistant Cognitive Wondering Detection & Self-Hinting
+
+When the agent expresses cognitive uncertainty, architectural curiosity, or wonders how a subsystem works mid-task:
+- Examples: *"I wonder how the caching layer works in this project"*, *"Not sure how FTS handles accent folding here"*, *"Where are session files stored in this architecture?"*
+- `pi-mm` intercepts the assistant's turn in `message_end` and evaluates the reasoning via vector embeddings (`POST /v1/classify` on `axil-auren`, `bge-base`).
+- When classified as `wondering` (similarity $\ge 0.60$, margin $\ge 0.08$), the system steers the agent via `pi.sendMessage` (`deliverAs: "steer"`):
+  > `💡 [Memory Hint]: You are exploring how this subsystem, convention, or architecture works. Check memory_recall to consult past technical decisions and lore.`
+- **Zero automated database scans** are run in the background, ensuring no speculative database queries and zero UI pollution. The agent uses its own inference to query `memory_recall`.
+- **Measured Accuracy**: 100.0% accuracy (24/24), 100.0% recall, and 0.0% false positives (p50: 17.9 ms) across bilingual wondering and routine action benchmarks (`npm run eval:wondering` or `scripts/eval-wondering.ts`).
 
 #### Empirical Benchmark: Regex Heuristics vs. Embeddings
 

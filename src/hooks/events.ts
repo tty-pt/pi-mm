@@ -20,6 +20,7 @@ import { recordAssociations } from "../associative.ts";
 import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
 import { detectSubsystemMentions } from "./auto_recall.ts";
+import { extractAssistantThoughtsAndText, evaluateAssistantWondering } from "./wondering.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -224,6 +225,7 @@ export interface Pi {
   on(event: string, handler: (...args: unknown[]) => unknown): void;
   registerTool(tool: PiToolSpec): void;
   exec(command: string, args: string[], options?: { cwd?: string; env?: Record<string, string> }): Promise<PiExecResult>;
+  sendMessage?: (message: unknown, options?: unknown) => void;
 }
 
 export class SessionEventBuffer {
@@ -1060,7 +1062,8 @@ export async function handleMemoryUpdate(
   }
 }
 
-export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
+export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { fetchFn?: typeof fetch }): void {
+  let turnWonderingSteered = false;
   pi.on("session_start", async (_event: unknown, ctxUnknown?: unknown) => {
     activeSessionBuffer.onSessionStart();
     reinforcementScheduler.onSessionStart();
@@ -1138,7 +1141,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           sessionSavedCount = 0;
           const idleTxt = ui.theme?.fg ? ui.theme.fg("muted", "🧠 0") : "🧠 0";
           ui.setStatus("pi-mm", idleTxt);
-          ui.setStatus("mm-judge", undefined);
+          ui.setStatus("auren-model", ui.theme?.fg ? ui.theme.fg("muted", "🔌 off") : "🔌 off");
         }
 
         const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
@@ -1176,7 +1179,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
                   const statusText = describeModelStatus(st);
                   if (ui?.setStatus) {
-                    ui.setStatus("mm-judge", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
+                    ui.setStatus("auren-model", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
                   }
                   if (st.downloads.length > 0) {
                     const dl = st.downloads[0];
@@ -1211,11 +1214,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     if (sig) await activeSessionBuffer.recordAsync(sig);
   });
 
-  pi.on("message_end", (eventUnknown: unknown) => {
+  pi.on("message_end", async (eventUnknown: unknown, ctxUnknown?: unknown) => {
     if (typeof eventUnknown !== "object" || eventUnknown === null) return;
     const event = eventUnknown as { message?: { role?: string; content?: unknown } };
     if (event.message?.role === "assistant") {
       const content = event.message.content;
+      const fullText = extractAssistantThoughtsAndText(content);
       let text = "";
       if (typeof content === "string") {
         text = content.trim();
@@ -1239,6 +1243,25 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
           lifecycle: "message_end",
           assistantResponse: text,
         });
+      }
+
+      // Cognitive wondering detection & epistemic steering
+      if (!turnWonderingSteered && fullText.length >= 10 && envSource && typeof pi.sendMessage === "function") {
+        try {
+          const ctx = (ctxUnknown as PiCtx) ?? { cwd: process.cwd(), hasUI: false, mode: "agent" };
+          const env = await envSource(ctx);
+          const isWondering = await evaluateAssistantWondering(fullText, env.cfg, options?.fetchFn);
+          if (isWondering && !turnWonderingSteered) {
+            turnWonderingSteered = true;
+            const hint = "💡 [Memory Hint]: You are exploring how this subsystem, convention, or architecture works. Check `memory_recall` to consult past technical decisions and lore.";
+            pi.sendMessage?.({ customType: "memory_hint", content: hint }, { deliverAs: "steer" });
+            traceEvent("assistant_wondering_steered", "info", {
+              preview: fullText.slice(0, 100),
+            });
+          }
+        } catch {
+          // Steering is best effort
+        }
       }
     }
   });
@@ -1517,8 +1540,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     }
   };
 
-  pi.on("turn_end", onTurnEnd);
+  pi.on("turn_end", (event: unknown, ctxUnknown?: unknown) => {
+    turnWonderingSteered = false;
+    return onTurnEnd(event, ctxUnknown);
+  });
   pi.on("turn_start", async (_event: unknown, ctxUnknown?: unknown) => {
+    turnWonderingSteered = false;
     if (!envSource || !ctxUnknown) return;
     try {
       const ctx = ctxUnknown as PiCtx;
@@ -1554,3 +1581,5 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource): void {
     } catch { /* ignore drain errors */ }
   });
 }
+
+export { installSessionHooks as registerHooks };

@@ -138,7 +138,7 @@ Deno.test("configurable intelligence: 2. In-memory embedding classifier endpoint
   const classifyServer = Deno.serve({ port: 0 }, async (req) => {
     classifyCount++;
     const url = new URL(req.url);
-    assert(url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify");
+    assert(url.pathname.includes("/v1/systemone") || url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify");
     const body = await req.json();
 
     const text = (body.text as string).toLowerCase();
@@ -584,7 +584,7 @@ Deno.test("configurable intelligence: 4. [synthetic/mock] Both enabled works end
   // Single unified mock server for both System One and /v1/embeddings
   const unifiedServer = Deno.serve({ port: 0 }, async (req) => {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+    if (url.pathname.includes("/v1/systemone") || url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
       return new Response(JSON.stringify({
         choice: "remember",
         similarity: 0.95,
@@ -884,13 +884,12 @@ Deno.test("configurable intelligence: 6. Real live Jev integration test", async 
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 6b. Real embedding endpoint and Sepal semantic retrieval", async () => {
   const env = Deno.env.toObject();
-  const rawCfg = applyEnv(DEFAULT_CONFIG, env);
-  const hasLiveEmbed = Boolean(rawCfg.embedUrl && rawCfg.embedUrl.trim() !== "");
-
-  if (!hasLiveEmbed) {
-    console.log("[SKIP] Real embedding endpoint not configured (QLLM_URL / CORM_SEPAL_EMBED_URL unset)");
+  const explicitEmbed = env["CORM_SEPAL_EMBED_URL"] ?? env["AUREN_URL"] ?? env["QLLM_URL"];
+  if (!explicitEmbed || explicitEmbed.trim() === "") {
+    console.log("[SKIP] Real embedding endpoint not configured (AUREN_URL / CORM_SEPAL_EMBED_URL unset)");
     return;
   }
+  const rawCfg = applyEnv(DEFAULT_CONFIG, env);
 
   const embedUrl = rawCfg.embedUrl!;
   const embedModel = rawCfg.embedModel || "default";

@@ -66,7 +66,7 @@ Deno.test("conversational_capture_and_mipmaps: Scenario A & B - Two-stage captur
 
   const classifyServer = Deno.serve({ port: 0 }, async (req) => {
     const url = new URL(req.url);
-    if (url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
+    if (url.pathname.includes("/v1/systemone") || url.pathname === "/v1/classify" || url.pathname === "/api/v1/classify") {
       const body = await req.json();
       const text = (body.text as string || "").toLowerCase();
       let choice = "remember";

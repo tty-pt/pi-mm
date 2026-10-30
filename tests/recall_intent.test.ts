@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { RECALL_EXEMPLARS, RECALL_KINDS } from "../src/judge/recall-exemplars.ts";
 import { classifyRecallByEmbedding } from "../src/judge/adapter.ts";
+import { clearEmbedState } from "../src/judge/embed.ts";
 import {
   DEFAULT_CONFIG,
   loadConfig,
@@ -18,6 +19,7 @@ import {
   buildInjectedContext,
   type BeforeAgentStartEvent,
 } from "../src/hooks/auto_recall.ts";
+import { STOP_WORDS, scanTokenFallback } from "../src/tools/scan.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
 import type { CormRunner } from "../src/corm.ts";
 import type { FusedCandidate } from "../src/tools/ranking.ts";
@@ -80,7 +82,7 @@ Deno.test("recall_intent: config defaults and environment parsing", () => {
 
   // Capabilities string
   const descAuto = describeCapabilities(DEFAULT_CONFIG);
-  assert.ok(descAuto.includes("recall=embed (/v1/classify"));
+  assert.ok(descAuto.includes("recall=embed (/v1/systemone") || descAuto.includes("recall=embed (/v1/classify"));
 
   const descOff = describeCapabilities({ ...DEFAULT_CONFIG, recallEmbed: "off" });
   assert.ok(descOff.includes("recall=regex"));
@@ -184,6 +186,7 @@ Deno.test("recall_intent: evaluateRecallIntent fallback behavior when endpoint o
     failingFetch,
   );
   assert.strictEqual(resSkip, false, "Offline server with fallback: skip must return false");
+  clearEmbedState();
 });
 
 Deno.test("recall_intent: buildInjectedContext lifts unprompted drop when recallIntentConfirmed is true", () => {
@@ -234,6 +237,7 @@ Deno.test("recall_intent: handleBeforeAgentStart end-to-end with positive recall
       cormBin: "/usr/bin/corm",
       scanLimit: 5,
       captureEmbedUrl: "http://127.0.0.1:4242",
+      recallAction: "query",
     },
   };
 
@@ -276,6 +280,110 @@ Deno.test("recall_intent: handleBeforeAgentStart end-to-end with positive recall
   assert.strictEqual(event.systemPromptOptions.sections["memory_context"], content);
 });
 
+Deno.test("recall_intent: handleBeforeAgentStart in hint mode executes zero database queries and sets display false", async () => {
+  let scanCalls = 0;
+  const runner: CormRunner = {
+    run: (_inv: unknown) => {
+      scanCalls++;
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      recallAction: "hint",
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const mockFetchRecall: typeof fetch = () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "recall_past",
+      similarity: 0.95,
+      margin: 0.35,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const event: BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "Do you remember me mentioning my grand dad?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  const res = await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
+    () => Promise.resolve(env),
+    { fetchFn: mockFetchRecall },
+  );
+
+  assert.ok(res !== null, "Must return a custom message");
+  assert.ok(res.message);
+  assert.strictEqual(res.message.display, false, "Must set display: false to prevent UI pollution");
+  assert.strictEqual(scanCalls, 0, "Must execute zero database queries in hint mode");
+
+  const content = res.message.content || "";
+  assert.ok(content.includes("[Memory Intent Detected]"));
+  assert.ok(content.includes("memory_recall"));
+  assert.strictEqual(event.systemPromptOptions?.sections?.["memory_context"], content);
+});
+
+Deno.test("recall_intent: architectural wondering prompts emit epistemic hint without database queries", async () => {
+  let scanCalls = 0;
+  const runner: CormRunner = {
+    run: (_inv: unknown) => {
+      scanCalls++;
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      recallAction: "hint",
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const mockFetchRecall: typeof fetch = () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "recall_past",
+      similarity: 0.91,
+      margin: 0.28,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const event: BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "How does the caching layer work in this project?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  const res = await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
+    () => Promise.resolve(env),
+    { fetchFn: mockFetchRecall },
+  );
+
+  assert.ok(res !== null);
+  assert.ok(res.message);
+  assert.strictEqual(res.message.display, false);
+  assert.strictEqual(scanCalls, 0, "Zero database scans on architectural wondering");
+  assert.ok(res.message.content?.includes("[Memory Intent Detected]"));
+});
+
 Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent positive but DB empty", async () => {
   const runner: CormRunner = {
     run: (_inv: unknown) => {
@@ -294,6 +402,7 @@ Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent
       cormBin: "/usr/bin/corm",
       scanLimit: 5,
       captureEmbedUrl: "http://127.0.0.1:4242",
+      recallAction: "query",
     },
   };
 
@@ -320,8 +429,128 @@ Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent
 
   assert.ok(res !== null, "Even with empty DB, positive recall intent must inject a notice");
   assert.ok(res.message);
+  assert.strictEqual(res.message.display, false, "Notice message must have display: false to avoid UI pollution");
   const content = res.message.content || "";
   assert.ok(content.includes("[Persistent Memory Notice]"));
   assert.ok(content.includes("memory_recall"));
   assert.ok(event.systemPromptOptions?.sections?.["memory_context"]?.includes("[Persistent Memory Notice]"));
+});
+
+Deno.test("recall_intent: STOP_WORDS filters conversational stop words without regex heuristics", () => {
+  // Conversational verbs and pronouns must be in STOP_WORDS
+  assert.ok(STOP_WORDS.has("remember"), "remember must be a stopword");
+  assert.ok(STOP_WORDS.has("recall"), "recall must be a stopword");
+  assert.ok(STOP_WORDS.has("mention"), "mention must be a stopword");
+  assert.ok(STOP_WORDS.has("mentioning"), "mentioning must be a stopword");
+  assert.ok(STOP_WORDS.has("you"), "you must be a stopword");
+  assert.ok(STOP_WORDS.has("me"), "me must be a stopword");
+  assert.ok(STOP_WORDS.has("i"), "i must be a stopword");
+  assert.ok(STOP_WORDS.has("we"), "we must be a stopword");
+  assert.ok(STOP_WORDS.has("tell"), "tell must be a stopword");
+  assert.ok(STOP_WORDS.has("told"), "told must be a stopword");
+  assert.ok(STOP_WORDS.has("say"), "say must be a stopword");
+  assert.ok(STOP_WORDS.has("said"), "said must be a stopword");
+
+  // Non-regex token filtering drops conversational words naturally
+  const rawPrompt = "Do you remember me mentioning my grand dad?";
+  const tokens = rawPrompt.split(/\s+/)
+    .map((w) => w.replace(/[^\w-]/g, "").toLowerCase())
+    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
+
+  assert.deepStrictEqual(tokens, ["grand", "dad"], "Tokens must contain only content words ['grand', 'dad']");
+});
+
+Deno.test("recall_intent: buildInjectedContext strictly filters question-memories even on explicit recall", () => {
+  const questionCand: FusedCandidate = {
+    ref: 7167,
+    record: "In general, what do you remember?",
+    origin: "both",
+    rrfScore: 0.95,
+    level: "L1",
+    lifecycle: "observed",
+    summary: "In general, what do you remember?",
+    score: "0.95",
+    rankingScore: 0.95,
+    envelope: {
+      type: "investigation",
+      level: "L1",
+      lifecycle: "observed",
+      summary: "In general, what do you remember?",
+      episode: {
+        problem: "In general, what do you remember?",
+        approaches: [{ approach: "Scanned memories", outcome: "worked", reason: "Found 8 records" }],
+      },
+    },
+  };
+
+  const factualCand: FusedCandidate = {
+    ref: 901,
+    record: "I talked to my grandfather under the cherry tree",
+    origin: "both",
+    rrfScore: 0.90,
+    level: "L1",
+    lifecycle: "observed",
+    summary: "I talked to my grandfather under the cherry tree",
+    score: "0.90",
+    rankingScore: 0.90,
+    envelope: {
+      type: "investigation",
+      level: "L1",
+      lifecycle: "observed",
+      summary: "I talked to my grandfather under the cherry tree",
+      episode: {
+        problem: "Record this into memory: I talked to my grandfather under the cherry tree",
+        approaches: [{ approach: "Recorded personal note", outcome: "worked", reason: "User explicit request" }],
+      },
+    },
+  };
+
+  // With explicit recall intent confirmed:
+  const prompt = "Do you remember me mentioning my grand dad?";
+  const context = buildInjectedContext([questionCand, factualCand], 1000, undefined, prompt, true);
+
+  // Question memory Ref 7167 must be filtered out!
+  assert.ok(!context.includes("In general, what do you remember?"), "Question-memories must not be injected into context");
+  // Factual memory Ref 901 must be preserved!
+  assert.ok(context.includes("I talked to my grandfather under the cherry tree"), "Factual memory must be retained");
+});
+
+Deno.test("recall_intent: scanTokenFallback queries only non-stopword tokens, never conversational words", async () => {
+  const tokenQueries: string[] = [];
+  const runner: CormRunner = {
+    run: (inv: unknown) => {
+      const invStr = JSON.stringify(inv);
+      tokenQueries.push(invStr);
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      scanLimit: 5,
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const topic = "Do you remember me mentioning my grand dad?";
+  await scanTokenFallback(env, "/tmp/fake-cwd", "text", 5, "joint,lemma:a:b", 0, new Date("2026-10-16"), undefined, topic);
+
+  assert.ok(
+    tokenQueries.some((q) => q.includes("--query=dad") || q.includes("--query=grand")),
+    `Token queries must contain 'dad' or 'grand', got: ${JSON.stringify(tokenQueries)}`,
+  );
+  assert.ok(
+    !tokenQueries.some((q) => q.includes("remember")),
+    `Token queries must NOT query 'remember', got: ${JSON.stringify(tokenQueries)}`,
+  );
+  assert.ok(
+    !tokenQueries.some((q) => q.includes("mentioning")),
+    `Token queries must NOT query 'mentioning', got: ${JSON.stringify(tokenQueries)}`,
+  );
 });
