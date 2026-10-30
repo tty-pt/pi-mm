@@ -1169,7 +1169,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
             if (!findSepalLib(ctx.cwd) && env.cfg.semanticSearch !== false) {
               tell("sepal", `[pi-mm] Semantic recall needs libsepal, which is not installed. See: ${DOCS_SEPAL}`, "warning");
             }
-            if (env.cfg.judgeMode !== "off" && env.cfg.judgeMode !== "heuristic") {
+            if (env.cfg.judgeMode !== "off") {
               const confirmFn = (ctxUnknown as { ui?: { confirm?: (title: string, message: string) => Promise<boolean> } })?.ui?.confirm;
               void ensureAuren({
                 cwd: ctx.cwd,

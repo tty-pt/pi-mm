@@ -547,7 +547,7 @@ export function diagnoseAuren(d: DiagnoseInput): Notice[] {
     notices.push({
       code: "no-launcher",
       severity: "warning",
-      message: "axil-auren is not installed (no auren-server, and no axil + libaxil-auren found). Decision judging and semantic recall use built-in heuristics until it is installed.",
+      message: "axil-auren is not installed (no auren-server, and no axil + libaxil-auren found). Decision judging and semantic recall require axil-auren or explicit commands.",
       link: DOCS_AUREN,
     });
     return notices;

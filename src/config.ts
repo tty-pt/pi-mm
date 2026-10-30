@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 export type CaptureMode = "all" | "keyword" | "judge" | "off";
-export type JudgeMode = "auto" | "heuristic" | "off";
+export type JudgeMode = "auto" | "off";
 export type JudgeProtocol = "auto" | "systemzero" | "systemone";
 export type JudgeFallback = "capture" | "skip";
 
@@ -240,7 +240,7 @@ export function loadConfig(raw: unknown): MmConfig {
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
   const effectiveJudgeMode: JudgeMode =
-    jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : (DEFAULT_CONFIG.judgeMode ?? "auto");
+    jMode === "auto" || jMode === "off" ? jMode : (DEFAULT_CONFIG.judgeMode ?? "auto");
 
   const effectiveJudgeUrl =
     typeof jUrl === "string" && jUrl.trim() !== ""
@@ -271,8 +271,6 @@ export function loadConfig(raw: unknown): MmConfig {
   let effectiveFallback: JudgeFallback = DEFAULT_CONFIG.judgeFallback ?? "skip";
   if (jFallback === "capture" || jFallback === "skip") {
     effectiveFallback = jFallback;
-  } else if (jFallback === "heuristic") {
-    effectiveFallback = "skip";
   }
 
   const effectiveBin = typeof bin === "string" && bin.trim() !== "" ? bin.trim() : DEFAULT_CONFIG.cormBin;
@@ -449,19 +447,18 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   }
 
   let jMode = cfg.judgeMode;
-  if (envJMode === "auto" || envJMode === "heuristic" || envJMode === "off") {
+  if (envJMode === "auto" || envJMode === "off") {
     jMode = envJMode;
   }
 
   envJUrl = defaultJudgeUrl ?? (jMode === "auto" && !cfg.judgeUrl ? "http://127.0.0.1:4242" : undefined);
-  const resolvedJudgeUrl = jMode === "off" || jMode === "heuristic" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
+  const resolvedJudgeUrl = jMode === "off" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
 
   let capMode = cfg.captureMode;
   if (envCapMode === "all" || envCapMode === "keyword" || envCapMode === "judge" || envCapMode === "off") {
     capMode = envCapMode;
   } else if (!capMode) {
     if (jMode === "off") capMode = "off";
-    else if (jMode === "heuristic") capMode = "all";
     else if (resolvedJudgeUrl) capMode = "judge";
     else capMode = "all";
   }
@@ -475,7 +472,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     ? envModel.trim()
     : (!hasPartialEmbedEnv && resolvedJudgeUrl ? "bge-base" : undefined));
 
-  const resolvedCaptureEmbedUrl = jMode === "off" || jMode === "heuristic"
+  const resolvedCaptureEmbedUrl = jMode === "off"
     ? undefined
     : (cfg.captureEmbedUrl ?? (env["PI_MM_CAPTURE_EMBED_URL"]?.trim() || resolvedJudgeUrl));
 
@@ -486,8 +483,6 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   let jFallback = cfg.judgeFallback;
   if (envJFallback === "capture" || envJFallback === "skip") {
     jFallback = envJFallback;
-  } else if (envJFallback === "heuristic") {
-    jFallback = "skip";
   }
 
   const timeoutNum = envJTimeout ? parseInt(envJTimeout, 10) : undefined;
@@ -754,8 +749,8 @@ export function describeCapabilities(cfg: MmConfig): string {
     parts.push("overview=regex");
   }
 
-  if (cfg.judgeMode === "heuristic" || (!cfg.judgeUrl && cap === "all")) {
-    parts.push("judge=heuristic (explicit)");
+  if (!cfg.judgeUrl && cap === "all") {
+    parts.push("judge=off (capture=all)");
   }
 
   if (!sepalConfigured(cfg)) {

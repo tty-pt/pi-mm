@@ -2,6 +2,14 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.5.2] - 2026-10-31
+
+### Removed
+- **Complete Elimination of Heuristics**:
+  - Removed `"heuristic"` from `JudgeMode`, `JudgeFallback`, and `JudgeDecisionSource`.
+  - Zero heuristic guessing: memory capture and semantic routing evaluate strictly via embeddings on `/v1/systemone` or explicit commands (`@remember`, `remember:`, `note:`).
+  - When offline or unavailable, fallback safely defaults to `"skip"`, never guessing.
+
 ## [0.5.1] - 2026-10-30
 
 ### Added
