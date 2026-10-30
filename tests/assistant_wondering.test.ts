@@ -42,21 +42,19 @@ Deno.test("wondering: extractAssistantThoughtsAndText extracts text and thinking
 
 Deno.test("wondering: evaluateAssistantWondering classifies cognitive wondering via mock endpoint", async () => {
   const mockFetch: typeof fetch = (_input, init) => {
-    return (async () => {
-      let bodyText = "";
-      if (init?.body && typeof init.body === "string") {
-        try {
-          const json = JSON.parse(init.body);
-          bodyText = json.text ?? "";
-        } catch { /* ignore */ }
-      }
-      const isWondering = bodyText.includes("wonder") || bodyText.includes("how does") || bodyText.includes("not sure") || bodyText.includes("caching");
-      return new Response(JSON.stringify({
-        choice: isWondering ? "wondering" : "routine_action",
-        similarity: isWondering ? 0.92 : 0.45,
-        margin: isWondering ? 0.30 : 0.05,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    })();
+    let bodyText = "";
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const json = JSON.parse(init.body);
+        bodyText = json.text ?? "";
+      } catch { /* ignore */ }
+    }
+    const isWondering = bodyText.includes("wonder") || bodyText.includes("how does") || bodyText.includes("not sure") || bodyText.includes("caching");
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: isWondering ? "wondering" : "routine_action",
+      similarity: isWondering ? 0.92 : 0.45,
+      margin: isWondering ? 0.30 : 0.05,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
   };
 
   const cfg: MmConfig = {
@@ -104,21 +102,19 @@ Deno.test("wondering: message_end steers agent with epistemic hint on wondering 
   };
 
   const mockFetch: typeof fetch = (_input, init) => {
-    return (async () => {
-      let bodyText = "";
-      if (init?.body && typeof init.body === "string") {
-        try {
-          const json = JSON.parse(init.body);
-          bodyText = json.text ?? "";
-        } catch { /* ignore */ }
-      }
-      const isWondering = bodyText.includes("wonder") || bodyText.includes("caching");
-      return new Response(JSON.stringify({
-        choice: isWondering ? "wondering" : "routine_action",
-        similarity: isWondering ? 0.94 : 0.45,
-        margin: isWondering ? 0.32 : 0.05,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    })();
+    let bodyText = "";
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const json = JSON.parse(init.body);
+        bodyText = json.text ?? "";
+      } catch { /* ignore */ }
+    }
+    const isWondering = bodyText.includes("wonder") || bodyText.includes("caching");
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: isWondering ? "wondering" : "routine_action",
+      similarity: isWondering ? 0.94 : 0.45,
+      margin: isWondering ? 0.32 : 0.05,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
   };
 
   const env: ToolEnv = {
@@ -160,9 +156,12 @@ Deno.test("wondering: message_end steers agent with epistemic hint on wondering 
   // Assert steering message was sent
   assert.ok(sentMessages.length >= 1, "Must steer agent when wondering is detected");
   const steer = sentMessages[0];
-  assert.strictEqual((steer?.options as any)?.deliverAs, "steer");
-  assert.ok((steer?.message as any)?.content?.includes("memory_recall"));
-  assert.ok((steer?.message as any)?.content?.includes("Memory Hint"));
+  const steerOptions = steer?.options as Record<string, unknown> | undefined;
+  const steerMessage = steer?.message as Record<string, unknown> | undefined;
+  const steerContent = typeof steerMessage?.content === "string" ? steerMessage.content : "";
+  assert.strictEqual(steerOptions?.deliverAs, "steer");
+  assert.ok(steerContent.includes("memory_recall"));
+  assert.ok(steerContent.includes("Memory Hint"));
 
   // Assert zero database queries were executed
   assert.strictEqual(scanCalls, 0, "Must execute zero database scans when steering wondering agent");
@@ -183,14 +182,12 @@ Deno.test("wondering: message_end does not steer on routine action", async () =>
     },
   };
 
-  const mockFetch: typeof fetch = (input) => {
-    return (async () => {
-      return new Response(JSON.stringify({
-        choice: "routine_action",
-        similarity: 0.90,
-        margin: 0.25,
-      }), { status: 200, headers: { "Content-Type": "application/json" } });
-    })();
+  const mockFetch: typeof fetch = (_input) => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "routine_action",
+      similarity: 0.90,
+      margin: 0.25,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
   };
 
   const env: ToolEnv = {

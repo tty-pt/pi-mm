@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { RECALL_EXEMPLARS, RECALL_KINDS } from "../src/judge/recall-exemplars.ts";
 import { classifyRecallByEmbedding } from "../src/judge/adapter.ts";
+import { clearEmbedState } from "../src/judge/embed.ts";
 import {
   DEFAULT_CONFIG,
   loadConfig,
@@ -185,6 +186,7 @@ Deno.test("recall_intent: evaluateRecallIntent fallback behavior when endpoint o
     failingFetch,
   );
   assert.strictEqual(resSkip, false, "Offline server with fallback: skip must return false");
+  clearEmbedState();
 });
 
 Deno.test("recall_intent: buildInjectedContext lifts unprompted drop when recallIntentConfirmed is true", () => {
