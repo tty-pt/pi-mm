@@ -86,6 +86,10 @@ export interface MmConfig {
    * - "query": (legacy/enrichment) Pre-query memory database via corm/hybrid search and inject context.
    */
   recallAction?: "hint" | "query";
+  /** Embedding classification of assistant turns and thoughts to detect cognitive wonderings ("auto" | "off", default "auto"). */
+  wonderingEmbed?: "auto" | "off";
+  wonderingMinMargin?: number;
+  wonderingMinSimilarity?: number;
   /** Embedding classification of user prompts to detect standing operational directives ("auto" | "off", default "auto"). */
   directiveEmbed?: "auto" | "off";
   directiveMinMargin?: number;
@@ -156,6 +160,9 @@ export const DEFAULT_CONFIG: MmConfig = {
   recallExemplars: undefined,
   recallFallback: "regex",
   recallAction: "query",
+  wonderingEmbed: undefined,
+  wonderingMinMargin: 0.08,
+  wonderingMinSimilarity: 0.60,
   directiveEmbed: undefined,
   directiveMinMargin: 0.08,
   directiveMinSimilarity: 0.60,
@@ -299,6 +306,9 @@ export function loadConfig(raw: unknown): MmConfig {
     recallExemplars: parseRecallExemplars(record["recallExemplars"]),
     recallFallback: record["recallFallback"] === "skip" || record["recallFallback"] === "regex" ? record["recallFallback"] : DEFAULT_CONFIG.recallFallback,
     recallAction: record["recallAction"] === "query" ? "query" : "hint",
+    wonderingEmbed: embedMode(record["wonderingEmbed"]),
+    wonderingMinMargin: unitInterval(record["wonderingMinMargin"]) ?? 0.08,
+    wonderingMinSimilarity: unitInterval(record["wonderingMinSimilarity"]) ?? 0.60,
     directiveEmbed: embedMode(record["directiveEmbed"]),
     directiveMinMargin: unitInterval(record["directiveMinMargin"]) ?? DEFAULT_CONFIG.directiveMinMargin,
     directiveMinSimilarity: unitInterval(record["directiveMinSimilarity"]) ?? DEFAULT_CONFIG.directiveMinSimilarity,
@@ -496,6 +506,9 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     recallAction: (env["PI_MM_RECALL_ACTION"] === "hint" || env["PI_MM_RECALL_ACTION"] === "query"
       ? env["PI_MM_RECALL_ACTION"]
       : (env["MM_RECALL_ACTION"] === "hint" || env["MM_RECALL_ACTION"] === "query" ? env["MM_RECALL_ACTION"] : cfg.recallAction)),
+    wonderingEmbed: embedMode(env["PI_MM_WONDERING_EMBED"] ?? env["MM_WONDERING_EMBED"]) ?? cfg.wonderingEmbed,
+    wonderingMinMargin: unitInterval(env["PI_MM_WONDERING_MIN_MARGIN"] ?? env["MM_WONDERING_MIN_MARGIN"]) ?? cfg.wonderingMinMargin,
+    wonderingMinSimilarity: unitInterval(env["PI_MM_WONDERING_MIN_SIMILARITY"] ?? env["MM_WONDERING_MIN_SIMILARITY"]) ?? cfg.wonderingMinSimilarity,
     directiveEmbed: embedMode(env["PI_MM_DIRECTIVE_EMBED"] ?? env["MM_DIRECTIVE_EMBED"]) ?? cfg.directiveEmbed,
     directiveMinMargin: unitInterval(env["PI_MM_DIRECTIVE_MIN_MARGIN"] ?? env["MM_DIRECTIVE_MIN_MARGIN"]) ?? cfg.directiveMinMargin,
     directiveMinSimilarity: unitInterval(env["PI_MM_DIRECTIVE_MIN_SIMILARITY"] ?? env["MM_DIRECTIVE_MIN_SIMILARITY"]) ?? cfg.directiveMinSimilarity,

@@ -14,7 +14,8 @@ export type TraceTransition =
   | "memory_write"
   | "index_verification"
   | "auto_recall"
-  | "context_injected";
+  | "context_injected"
+  | "assistant_wondering_steered";
 
 let processRunId: string | null = null;
 

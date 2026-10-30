@@ -2,6 +2,17 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.5.4] - 2026-10-30
+
+### Added
+- **Assistant Cognitive Wondering Detection & Epistemic Steering** (`src/hooks/events.ts`, `src/hooks/wondering.ts`, `src/judge/wondering-exemplars.ts`):
+  - Hooked `pi.on("message_end")` to observe assistant turns, extracting text and thinking blocks (`part.thinking` and `part.text`).
+  - Added `evaluateAssistantWondering(text, cfg)` using in-memory vector embeddings on `axil-auren` (`POST /v1/classify`, `bge-base`) against bilingual exemplars (`WONDERING_EXEMPLARS`: `wondering` vs `routine_action`).
+  - When the agent expresses uncertainty, architectural curiosity, or wonders how a subsystem works mid-task, the system steers the agent via `pi.sendMessage({ customType: "memory_hint", content: hint }, { deliverAs: "steer" })`.
+  - Zero database queries are executed; the agent is steered to query `memory_recall` via inference.
+  - Per-turn deduplication prevents duplicate steering hints.
+  - Added empirical evaluation harness (`scripts/eval-wondering.ts`) measuring 100.0% accuracy, 100.0% wondering recall, and 0.0% false positives (p50: 17.9 ms).
+
 ## [0.5.3] - 2026-10-30
 
 ### Added
