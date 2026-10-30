@@ -111,6 +111,21 @@ export function isMemoryRecallPrompt(prompt?: string): boolean {
   return false;
 }
 
+export function extractRecallSearchQuery(prompt: string): string {
+  if (!prompt) return "";
+  let cleaned = prompt.trim();
+  // Strip common conversational recall trigger prefixes
+  cleaned = cleaned.replace(
+    /^(?:do\s+you\s+(?:remember|recall)(?:\s+(?:me\s+)?(?:mentioning|talking\s+about|speaking\s+about|telling\s+you\s+about|saying))?|what\s+do\s+you\s+(?:remember|recall)(?:\s+about)?|tell\s+me\s+what\s+you\s+(?:remember|recall)(?:\s+about)?|what\s+did\s+(?:i|we)\s+(?:say|tell\s+you|mention|decide|discuss)(?:\s+about)?|did\s+i\s+(?:mention|tell\s+you|say)(?:\s+about)?|can\s+you\s+(?:remember|recall)(?:\s+what)?|remind\s+me(?:\s+about)?|have\s+we\s+discussed|did\s+we\s+talk\s+about|lembras-te\s+(?:de|do\s+que|da)?|te\s+lembras\s+(?:de|do\s+que)?|o\s+que\s+(?:é\s+que\s+)?(?:eu\s+)?(?:disse|mencionei)\s+sobre)\b[:,\s]*/i,
+    ""
+  );
+  // Strip trailing question marks and conversational punctuation
+  cleaned = cleaned.replace(/[?!.\s]+$/, "").trim();
+  // Strip leading punctuation (colons, commas, whitespace) left over after prefix removal
+  cleaned = cleaned.replace(/^[:,\s]+/, "").trim();
+  return cleaned || prompt.trim();
+}
+
 export function isDirectMemoryQuestion(prompt?: string): boolean {
   if (!prompt) return false;
   const p = prompt.trim().toLowerCase();
@@ -261,7 +276,7 @@ export function buildInjectedContext(
     if (lc === "contradicted" || lc === "superseded" || level === "L0") return false;
     const summary = c.envelope?.summary || c.summary;
     if (!isCleanSummaryText(summary)) return false;
-    if (!isDirectQuestion && !isExplicitRecall && c.envelope && isQuestionMemory(c, c.envelope)) return false;
+    if (!isDirectQuestion && c.envelope && isQuestionMemory(c, c.envelope)) return false;
     return true;
   });
   if (valid.length === 0) return "";
@@ -553,8 +568,10 @@ export async function handleBeforeAgentStart(
 
     const isRecallIntent = await evaluateRecallIntent(prompt, env.cfg, options?.fetchFn);
     const timeout = options?.timeoutMs ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS;
-    const candidates = await runScanWithTimeout(env, prompt, timeout);
+    const searchQuery = isRecallIntent ? extractRecallSearchQuery(prompt) : prompt;
+    const candidates = await runScanWithTimeout(env, searchQuery, timeout);
     debugLog("recall", "runScanWithTimeout returned candidates", {
+      searchQuery,
       candidateCount: candidates?.length ?? 0,
       refs: candidates?.map((c) => c.ref),
       isRecallIntent,
@@ -604,7 +621,7 @@ export async function handleBeforeAgentStart(
             role: "custom",
             customType: "memory_context",
             content: notice,
-            display: true,
+            display: false,
             details: { recallIntent: true, emptyMatch: true },
             timestamp: Date.now(),
           },

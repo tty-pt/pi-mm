@@ -16,6 +16,7 @@ import {
   evaluateRecallIntent,
   handleBeforeAgentStart,
   buildInjectedContext,
+  extractRecallSearchQuery,
   type BeforeAgentStartEvent,
 } from "../src/hooks/auto_recall.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
@@ -320,8 +321,146 @@ Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent
 
   assert.ok(res !== null, "Even with empty DB, positive recall intent must inject a notice");
   assert.ok(res.message);
+  assert.strictEqual(res.message.display, false, "Notice message must have display: false to avoid UI pollution");
   const content = res.message.content || "";
   assert.ok(content.includes("[Persistent Memory Notice]"));
   assert.ok(content.includes("memory_recall"));
   assert.ok(event.systemPromptOptions?.sections?.["memory_context"]?.includes("[Persistent Memory Notice]"));
+});
+
+Deno.test("recall_intent: extractRecallSearchQuery sanitizes conversational prefixes and punctuation", () => {
+  const q1 = extractRecallSearchQuery("Do you remember me mentioning my grand dad?");
+  assert.strictEqual(q1, "my grand dad");
+
+  const q2 = extractRecallSearchQuery("Do you remember: my grand dad?");
+  assert.strictEqual(q2, "my grand dad");
+
+  const q3 = extractRecallSearchQuery("Do you remember, what rule we have about pure C and JS?");
+  assert.strictEqual(q3, "what rule we have about pure C and JS");
+
+  const q4 = extractRecallSearchQuery("Do you remember what I talked about with my grandfather?");
+  assert.strictEqual(q4, "what I talked about with my grandfather");
+
+  const q5 = extractRecallSearchQuery("Did I mention the cherry tree?");
+  assert.strictEqual(q5, "the cherry tree");
+
+  const q6 = extractRecallSearchQuery("What did we decide about transaction boundaries?");
+  assert.strictEqual(q6, "transaction boundaries");
+
+  const q7 = extractRecallSearchQuery("Lembras-te do que combinámos sobre a cache?");
+  assert.strictEqual(q7, "combinámos sobre a cache");
+});
+
+Deno.test("recall_intent: buildInjectedContext strictly filters question-memories even on explicit recall", () => {
+  const questionCand: FusedCandidate = {
+    ref: 7167,
+    record: "In general, what do you remember?",
+    origin: "both",
+    rrfScore: 0.95,
+    level: "L1",
+    lifecycle: "observed",
+    summary: "In general, what do you remember?",
+    score: "0.95",
+    rankingScore: 0.95,
+    envelope: {
+      type: "investigation",
+      level: "L1",
+      lifecycle: "observed",
+      summary: "In general, what do you remember?",
+      episode: {
+        problem: "In general, what do you remember?",
+        approaches: [{ approach: "Scanned memories", outcome: "worked", reason: "Found 8 records" }],
+      },
+    },
+  };
+
+  const factualCand: FusedCandidate = {
+    ref: 901,
+    record: "I talked to my grandfather under the cherry tree",
+    origin: "both",
+    rrfScore: 0.90,
+    level: "L1",
+    lifecycle: "observed",
+    summary: "I talked to my grandfather under the cherry tree",
+    score: "0.90",
+    rankingScore: 0.90,
+    envelope: {
+      type: "investigation",
+      level: "L1",
+      lifecycle: "observed",
+      summary: "I talked to my grandfather under the cherry tree",
+      episode: {
+        problem: "Record this into memory: I talked to my grandfather under the cherry tree",
+        approaches: [{ approach: "Recorded personal note", outcome: "worked", reason: "User explicit request" }],
+      },
+    },
+  };
+
+  // With explicit recall intent confirmed:
+  const prompt = "Do you remember me mentioning my grand dad?";
+  const context = buildInjectedContext([questionCand, factualCand], 1000, undefined, prompt, true);
+
+  // Question memory Ref 7167 must be filtered out!
+  assert.ok(!context.includes("In general, what do you remember?"), "Question-memories must not be injected into context");
+  // Factual memory Ref 901 must be preserved!
+  assert.ok(context.includes("I talked to my grandfather under the cherry tree"), "Factual memory must be retained");
+});
+
+Deno.test("recall_intent: handleBeforeAgentStart passes sanitized query to scan, not raw prompt", async () => {
+  const queries: string[] = [];
+  const runner: CormRunner = {
+    run: (inv: unknown) => {
+      const invStr = JSON.stringify(inv);
+      queries.push(invStr);
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      scanLimit: 5,
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const mockFetchRecall: typeof fetch = () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "recall_past",
+      similarity: 0.92,
+      margin: 0.30,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const event: BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "Do you remember me mentioning my grand dad?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
+    () => Promise.resolve(env),
+    { fetchFn: mockFetchRecall },
+  );
+
+  // Queried topic must be sanitized ("grand", "dad"), NOT conversational stopwords ("remember", "mentioning")
+  assert.ok(
+    queries.some((q) => q.includes("--query=dad") || q.includes("--query=grand")),
+    `Queried tokens must contain 'dad' or 'grand', got: ${JSON.stringify(queries)}`,
+  );
+  assert.ok(
+    !queries.some((q) => q.includes("remember")),
+    `Queried tokens must NOT contain 'remember', got: ${JSON.stringify(queries)}`,
+  );
+  assert.ok(
+    !queries.some((q) => q.includes("mentioning")),
+    `Queried tokens must NOT contain 'mentioning', got: ${JSON.stringify(queries)}`,
+  );
 });

@@ -2,6 +2,17 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.5.1] - 2026-10-30
+
+### Fixed
+- **Conversational Recall Query Sanitization & Stopword Elimination** (`src/hooks/auto_recall.ts`):
+  - Added `extractRecallSearchQuery(prompt)` to strip conversational recall framing prefixes (*"do you remember (me mentioning/talking about)?"*, *"what did I say about..."*, *"did I mention..."*, *"lembras-te de..."*) and trailing question punctuation before scanning.
+  - When recall intent is confirmed by the classifier, `runScanWithTimeout` executes search against the sanitized semantic topic keywords rather than the raw conversational prompt, preventing conversational stopwords (like the word *"remember"*) from acting as database query tokens and matching unrelated past sessions.
+- **Unconditional Question-Memory Exclusion in Injected Context** (`src/hooks/auto_recall.ts`):
+  - Removed the `!isExplicitRecall` bypass in `buildInjectedContext`. `isQuestionMemory(c, c.envelope)` is now strictly and unconditionally enforced across all modes, ensuring conversational meta-questions (e.g. *"In general, what do you remember?"*, *"What was my request?"*) are never injected as factual background context.
+- **Silent Non-Intrusive Guidance on Empty Matches** (`src/hooks/auto_recall.ts`):
+  - When recall intent is detected but no high-confidence memory records match, the emitted notice sets `display: false`, keeping the user's chat clean without displaying empty or spurious memory cards while delivering the guidance notice to `event.systemPromptOptions.sections["memory_context"]`.
+
 ## [0.5.0] - 2026-10-29
 
 ### Added
