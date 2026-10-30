@@ -2,6 +2,17 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.5.3] - 2026-10-30
+
+### Added
+- **Unified Hint-Only Recall Architecture & Epistemic Nudges** (`src/hooks/auto_recall.ts`, `src/config.ts`, `src/judge/recall-exemplars.ts`):
+  - Added `recallAction?: "hint" | "query"` setting to `MmConfig` (with environment variable override `PI_MM_RECALL_ACTION`, defaulting to `"hint"` in runtime configuration).
+  - When `isRecallIntent` is confirmed true (via vector embeddings on `axil-auren` `POST /v1/classify`) in hint mode, `auto_recall` executes **zero automated database scans** (`runScanWithTimeout` and `primeSubsystemInvariants` are bypassed completely).
+  - Injects a quiet epistemic hint into `event.systemPromptOptions.sections["memory_context"]` advising the agent to formulate queries via LLM inference and retrieve records using `memory_recall`.
+  - Sets `display: false` on the returned custom message, completely eliminating noisy, unprompted UI cards in the user's chat interface.
+  - Expanded `RECALL_EXEMPLARS.recall_past` with architectural wonderings and exploratory questions (*"How does the caching layer work in this project?"*, *"How does FTS handle accent folding here?"*, *"Why are descriptors leaking in corm?"*), ensuring cognitive curiosity is detected and guided without speculative database scans.
+  - Preserved `recallAction: "query"` for legacy auto-injected background recall compatibility.
+
 ## [0.5.2] - 2026-10-30
 
 ### Fixed

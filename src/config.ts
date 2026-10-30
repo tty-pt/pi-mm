@@ -80,6 +80,12 @@ export interface MmConfig {
   recallExemplars?: Record<string, string[]>;
   /** Fallback strategy when the classifier endpoint is unreachable ("regex" | "skip", default "regex"). */
   recallFallback?: "regex" | "skip";
+  /**
+   * Action taken when recall intent or architectural wonder is confirmed:
+   * - "hint": (default) Emit epistemic guidance to the agent via system prompt with zero database queries.
+   * - "query": (legacy/enrichment) Pre-query memory database via corm/hybrid search and inject context.
+   */
+  recallAction?: "hint" | "query";
   /** Embedding classification of user prompts to detect standing operational directives ("auto" | "off", default "auto"). */
   directiveEmbed?: "auto" | "off";
   directiveMinMargin?: number;
@@ -149,6 +155,7 @@ export const DEFAULT_CONFIG: MmConfig = {
   recallMinSimilarity: 0.60,
   recallExemplars: undefined,
   recallFallback: "regex",
+  recallAction: "query",
   directiveEmbed: undefined,
   directiveMinMargin: 0.08,
   directiveMinSimilarity: 0.60,
@@ -291,6 +298,7 @@ export function loadConfig(raw: unknown): MmConfig {
     recallMinSimilarity: unitInterval(record["recallMinSimilarity"]) ?? DEFAULT_CONFIG.recallMinSimilarity,
     recallExemplars: parseRecallExemplars(record["recallExemplars"]),
     recallFallback: record["recallFallback"] === "skip" || record["recallFallback"] === "regex" ? record["recallFallback"] : DEFAULT_CONFIG.recallFallback,
+    recallAction: record["recallAction"] === "query" ? "query" : "hint",
     directiveEmbed: embedMode(record["directiveEmbed"]),
     directiveMinMargin: unitInterval(record["directiveMinMargin"]) ?? DEFAULT_CONFIG.directiveMinMargin,
     directiveMinSimilarity: unitInterval(record["directiveMinSimilarity"]) ?? DEFAULT_CONFIG.directiveMinSimilarity,
@@ -485,6 +493,9 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     recallFallback: (env["PI_MM_RECALL_FALLBACK"] === "skip" || env["PI_MM_RECALL_FALLBACK"] === "regex"
       ? env["PI_MM_RECALL_FALLBACK"]
       : (env["MM_RECALL_FALLBACK"] === "skip" || env["MM_RECALL_FALLBACK"] === "regex" ? env["MM_RECALL_FALLBACK"] : cfg.recallFallback)),
+    recallAction: (env["PI_MM_RECALL_ACTION"] === "hint" || env["PI_MM_RECALL_ACTION"] === "query"
+      ? env["PI_MM_RECALL_ACTION"]
+      : (env["MM_RECALL_ACTION"] === "hint" || env["MM_RECALL_ACTION"] === "query" ? env["MM_RECALL_ACTION"] : cfg.recallAction)),
     directiveEmbed: embedMode(env["PI_MM_DIRECTIVE_EMBED"] ?? env["MM_DIRECTIVE_EMBED"]) ?? cfg.directiveEmbed,
     directiveMinMargin: unitInterval(env["PI_MM_DIRECTIVE_MIN_MARGIN"] ?? env["MM_DIRECTIVE_MIN_MARGIN"]) ?? cfg.directiveMinMargin,
     directiveMinSimilarity: unitInterval(env["PI_MM_DIRECTIVE_MIN_SIMILARITY"] ?? env["MM_DIRECTIVE_MIN_SIMILARITY"]) ?? cfg.directiveMinSimilarity,
@@ -525,6 +536,11 @@ export const DEFAULT_CAPTURE_MIN_SIMILARITY = 0.6;
 export const DEFAULT_RECALL_MIN_MARGIN = 0.08;
 export const DEFAULT_RECALL_MIN_SIMILARITY = 0.60;
 export const DEFAULT_RECALL_FALLBACK = "regex";
+export const DEFAULT_RECALL_ACTION = "hint";
+
+export function recallAction(cfg: MmConfig): "hint" | "query" {
+  return cfg.recallAction ?? DEFAULT_RECALL_ACTION;
+}
 
 export function captureMinMargin(cfg: MmConfig): number {
   return cfg.captureMinMargin ?? DEFAULT_CAPTURE_MIN_MARGIN;

@@ -235,6 +235,7 @@ Deno.test("recall_intent: handleBeforeAgentStart end-to-end with positive recall
       cormBin: "/usr/bin/corm",
       scanLimit: 5,
       captureEmbedUrl: "http://127.0.0.1:4242",
+      recallAction: "query",
     },
   };
 
@@ -277,6 +278,110 @@ Deno.test("recall_intent: handleBeforeAgentStart end-to-end with positive recall
   assert.strictEqual(event.systemPromptOptions.sections["memory_context"], content);
 });
 
+Deno.test("recall_intent: handleBeforeAgentStart in hint mode executes zero database queries and sets display false", async () => {
+  let scanCalls = 0;
+  const runner: CormRunner = {
+    run: (_inv: unknown) => {
+      scanCalls++;
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      recallAction: "hint",
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const mockFetchRecall: typeof fetch = () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "recall_past",
+      similarity: 0.95,
+      margin: 0.35,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const event: BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "Do you remember me mentioning my grand dad?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  const res = await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
+    () => Promise.resolve(env),
+    { fetchFn: mockFetchRecall },
+  );
+
+  assert.ok(res !== null, "Must return a custom message");
+  assert.ok(res.message);
+  assert.strictEqual(res.message.display, false, "Must set display: false to prevent UI pollution");
+  assert.strictEqual(scanCalls, 0, "Must execute zero database queries in hint mode");
+
+  const content = res.message.content || "";
+  assert.ok(content.includes("[Memory Intent Detected]"));
+  assert.ok(content.includes("memory_recall"));
+  assert.strictEqual(event.systemPromptOptions?.sections?.["memory_context"], content);
+});
+
+Deno.test("recall_intent: architectural wondering prompts emit epistemic hint without database queries", async () => {
+  let scanCalls = 0;
+  const runner: CormRunner = {
+    run: (_inv: unknown) => {
+      scanCalls++;
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    },
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner,
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      recallAction: "hint",
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  const mockFetchRecall: typeof fetch = () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "recall_past",
+      similarity: 0.91,
+      margin: 0.28,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const event: BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "How does the caching layer work in this project?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  const res = await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" },
+    () => Promise.resolve(env),
+    { fetchFn: mockFetchRecall },
+  );
+
+  assert.ok(res !== null);
+  assert.ok(res.message);
+  assert.strictEqual(res.message.display, false);
+  assert.strictEqual(scanCalls, 0, "Zero database scans on architectural wondering");
+  assert.ok(res.message.content?.includes("[Memory Intent Detected]"));
+});
+
 Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent positive but DB empty", async () => {
   const runner: CormRunner = {
     run: (_inv: unknown) => {
@@ -295,6 +400,7 @@ Deno.test("recall_intent: handleBeforeAgentStart nudges agent when recall intent
       cormBin: "/usr/bin/corm",
       scanLimit: 5,
       captureEmbedUrl: "http://127.0.0.1:4242",
+      recallAction: "query",
     },
   };
 

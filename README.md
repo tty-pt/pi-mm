@@ -86,6 +86,7 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
 | `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
 | `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
+| `recallAction` | `"hint"` | Action on recall inquiry or architectural wonder: `"hint"` (default, zero DB queries, emits epistemic hint advising agent to use `memory_recall` via inference) or `"query"` (legacy auto-injection). Env: `PI_MM_RECALL_ACTION` |
 | `directiveEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect standing directives/rules (`"auto"` or `"off"`). Env: `PI_MM_DIRECTIVE_EMBED` |
 | `directiveMinSimilarity` | `0.6` | Cosine floor for standing directive classification (0..1) |
 | `directiveMinMargin` | `0.08` | How far a `"standing_directive"` verdict must beat `"transient_task"` (0..1) |

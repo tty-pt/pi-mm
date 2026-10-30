@@ -11,7 +11,7 @@ import { isCleanSummaryText } from "../payload.ts";
 import { isQuestionMemory } from "../tools/ranking.ts";
 import { buildMemoryOverview } from "../tools/overview.ts";
 import { classifyOverviewByEmbedding, classifyRecallByEmbedding } from "../judge/adapter.ts";
-import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, type MmConfig } from "../config.ts";
+import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, recallAction, type MmConfig } from "../config.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -552,6 +552,31 @@ export async function handleBeforeAgentStart(
     }
 
     const isRecallIntent = await evaluateRecallIntent(prompt, env.cfg, options?.fetchFn);
+    if (isRecallIntent && recallAction(env.cfg) === "hint") {
+      const hint = `[Memory Intent Detected]\nThe user or agent is inquiring about past decisions, architectural patterns, or lore. Do not guess or assume. Consult memory_recall to retrieve the relevant records before answering.`;
+      if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+        if (!event.systemPromptOptions.sections) {
+          event.systemPromptOptions.sections = {};
+        }
+        event.systemPromptOptions.sections["memory_context"] = hint;
+      }
+      traceEvent("auto_recall", "info", {
+        query: prompt,
+        filespec: fspec,
+        recallIntent: true,
+        hintOnly: true,
+      }, { sessionId });
+      return {
+        message: {
+          role: "custom",
+          customType: "memory_context",
+          content: hint,
+          display: false,
+          details: { recallIntent: true, hintOnly: true },
+          timestamp: Date.now(),
+        },
+      };
+    }
     const timeout = options?.timeoutMs ?? DEFAULT_AUTO_RECALL_TIMEOUT_MS;
     const candidates = await runScanWithTimeout(env, prompt, timeout);
     debugLog("recall", "runScanWithTimeout returned candidates", {
