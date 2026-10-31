@@ -8,7 +8,8 @@ import { allocateNextRef } from "../tools/ref_allocator.ts";
 import { parseBareRefs } from "../resolve.ts";
 import { encodePayload, decodePayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
-import type { MemoryEnvelope, EpisodeRecord, MemoryContext } from "../types.ts";
+import type { MemoryEnvelope, EpisodeRecord, MemoryContext, EpisodeApproach, LifecycleState } from "../types.ts";
+import { executeStore } from "../tools/store.ts";
 import { handleBeforeAgentStart, isMemoryRecallPrompt, type BeforeAgentStartEvent } from "./auto_recall.ts";
 import { validateEvidenceRef } from "../tools/lifecycle.ts";
 import { executeHybridScan } from "../tools/scan.ts";
@@ -484,6 +485,133 @@ export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | n
     isError: failed, approach: outcome ? `Executed ${event.toolName}: ${firstLine.slice(0, 80)}` : undefined,
     outcome, environment: { runtime: typeof Deno !== "undefined" ? "deno" : "node" }, toolArgs,
   };
+}
+
+export async function distillQuestArchiveEvent(
+  event: ToolResultEvent,
+  envSource: EnvSource | undefined,
+  ctx: PiCtx,
+): Promise<number | null> {
+  if (event.toolName !== "quest_archive") return null;
+  if (event.isError) return null;
+
+  const details = (typeof event.details === "object" && event.details !== null)
+    ? (event.details as Record<string, unknown>)
+    : {};
+
+  const outcome = String(details["outcome"] || event.input?.["outcome"] || event.args?.["outcome"] || "").toLowerCase();
+  if (outcome !== "completed") return null;
+
+  const qid = String(details["archived"] || details["qid"] || "");
+  const objective = String(details["objective"] || details["problem"] || event.input?.["summary"] || "").trim() ||
+    `Quest ${qid} completion`;
+  const kind = String(details["kind"] || "standard");
+  const difficulty = String(details["difficulty"] || "standard");
+
+  const modifiedFiles = Array.isArray(details["modifiedFiles"])
+    ? (details["modifiedFiles"] as string[]).filter((f) => typeof f === "string")
+    : [];
+
+  const rawSetbacks = Array.isArray(details["setbacks"])
+    ? (details["setbacks"] as Array<Record<string, unknown>>)
+    : [];
+
+  const rawFindings = Array.isArray(details["findings"])
+    ? (details["findings"] as string[]).filter((f) => typeof f === "string")
+    : [];
+  if (typeof details["summary"] === "string" && details["summary"].trim()) {
+    if (!rawFindings.includes(details["summary"].trim())) {
+      rawFindings.push(details["summary"].trim());
+    }
+  }
+
+  const rawReceipt = (typeof details["lastTestReceipt"] === "object" && details["lastTestReceipt"] !== null)
+    ? (details["lastTestReceipt"] as Record<string, unknown>)
+    : undefined;
+
+  const testCommand = typeof rawReceipt?.["command"] === "string" ? rawReceipt["command"] : undefined;
+  const testExitCode = typeof rawReceipt?.["exitCode"] === "number" ? rawReceipt["exitCode"] : undefined;
+  const hasPassingTest = Boolean(testCommand && testExitCode === 0);
+
+  // Build approaches:
+  const approaches: EpisodeApproach[] = [];
+
+  // Failed approaches from setbacks (dead ends with specific context)
+  for (const sb of rawSetbacks) {
+    const reason = typeof sb["reason"] === "string" ? sb["reason"] : "Build or test failure";
+    const evidenceList = Array.isArray(sb["evidence"]) ? (sb["evidence"] as string[]) : [];
+    const errText = typeof sb["error"] === "string" ? sb["error"] : evidenceList.join("; ");
+    approaches.push({
+      approach: reason,
+      outcome: "failed",
+      reason: errText ? `Failed with error: ${errText}` : reason,
+    });
+  }
+
+  // Worked approach
+  const workedDesc = rawFindings.length > 0
+    ? `Approved plan implemented: ${rawFindings[0]}`
+    : `Completed ${kind} quest (${difficulty} tier) with verified implementation`;
+  approaches.push({
+    approach: workedDesc,
+    outcome: "worked",
+    reason: hasPassingTest ? `Verified via tests: ${testCommand}` : "Verified and approved in validation",
+  });
+
+  const tags = ["quest", kind, `difficulty:${difficulty}`];
+  if (qid) tags.push(`qid:${qid}`);
+
+  const lifecycle: LifecycleState = hasPassingTest ? "supported" : "tested";
+
+  const projectContext = extractReliableProjectContext(ctx);
+
+  const episode: EpisodeRecord = {
+    problem: objective,
+    request: objective,
+    approaches,
+    findings: rawFindings.length > 0 ? rawFindings : undefined,
+    diffs: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+    outcome: "success",
+  };
+
+  const summary = `Quest ${qid ? `${qid} ` : ""}(${kind}, ${difficulty}): ${objective}`;
+
+  if (envSource) {
+    try {
+      const res = await executeStore(envSource, {
+        level: "L1",
+        type: "episode",
+        lifecycle,
+        summary,
+        episode,
+        context: projectContext,
+        tags,
+      }, ctx);
+      const resDetails = res.details as { ref?: number } | undefined;
+      if (resDetails?.ref) {
+        debugLog("capture", "Distilled quest_archive into L1 memory", { ref: resDetails.ref, qid, lifecycle });
+        traceEvent("memory_write", "ok", { ref: resDetails.ref, qid, lifecycle, objective });
+        return resDetails.ref;
+      }
+    } catch (err) {
+      debugLog("capture", "executeStore failed for quest_archive", { error: String(err) });
+    }
+  }
+
+  // Fallback into activeSessionBuffer
+  const sigEvent: SignificantEvent = {
+    id: `quest-${qid || Date.now()}`,
+    timestamp: new Date().toISOString(),
+    toolName: "quest_archive",
+    summary,
+    isError: false,
+    approach: workedDesc,
+    outcome: "worked",
+    diffs: modifiedFiles,
+    environment: { runtime: typeof Deno !== "undefined" ? "deno" : "node" },
+  };
+  await activeSessionBuffer.recordAsync(sigEvent);
+  return null;
 }
 
 export function extractReliableProjectContext(
@@ -1207,9 +1335,19 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     }
   });
 
-  pi.on("tool_result", async (eventUnknown: unknown) => {
+  pi.on("tool_result", async (eventUnknown: unknown, ctxUnknown?: unknown) => {
     if (typeof eventUnknown !== "object" || eventUnknown === null) return;
     const event = eventUnknown as ToolResultEvent;
+    const ctx = (ctxUnknown as PiCtx) ?? { cwd: process.cwd(), hasUI: false, mode: "agent" };
+
+    if (event.toolName === "quest_archive") {
+      try {
+        await distillQuestArchiveEvent(event, envSource, ctx);
+      } catch (err) {
+        debugLog("capture", "Failed to distill quest_archive", { error: String(err) });
+      }
+    }
+
     const sig = summarizeToolEvent(event);
     if (sig) await activeSessionBuffer.recordAsync(sig);
   });

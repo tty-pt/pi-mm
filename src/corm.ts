@@ -36,6 +36,8 @@ export interface Invocation {
   payloadBytes?: Uint8Array;
   ref?: number;
   filespec?: string;
+  payloadJson?: string;
+  isJsonOp?: boolean;
 }
 
 export interface CormRunner {
@@ -101,16 +103,59 @@ export function buildStoreInvocation(
   axisLibPath: string,
   memDir: string,
   extraEnv?: Record<string, string>,
+  payloadJson?: string,
 ): Invocation {
   const inv = base(bin, axisLibPath, memDir, extraEnv);
   inv.ref = ref;
   inv.filespec = filespec;
+  if (payloadJson) {
+    inv.payloadJson = payloadJson;
+    inv.isJsonOp = true;
+  }
   if (payload instanceof Uint8Array) {
     inv.payloadBytes = payload;
     inv.args = ["-p", `${ref}:-`, filespec];
   } else {
     inv.args = ["-p", `${ref}:${payload}`, filespec];
   }
+  return inv;
+}
+
+export function buildStoreJsonInvocation(
+  bin: string,
+  filespec: string,
+  ref: number,
+  jsonStr: string,
+  axisLibPath: string,
+  memDir: string,
+  extraEnv?: Record<string, string>,
+  fallbackBytes?: Uint8Array,
+): Invocation {
+  const inv = base(bin, axisLibPath, memDir, extraEnv);
+  inv.ref = ref;
+  inv.filespec = filespec;
+  inv.payloadJson = jsonStr;
+  inv.isJsonOp = true;
+  if (fallbackBytes) {
+    inv.payloadBytes = fallbackBytes;
+  }
+  inv.args = ["-p", `${ref}:-`, filespec];
+  return inv;
+}
+
+export function buildGetJsonInvocation(
+  bin: string,
+  filespec: string,
+  ref: number,
+  axisLibPath: string,
+  memDir: string,
+  extraEnv?: Record<string, string>,
+): Invocation {
+  const inv = base(bin, axisLibPath, memDir, extraEnv);
+  inv.ref = ref;
+  inv.filespec = filespec;
+  inv.isJsonOp = true;
+  inv.args = ["-r", "-g", String(ref), filespec];
   return inv;
 }
 

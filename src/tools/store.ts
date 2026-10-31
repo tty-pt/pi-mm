@@ -168,9 +168,10 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
     return await withLock(cwd, async () => {
       const ref = await allocateNextRef(cwd, env.runner, bin, fspec, axes, eEnv);
       const { envelope } = buildEnvelope(params, summary, ep);
+      const jsonStr = JSON.stringify({ ...envelope, timestamp: date, summary });
       const payload = encodeHtokPayload(date, envelope);
 
-      const res = await env.runner.run(buildStoreInvocation(bin, fspec, ref, payload, axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(bin, fspec, ref, payload, axes, cwd, eEnv, jsonStr));
       if (res.code !== 0) {
         return { content: [{ type: "text", text: `mm store failed (exit ${res.code}): ${res.stderr || res.stdout}` }], details: { ref, key: `@${date}`, error: res.stderr || res.stdout } };
       }

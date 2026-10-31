@@ -1,7 +1,17 @@
 import assert from "node:assert";
 import { existsSync } from "node:fs";
 import { formatProtocolCommand, DaemonCormRunner, isDaemonLockHeld } from "../src/daemon.ts";
-import { buildListInvocation, buildGetInvocation, buildStoreInvocation, buildForgetInvocation, buildScanInvocation, ShellCormRunner, type Invocation } from "../src/corm.ts";
+import {
+  buildListInvocation,
+  buildGetInvocation,
+  buildGetJsonInvocation,
+  buildStoreInvocation,
+  buildStoreJsonInvocation,
+  buildForgetInvocation,
+  buildScanInvocation,
+  ShellCormRunner,
+  type Invocation,
+} from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -46,6 +56,21 @@ Deno.test("daemon protocol formatting: maps all 5 invocation types", () => {
   assert.strictEqual(putBinCmd?.body, "");
   assert.strictEqual(putBinCmd?.bodyBytes, binBytes);
   assert.strictEqual(putBinCmd?.isMutation, true);
+
+  // 3c. PUT_JSON
+  const jsonPayload = '{"level":"L1","type":"episode","summary":"test JSON put"}';
+  const putJsonInv = buildStoreJsonInvocation(bin, fspec, 77, jsonPayload, axes, cwd);
+  const putJsonCmd = formatProtocolCommand(putJsonInv, "103c");
+  assert.strictEqual(putJsonCmd?.header, `PUT_JSON 103c ${fspec} 77 ${new TextEncoder().encode(jsonPayload).length}`);
+  assert.strictEqual(putJsonCmd?.body, jsonPayload);
+  assert.strictEqual(putJsonCmd?.isMutation, true);
+
+  // 2b. GET_JSON
+  const getJsonInv = buildGetJsonInvocation(bin, fspec, 77, axes, cwd);
+  const getJsonCmd = formatProtocolCommand(getJsonInv, "102b");
+  assert.strictEqual(getJsonCmd?.header, `GET_JSON 102b ${fspec} 77 0`);
+  assert.strictEqual(getJsonCmd?.body, "");
+  assert.strictEqual(getJsonCmd?.isMutation, false);
 
   // 4. DEL
   const delInv = buildForgetInvocation(bin, fspec, 42, axes, cwd);
@@ -205,15 +230,28 @@ Deno.test("daemon live integration: end-to-end round trip against real cormd", a
     const putRes = await daemonRunner.run(buildStoreInvocation("corm", fspec, 10, doc, axesPath, tmpDir));
     assert.strictEqual(putRes.code, 0);
 
+    // 2c. PUT_JSON record natively in C
+    const jsonDoc = '{"level":"L1","type":"episode","summary":"native C HTOK v4 packing in cormd","evidence":[1,2],"episode":{"problem":"C packing test","outcome":"success"}}';
+    const putJsonRes = await daemonRunner.run(buildStoreJsonInvocation("corm", fspec, 20, jsonDoc, axesPath, tmpDir));
+    assert.strictEqual(putJsonRes.code, 0);
+
     // 3. GET record
     const getRes = await daemonRunner.run(buildGetInvocation("corm", fspec, 10, axesPath, tmpDir));
     assert.strictEqual(getRes.code, 0);
     assert.strictEqual(getRes.stdout.trim(), doc);
 
-    // 4. LIST has 10
+    // 3c. GET_JSON record natively from C
+    const getJsonRes = await daemonRunner.run(buildGetJsonInvocation("corm", fspec, 20, axesPath, tmpDir));
+    assert.strictEqual(getJsonRes.code, 0);
+    assert.strictEqual(getJsonRes.stdout.includes("native C HTOK v4 packing in cormd"), true);
+    assert.strictEqual(getJsonRes.stdout.includes('"level":"L1"'), true);
+    assert.strictEqual(getJsonRes.stdout.includes('"evidence":[1,2]'), true);
+
+    // 4. LIST has 10 and 20
     const listRes2 = await daemonRunner.run(buildListInvocation("corm", fspec, axesPath, tmpDir));
     assert.strictEqual(listRes2.code, 0);
-    assert.strictEqual(listRes2.stdout.trim(), "10");
+    assert.strictEqual(listRes2.stdout.includes("10"), true);
+    assert.strictEqual(listRes2.stdout.includes("20"), true);
 
     // 5. QUERY by stoma
     const queryRes = await daemonRunner.run(
@@ -222,14 +260,74 @@ Deno.test("daemon live integration: end-to-end round trip against real cormd", a
     assert.strictEqual(queryRes.code, 0);
     assert.strictEqual(queryRes.stdout.includes("daemon integration testing"), true);
 
-    // 6. DEL record
+    // 6. DEL record 10 and 20
     const delRes = await daemonRunner.run(buildForgetInvocation("corm", fspec, 10, axesPath, tmpDir));
     assert.strictEqual(delRes.code, 0);
+    const delRes20 = await daemonRunner.run(buildForgetInvocation("corm", fspec, 20, axesPath, tmpDir));
+    assert.strictEqual(delRes20.code, 0);
 
     // 7. GET after DEL returns -1
     const getRes2 = await daemonRunner.run(buildGetInvocation("corm", fspec, 10, axesPath, tmpDir));
     assert.strictEqual(getRes2.code, 0);
     assert.strictEqual(getRes2.stdout.trim(), "-1");
+  } finally {
+    proc.kill();
+    try { Deno.removeSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  }
+});
+
+Deno.test("daemon live integration: PUT_JSON and GET_JSON over native HTOK v4 binary blob map (:a:b)", async () => {
+  const tmpDir = Deno.makeTempDirSync({ prefix: "cormd-blob-test-" });
+  const sockPath = join(tmpDir, "cormd.sock");
+  const dbPath = join(tmpDir, "mem.db");
+  const fspec = `${dbPath}@joint,lemma:a:b`;
+  const home = Deno.env.get("HOME") || "";
+  const axesPath = `${home}/.local/lib:/usr/local/lib:/usr/lib`;
+
+  const env: Record<string, string> = {
+    ...Deno.env.toObject(),
+    CORM_AXIS_PATH: axesPath,
+    LD_LIBRARY_PATH: `${home}/.local/lib:/usr/lib:${Deno.env.get("LD_LIBRARY_PATH") ?? ""}`,
+  };
+
+  const cormdPath = existsSync("/home/quirinpa/.local/bin/cormd") ? "/home/quirinpa/.local/bin/cormd" : "/usr/bin/cormd";
+  const proc = spawn(cormdPath, ["-d", fspec, "-s", sockPath], {
+    env,
+    stdio: "pipe",
+  });
+
+  for (let i = 0; i < 50; i++) {
+    if (existsSync(sockPath)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  try {
+    const shellRunner = new ShellCormRunner((cmd, args, opts) => {
+      return new Promise((resolve) => {
+        const c = spawn(cmd, args, { ...opts, env: { ...opts?.env, ...env } });
+        let out = "";
+        let err = "";
+        c.stdout?.on("data", (d) => out += d);
+        c.stderr?.on("data", (d) => err += d);
+        c.on("close", (code) => resolve({ stdout: out, stderr: err, code: code ?? 0 }));
+      });
+    });
+
+    const daemonRunner = new DaemonCormRunner(sockPath, shellRunner);
+
+    // 1. PUT_JSON into binary blob map
+    const jsonIn = '{"level":"L1","type":"episode","lifecycle":"supported","summary":"native C HTOK v4 blob packing","evidence":[5,15],"tags":["native","cormd"],"context":{"project":"site"},"episode":{"problem":"blob test","outcome":"success"}}';
+    const putRes = await daemonRunner.run(buildStoreJsonInvocation("corm", fspec, 1, jsonIn, axesPath, tmpDir));
+    assert.strictEqual(putRes.code, 0);
+
+    // 2. GET_JSON unpacks directly from native HTOK v4 binary
+    const getRes = await daemonRunner.run(buildGetJsonInvocation("corm", fspec, 1, axesPath, tmpDir));
+    assert.strictEqual(getRes.code, 0);
+    assert.strictEqual(getRes.stdout.includes('"level":"L1"'), true);
+    assert.strictEqual(getRes.stdout.includes('"lifecycle":"supported"'), true);
+    assert.strictEqual(getRes.stdout.includes("native C HTOK v4 blob packing"), true);
+    assert.strictEqual(getRes.stdout.includes('"evidence":[5,15]'), true);
+    assert.strictEqual(getRes.stdout.includes('"project":"site"'), true);
   } finally {
     proc.kill();
     try { Deno.removeSync(tmpDir, { recursive: true }); } catch { /* ignore */ }

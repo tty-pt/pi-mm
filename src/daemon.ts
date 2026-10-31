@@ -162,6 +162,16 @@ export function formatProtocolCommand(inv: Invocation, reqId: string = "1"): For
     };
   }
 
+  // 2b. GET_JSON: explicit isJsonOp with get args
+  if (inv.isJsonOp && !inv.payloadJson && inv.filespec && inv.ref !== undefined) {
+    return {
+      reqId,
+      isMutation: false,
+      header: `GET_JSON ${reqId} ${inv.filespec} ${inv.ref} 0`,
+      body: "",
+    };
+  }
+
   // 2. GET: -r -g <ref> <filespec>
   if (args.length >= 4 && args[0] === "-r" && args[1] === "-g") {
     const ref = args[2];
@@ -171,6 +181,20 @@ export function formatProtocolCommand(inv: Invocation, reqId: string = "1"): For
       isMutation: false,
       header: `GET ${reqId} ${filespec} ${ref} 0`,
       body: "",
+    };
+  }
+
+  // 3. PUT_JSON: explicit isJsonOp with payloadJson provided
+  if (inv.isJsonOp && inv.payloadJson && inv.filespec) {
+    const ref = inv.ref !== undefined ? String(inv.ref) : "0";
+    const body = inv.payloadJson;
+    const bodyBytes = new TextEncoder().encode(body);
+    return {
+      reqId,
+      isMutation: true,
+      header: `PUT_JSON ${reqId} ${inv.filespec} ${ref} ${bodyBytes.length}`,
+      body,
+      bodyBytes,
     };
   }
 
