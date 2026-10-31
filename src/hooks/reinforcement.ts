@@ -70,10 +70,22 @@ export class ReinforcementScheduler {
 
   public registerDirective(item: StandingDirectiveItem): void {
     this.directives.set(item.ref, item);
+    this.syncGlobal();
   }
 
   public clearDirectives(): void {
     this.directives.clear();
+    this.syncGlobal();
+  }
+
+  private syncGlobal(): void {
+    try {
+      const g = globalThis as Record<string, unknown>;
+      g["__pi_mm_directives"] = Array.from(this.directives.values());
+      g["__pi_mm_scheduler"] = this;
+    } catch {
+      // Best-effort global synchronization
+    }
   }
 
   public getDirectives(activeSubsystems?: string[]): StandingDirectiveItem[] {

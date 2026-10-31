@@ -1,5 +1,5 @@
 import type { EnvSource } from "../tools/index.ts";
-import { axisPath, memDir, sepalConfigured, socketPath } from "../tools/index.ts";
+import { axisPath, memDir, resolveMemDir, sepalConfigured, socketPath } from "../tools/index.ts";
 import { describeCapabilities } from "../config.ts";
 import { evaluateTurnWithJudge } from "../judge/adapter.ts";
 import type { JudgeDecision } from "../judge/types.ts";
@@ -930,6 +930,13 @@ export async function persistConversationalMemory(
             subsystem: classification.context?.subsystem,
             project: classification.context?.project,
           });
+          try {
+            const mDir = resolveMemDir(cwd, env.cfg.memDir);
+            const dirs = reinforcementScheduler.getDirectives();
+            void writeFile(join(mDir, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8");
+          } catch {
+            // Best-effort disk persistence
+          }
         }
         if (classification.level === "L0") {
           await recordNewL0InJournal(cwd, [ref]).catch(() => {});
@@ -1255,6 +1262,13 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
               }
             }
           }
+        }
+        try {
+          const mDir = resolveMemDir(cwd, env.cfg.memDir);
+          const dirs = reinforcementScheduler.getDirectives();
+          await writeFile(join(mDir, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8");
+        } catch {
+          // Best-effort disk persistence
         }
         await activeSessionBuffer.restoreJournal(cwd, committedIds);
 
