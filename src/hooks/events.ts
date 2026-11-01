@@ -8,7 +8,8 @@ import { allocateNextRef } from "../tools/ref_allocator.ts";
 import { parseBareRefs } from "../resolve.ts";
 import { encodePayload, decodePayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
-import type { MemoryEnvelope, EpisodeRecord, MemoryContext } from "../types.ts";
+import type { MemoryEnvelope, EpisodeRecord, MemoryContext, EpisodeApproach, LifecycleState } from "../types.ts";
+import { executeStore } from "../tools/store.ts";
 import { handleBeforeAgentStart, isMemoryRecallPrompt, type BeforeAgentStartEvent } from "./auto_recall.ts";
 import { validateEvidenceRef } from "../tools/lifecycle.ts";
 import { executeHybridScan } from "../tools/scan.ts";
@@ -486,6 +487,151 @@ export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | n
   };
 }
 
+export async function distillQuestArchiveEvent(
+  event: ToolResultEvent,
+  envSource: EnvSource | undefined,
+  ctx: PiCtx,
+): Promise<number | null> {
+  if (event.toolName !== "quest_archive") return null;
+  if (event.isError) return null;
+
+  const details = (typeof event.details === "object" && event.details !== null)
+    ? (event.details as Record<string, unknown>)
+    : {};
+
+  const outcome = String(details["outcome"] || event.input?.["outcome"] || event.args?.["outcome"] || "").toLowerCase();
+  const isCompleted = outcome === "completed";
+  const isFailed = outcome === "failed";
+  if (!isCompleted && !isFailed) return null;
+
+  const rawSetbacks = Array.isArray(details["setbacks"])
+    ? (details["setbacks"] as Array<Record<string, unknown>>)
+    : [];
+
+  const rawFindings = Array.isArray(details["findings"])
+    ? (details["findings"] as string[]).filter((f) => typeof f === "string")
+    : [];
+  if (typeof details["summary"] === "string" && details["summary"].trim()) {
+    if (!rawFindings.includes(details["summary"].trim())) {
+      rawFindings.push(details["summary"].trim());
+    }
+  }
+
+  const rawObjective = details["objective"] || details["problem"] || event.input?.["summary"];
+  if (isFailed && !rawObjective && rawSetbacks.length === 0 && rawFindings.length === 0) {
+    return null;
+  }
+
+  const qid = String(details["archived"] || details["qid"] || "");
+  const objective = String(rawObjective || "").trim() ||
+    `Quest ${qid} ${isCompleted ? "completion" : "setback"}`;
+  const kind = String(details["kind"] || "standard");
+  const difficulty = String(details["difficulty"] || "standard");
+
+  const modifiedFiles = Array.isArray(details["modifiedFiles"])
+    ? (details["modifiedFiles"] as string[]).filter((f) => typeof f === "string")
+    : [];
+
+  const rawReceipt = (typeof details["lastTestReceipt"] === "object" && details["lastTestReceipt"] !== null)
+    ? (details["lastTestReceipt"] as Record<string, unknown>)
+    : undefined;
+
+  const testCommand = typeof rawReceipt?.["command"] === "string" ? rawReceipt["command"] : undefined;
+  const testExitCode = typeof rawReceipt?.["exitCode"] === "number" ? rawReceipt["exitCode"] : undefined;
+  const hasPassingTest = Boolean(testCommand && testExitCode === 0);
+
+  // Build approaches:
+  const approaches: EpisodeApproach[] = [];
+
+  // Failed approaches from setbacks (dead ends with specific context)
+  for (const sb of rawSetbacks) {
+    const reason = typeof sb["reason"] === "string" ? sb["reason"] : "Build or test failure";
+    const evidenceList = Array.isArray(sb["evidence"]) ? (sb["evidence"] as string[]) : [];
+    const errText = typeof sb["error"] === "string" ? sb["error"] : evidenceList.join("; ");
+    approaches.push({
+      approach: reason,
+      outcome: "failed",
+      reason: errText ? `Failed with error: ${errText}` : reason,
+    });
+  }
+
+  if (isFailed && approaches.length === 0) {
+    approaches.push({
+      approach: rawFindings[0] || `Attempted ${kind} quest (${difficulty} tier)`,
+      outcome: "failed",
+      reason: "Quest execution failed or validation failed",
+    });
+  }
+
+  // Worked / primary approach description
+  const workedDesc = rawFindings.length > 0
+    ? (isCompleted ? `Approved plan implemented: ${rawFindings[0]}` : `Quest setback: ${rawFindings[0]}`)
+    : (isCompleted ? `Completed ${kind} quest (${difficulty} tier) with verified implementation` : `Failed ${kind} quest (${difficulty} tier)`);
+
+  if (isCompleted) {
+    approaches.push({
+      approach: workedDesc,
+      outcome: "worked",
+      reason: hasPassingTest ? `Verified via tests: ${testCommand}` : "Verified and approved in validation",
+    });
+  }
+
+  const tags = ["quest", kind, `difficulty:${difficulty}`];
+  if (qid) tags.push(`qid:${qid}`);
+
+  const lifecycle: LifecycleState = isCompleted ? (hasPassingTest ? "supported" : "tested") : "observed";
+
+  const projectContext = extractReliableProjectContext(ctx);
+
+  const episode: EpisodeRecord = {
+    problem: objective,
+    request: objective,
+    approaches,
+    findings: rawFindings.length > 0 ? rawFindings : undefined,
+    diffs: modifiedFiles.length > 0 ? modifiedFiles : undefined,
+    outcome: isCompleted ? "success" : "failure",
+  };
+
+  const summary = `Quest ${qid ? `${qid} ` : ""}(${kind}, ${difficulty}${isFailed ? " failed" : ""}): ${objective}`;
+
+  if (envSource) {
+    try {
+      const res = await executeStore(envSource, {
+        level: "L1",
+        type: "episode",
+        lifecycle,
+        summary,
+        episode,
+        context: projectContext,
+        tags,
+      }, ctx);
+      const resDetails = res.details as { ref?: number } | undefined;
+      if (resDetails?.ref) {
+        debugLog("capture", "Distilled quest_archive into L1 memory", { ref: resDetails.ref, qid, lifecycle });
+        traceEvent("memory_write", "ok", { ref: resDetails.ref, qid, lifecycle, objective });
+        return resDetails.ref;
+      }
+    } catch (err) {
+      debugLog("capture", "executeStore failed for quest_archive", { error: String(err) });
+    }
+  }
+
+  // Fallback into activeSessionBuffer
+  const sigEvent: SignificantEvent = {
+    id: `quest-${qid || Date.now()}`,
+    timestamp: new Date().toISOString(),
+    toolName: "quest_archive",
+    summary,
+    isError: isFailed,
+    approach: workedDesc,
+    outcome: isCompleted ? "worked" : "failed",
+    diffs: modifiedFiles,
+    environment: { runtime: typeof Deno !== "undefined" ? "deno" : "node" },
+  };
+  await activeSessionBuffer.recordAsync(sigEvent);
+  return null;
+}
+
 export function extractReliableProjectContext(
   ctx: PiCtx,
   batch?: SignificantEvent[],
@@ -802,6 +948,12 @@ export async function persistConversationalMemory(
             subsystem: classification.context?.subsystem,
             project: classification.context?.project,
           });
+          try {
+            const dirs = reinforcementScheduler.getDirectives();
+            await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+          } catch {
+            // Best-effort disk persistence
+          }
         }
         if (classification.level === "L0") {
           await recordNewL0InJournal(cwd, [ref]).catch(() => {});
@@ -1110,13 +1262,32 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           embedModel: env.cfg.embedModel,
         }, { sessionId });
 
+        const directivesFile = join(cwd, "standing_directives.json");
+        let hasDirectivesFile = existsSync(directivesFile);
+        if (hasDirectivesFile) {
+          try {
+            const raw = JSON.parse(await readFile(directivesFile, "utf8"));
+            if (Array.isArray(raw) && raw.length > 0) {
+              for (const item of raw) {
+                if (item && typeof item.ref === "number" && typeof item.summary === "string") {
+                  reinforcementScheduler.registerDirective(item);
+                }
+              }
+            } else {
+              hasDirectivesFile = false;
+            }
+          } catch {
+            hasDirectivesFile = false;
+          }
+        }
+
         const list = await env.runner.run(buildListInvocation(env.cfg.cormBin, fspec, axes, cwd));
         for (const r of parseBareRefs(list.stdout)) {
           const res = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, r, axes, cwd));
           if (res.code === 0 && res.stdout.trim()) {
             const { envelope } = decodePayload(res.stdout.trim());
             for (const id of envelope.episode?.eventIds || []) committedIds.add(id);
-            if (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant")) {
+            if (!hasDirectivesFile && (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant"))) {
               if (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") {
                 reinforcementScheduler.registerDirective({
                   ref: r,
@@ -1126,6 +1297,14 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                 });
               }
             }
+          }
+        }
+        if (!hasDirectivesFile) {
+          try {
+            const dirs = reinforcementScheduler.getDirectives();
+            await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+          } catch {
+            // Best-effort disk persistence
           }
         }
         await activeSessionBuffer.restoreJournal(cwd, committedIds);
@@ -1169,7 +1348,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
             if (!findSepalLib(ctx.cwd) && env.cfg.semanticSearch !== false) {
               tell("sepal", `[pi-mm] Semantic recall needs libsepal, which is not installed. See: ${DOCS_SEPAL}`, "warning");
             }
-            if (env.cfg.judgeMode !== "off" && env.cfg.judgeMode !== "heuristic") {
+            if (env.cfg.judgeMode !== "off") {
               const confirmFn = (ctxUnknown as { ui?: { confirm?: (title: string, message: string) => Promise<boolean> } })?.ui?.confirm;
               void ensureAuren({
                 cwd: ctx.cwd,
@@ -1207,9 +1386,19 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     }
   });
 
-  pi.on("tool_result", async (eventUnknown: unknown) => {
+  pi.on("tool_result", async (eventUnknown: unknown, ctxUnknown?: unknown) => {
     if (typeof eventUnknown !== "object" || eventUnknown === null) return;
     const event = eventUnknown as ToolResultEvent;
+    const ctx = (ctxUnknown as PiCtx) ?? { cwd: process.cwd(), hasUI: false, mode: "agent" };
+
+    if (event.toolName === "quest_archive") {
+      try {
+        await distillQuestArchiveEvent(event, envSource, ctx);
+      } catch (err) {
+        debugLog("capture", "Failed to distill quest_archive", { error: String(err) });
+      }
+    }
+
     const sig = summarizeToolEvent(event);
     if (sig) await activeSessionBuffer.recordAsync(sig);
   });
@@ -1422,6 +1611,56 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
               notifyMmEvent(ctx, "saved");
             }
           }
+
+          // Dual-end capture: if the user prompt was NOT already stored conversationally (e.g. it was a task/problem),
+          // but the turn involved informative tool executions (flushedRef) and the assistant provided a substantive technical response,
+          // distill into an L1 Task Episode.
+          if (!shouldStoreConversational && flushedRef !== null && flushedRef !== undefined && response && response.trim().length >= 40 && !isMemoryRecallPrompt(prompt)) {
+            try {
+              const firstFinding = response.trim().split("\n\n")[0].trim().slice(0, 300);
+              const summary = `${prompt.slice(0, 100).trim()}: ${firstFinding.slice(0, 150)}`;
+              const episodeContext = extractReliableProjectContext(ctx);
+              const l1Episode: MemoryEnvelope = {
+                level: "L1",
+                type: "episode",
+                lifecycle: "tested",
+                summary: summary.slice(0, 250),
+                evidence: [...capturedL0Refs],
+                context: episodeContext,
+                episode: {
+                  problem: prompt,
+                  request: prompt,
+                  approaches: [
+                    {
+                      approach: firstFinding.slice(0, 200),
+                      outcome: "worked",
+                      reason: "Verified during agent turn execution",
+                    },
+                  ],
+                  findings: [firstFinding],
+                  outcome: "success",
+                },
+              };
+              const l1Payload = encodePayload(env.nowProvider().toISOString().slice(0, 10), l1Episode);
+              const cwd = memDir(env);
+              const axes = axisPath(env);
+              const embed = sepalConfigured(env.cfg);
+              const fspec = filespecFor(cwd, embed);
+              const eEnv = embedEnv(env.cfg);
+
+              void withLock(cwd, async () => {
+                const l1Ref = await allocateNextRef(cwd, env.runner, env.cfg.cormBin, fspec, axes, eEnv);
+                const storeRes = await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, l1Ref, l1Payload, axes, cwd, eEnv));
+                if (storeRes.code === 0) {
+                  debugLog("capture", "Distilled assistant discovery into L1 Task Episode", { l1Ref, summary });
+                  traceEvent("memory_write", "ok", { targetFilespec: fspec, proposedSummary: summary, assignedRef: l1Ref, kind: "assistant_discovery" }, { sessionId });
+                  notifyMmEvent(ctx, "saved");
+                }
+              }).catch(() => {});
+            } catch (err) {
+              debugLog("capture", "Assistant discovery distillation error", { error: err instanceof Error ? err.message : String(err) });
+            }
+          }
         } catch (err) {
           debugLog("capture", "Conversational capture error", { error: err instanceof Error ? err.message : String(err) });
         }
@@ -1480,15 +1719,15 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     if (!envSource || !ctxUnknown) return;
     const event = eventUnknown as BeforeAgentStartEvent;
 
-    // Check reinforcement trigger (session_start, compaction reset, or milestone)
+    // Ensure standing directives and environment baseline are continuously reinforced in systemPromptOptions
     try {
       const env = await envSource(ctxUnknown as PiCtx);
       const usage = (ctxUnknown as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.() ||
                     (pi as { getContextUsage?: () => { percent?: number } })?.getContextUsage?.();
       const pct = typeof usage?.percent === "number" ? usage.percent : 0;
       const reinfCfg = (env.cfg.reinforcement as Required<import("../config.ts").ReinforcementConfig>) ?? DEFAULT_REINFORCEMENT_CONFIG;
-      const trigger = reinforcementScheduler.checkTrigger(pct, reinfCfg);
-      if (trigger.trigger) {
+      if (reinfCfg.enabled !== false) {
+        const trigger = reinforcementScheduler.checkTrigger(pct, reinfCfg);
         const promptText = typeof event.prompt === "string" ? event.prompt : "";
         const mentioned = promptText ? detectSubsystemMentions(promptText) : undefined;
         const directives = reinforcementScheduler.getDirectives(mentioned);
@@ -1499,8 +1738,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           }
           event.systemPromptOptions.sections["standing_directives"] = block;
           debugLog("reinforcement", "Injected standing directives into systemPromptOptions", {
-            reason: trigger.reason,
+            reason: trigger.reason ?? "continuous",
             milestone: trigger.milestone,
+            directivesCount: directives.length,
           });
         }
       }

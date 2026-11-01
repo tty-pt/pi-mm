@@ -109,17 +109,18 @@ async function executeRecord(
     subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
   } : undefined;
 
+  const isStanding = typeof params["standing"] === "boolean" ? params["standing"] : undefined;
   const storeRes = await executeStore(envSource, {
-    level: "L0",
-    type: "episode",
-    lifecycle,
+    level: isStanding ? "L2" : "L0",
+    type: isStanding ? "invariant" : "episode",
+    lifecycle: isStanding ? (lifecycle === "observed" ? "supported" : lifecycle) : lifecycle,
     summary,
     episode,
     context,
     evidence: params["evidence"],
     supersedes: params["supersedes"],
     tags: params["tags"],
-    standing: typeof params["standing"] === "boolean" ? params["standing"] : undefined,
+    standing: isStanding,
   }, ctx);
 
   const d = storeRes.details as { ref?: number; key?: string } | undefined;

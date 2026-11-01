@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 export type CaptureMode = "all" | "keyword" | "judge" | "off";
-export type JudgeMode = "auto" | "heuristic" | "off";
+export type JudgeMode = "auto" | "off";
 export type JudgeProtocol = "auto" | "systemzero" | "systemone";
 export type JudgeFallback = "capture" | "skip";
 
@@ -112,6 +112,14 @@ export interface MmConfig {
   synthTimeoutMs?: number;
   ephemeralSepal?: boolean;
   ephemeralJoint?: boolean;
+  /** Maximum storage limit in bytes before warnings / auto-archiving (default 100 GB = 107374182400). */
+  maxStorageBytes?: number;
+  /** L0 retention policy: "keep_all" (default, preserves full 100GB history) | "prune_after_consolidation". */
+  l0RetentionPolicy?: "keep_all" | "prune_after_consolidation";
+  /** Character budget for auto-recall prompt injection (default 1500). */
+  autoRecallBudgetChars?: number;
+  /** Whether to automatically supersede older duplicate memories in the same scope when similarity is high (default true). */
+  semanticDeduplication?: boolean;
   /** Start the local axil-auren server automatically when it is installed (default true). */
   autoStartAuren?: boolean;
   /** Model download policy: small models auto, large models ask once (default "ask"). */
@@ -152,6 +160,10 @@ export const DEFAULT_CONFIG: MmConfig = {
   synthKey: undefined,
   synthTimeoutMs: 15000,
   ephemeralSepal: false,
+  maxStorageBytes: 107374182400,
+  l0RetentionPolicy: "keep_all",
+  autoRecallBudgetChars: 1500,
+  semanticDeduplication: true,
   autoStartAuren: true,
   autoDownloadModels: "ask",
   recallEmbed: undefined,
@@ -240,7 +252,7 @@ export function loadConfig(raw: unknown): MmConfig {
 
   // Migrate legacy judgeMode if captureMode is not explicitly set
   const effectiveJudgeMode: JudgeMode =
-    jMode === "auto" || jMode === "heuristic" || jMode === "off" ? jMode : (DEFAULT_CONFIG.judgeMode ?? "auto");
+    jMode === "auto" || jMode === "off" ? jMode : (DEFAULT_CONFIG.judgeMode ?? "auto");
 
   const effectiveJudgeUrl =
     typeof jUrl === "string" && jUrl.trim() !== ""
@@ -271,8 +283,6 @@ export function loadConfig(raw: unknown): MmConfig {
   let effectiveFallback: JudgeFallback = DEFAULT_CONFIG.judgeFallback ?? "skip";
   if (jFallback === "capture" || jFallback === "skip") {
     effectiveFallback = jFallback;
-  } else if (jFallback === "heuristic") {
-    effectiveFallback = "skip";
   }
 
   const effectiveBin = typeof bin === "string" && bin.trim() !== "" ? bin.trim() : DEFAULT_CONFIG.cormBin;
@@ -342,6 +352,10 @@ export function loadConfig(raw: unknown): MmConfig {
     ephemeralSepal: typeof ephem === "boolean" ? ephem : DEFAULT_CONFIG.ephemeralSepal,
     autoStartAuren: typeof autoStart === "boolean" ? autoStart : DEFAULT_CONFIG.autoStartAuren,
     autoDownloadModels: autoDl === "auto" || autoDl === "ask" || autoDl === "never" ? autoDl : DEFAULT_CONFIG.autoDownloadModels,
+    maxStorageBytes: typeof record["maxStorageBytes"] === "number" && record["maxStorageBytes"] > 0 ? record["maxStorageBytes"] : DEFAULT_CONFIG.maxStorageBytes,
+    l0RetentionPolicy: record["l0RetentionPolicy"] === "prune_after_consolidation" ? "prune_after_consolidation" : "keep_all",
+    autoRecallBudgetChars: typeof record["autoRecallBudgetChars"] === "number" && record["autoRecallBudgetChars"] > 0 ? record["autoRecallBudgetChars"] : DEFAULT_CONFIG.autoRecallBudgetChars,
+    semanticDeduplication: typeof record["semanticDeduplication"] === "boolean" ? record["semanticDeduplication"] : DEFAULT_CONFIG.semanticDeduplication,
     reinforcement: parsedReinforcement,
   };
 }
@@ -449,19 +463,18 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   }
 
   let jMode = cfg.judgeMode;
-  if (envJMode === "auto" || envJMode === "heuristic" || envJMode === "off") {
+  if (envJMode === "auto" || envJMode === "off") {
     jMode = envJMode;
   }
 
   envJUrl = defaultJudgeUrl ?? (jMode === "auto" && !cfg.judgeUrl ? "http://127.0.0.1:4242" : undefined);
-  const resolvedJudgeUrl = jMode === "off" || jMode === "heuristic" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
+  const resolvedJudgeUrl = jMode === "off" ? undefined : (cfg.judgeUrl ?? (typeof envJUrl === "string" && envJUrl.trim() !== "" ? envJUrl.trim() : undefined));
 
   let capMode = cfg.captureMode;
   if (envCapMode === "all" || envCapMode === "keyword" || envCapMode === "judge" || envCapMode === "off") {
     capMode = envCapMode;
   } else if (!capMode) {
     if (jMode === "off") capMode = "off";
-    else if (jMode === "heuristic") capMode = "all";
     else if (resolvedJudgeUrl) capMode = "judge";
     else capMode = "all";
   }
@@ -475,7 +488,7 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     ? envModel.trim()
     : (!hasPartialEmbedEnv && resolvedJudgeUrl ? "bge-base" : undefined));
 
-  const resolvedCaptureEmbedUrl = jMode === "off" || jMode === "heuristic"
+  const resolvedCaptureEmbedUrl = jMode === "off"
     ? undefined
     : (cfg.captureEmbedUrl ?? (env["PI_MM_CAPTURE_EMBED_URL"]?.trim() || resolvedJudgeUrl));
 
@@ -486,8 +499,6 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   let jFallback = cfg.judgeFallback;
   if (envJFallback === "capture" || envJFallback === "skip") {
     jFallback = envJFallback;
-  } else if (envJFallback === "heuristic") {
-    jFallback = "skip";
   }
 
   const timeoutNum = envJTimeout ? parseInt(envJTimeout, 10) : undefined;
@@ -567,6 +578,18 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     ephemeralSepal,
     autoStartAuren,
     autoDownloadModels,
+    maxStorageBytes: env["PI_MM_MAX_STORAGE_BYTES"] && !isNaN(parseInt(env["PI_MM_MAX_STORAGE_BYTES"], 10))
+      ? parseInt(env["PI_MM_MAX_STORAGE_BYTES"], 10)
+      : cfg.maxStorageBytes,
+    l0RetentionPolicy: env["PI_MM_L0_RETENTION_POLICY"] === "prune_after_consolidation"
+      ? "prune_after_consolidation"
+      : (cfg.l0RetentionPolicy ?? "keep_all"),
+    autoRecallBudgetChars: env["PI_MM_AUTO_RECALL_BUDGET"] && !isNaN(parseInt(env["PI_MM_AUTO_RECALL_BUDGET"], 10))
+      ? parseInt(env["PI_MM_AUTO_RECALL_BUDGET"], 10)
+      : cfg.autoRecallBudgetChars,
+    semanticDeduplication: env["PI_MM_SEMANTIC_DEDUPLICATION"] !== undefined
+      ? !(env["PI_MM_SEMANTIC_DEDUPLICATION"] === "0" || env["PI_MM_SEMANTIC_DEDUPLICATION"] === "false")
+      : cfg.semanticDeduplication,
   };
 }
 
@@ -576,13 +599,29 @@ export function sepalConfigured(cfg: MmConfig): boolean {
     typeof cfg.embedModel === "string" && cfg.embedModel.trim() !== "";
 }
 
-export const DEFAULT_CAPTURE_MIN_MARGIN = 0.075;
-export const DEFAULT_CAPTURE_MIN_SIMILARITY = 0.6;
+export const DEFAULT_CAPTURE_MIN_MARGIN = 0.025;
+export const DEFAULT_CAPTURE_MIN_SIMILARITY = 0.55;
+
+export const DEFAULT_MAX_STORAGE_BYTES = 107374182400; // 100 GB
+export const DEFAULT_L0_RETENTION_POLICY = "keep_all";
+export const DEFAULT_AUTO_RECALL_BUDGET_CHARS = 1500;
+
+export function maxStorageBytes(cfg: MmConfig): number {
+  return cfg.maxStorageBytes ?? DEFAULT_MAX_STORAGE_BYTES;
+}
+
+export function l0RetentionPolicy(cfg: MmConfig): "keep_all" | "prune_after_consolidation" {
+  return cfg.l0RetentionPolicy ?? DEFAULT_L0_RETENTION_POLICY;
+}
+
+export function autoRecallBudgetChars(cfg: MmConfig): number {
+  return cfg.autoRecallBudgetChars ?? DEFAULT_AUTO_RECALL_BUDGET_CHARS;
+}
 
 export const DEFAULT_RECALL_MIN_MARGIN = 0.08;
 export const DEFAULT_RECALL_MIN_SIMILARITY = 0.60;
 export const DEFAULT_RECALL_FALLBACK = "regex";
-export const DEFAULT_RECALL_ACTION = "hint";
+export const DEFAULT_RECALL_ACTION = "query";
 
 export function recallAction(cfg: MmConfig): "hint" | "query" {
   return cfg.recallAction ?? DEFAULT_RECALL_ACTION;
@@ -754,8 +793,8 @@ export function describeCapabilities(cfg: MmConfig): string {
     parts.push("overview=regex");
   }
 
-  if (cfg.judgeMode === "heuristic" || (!cfg.judgeUrl && cap === "all")) {
-    parts.push("judge=heuristic (explicit)");
+  if (!cfg.judgeUrl && cap === "all") {
+    parts.push("judge=off (capture=all)");
   }
 
   if (!sepalConfigured(cfg)) {

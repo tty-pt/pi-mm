@@ -3,7 +3,7 @@ import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { synthConfigured } from "../config.ts";
 import { filespecFor, buildGetInvocation, buildStoreInvocation, buildListInvocation, embedEnv } from "../corm.ts";
-import { decodePayload, encodePayload } from "../payload.ts";
+import { decodePayload, encodePayload, encodeHtokPayload } from "../payload.ts";
 import { isMemoryRecallPrompt } from "../hooks/auto_recall.ts";
 import { parseBareRefs, nextRef } from "../resolve.ts";
 import { withLock } from "../lock.ts";
@@ -1273,6 +1273,20 @@ export async function runAutoConsolidation(
     const combinedRepresentedL0 = Array.from(new Set([...representedL0Refs, ...alreadyRepresentedL0]));
     if (combinedRepresentedL0.length > 0) {
       await pruneProcessedL0InJournal(cwd, combinedRepresentedL0);
+      if (env.cfg.l0RetentionPolicy === "prune_after_consolidation") {
+        for (const l0Ref of combinedRepresentedL0) {
+          try {
+            const l0Item = items.find((it) => it.ref === l0Ref);
+            if (l0Item && l0Item.envelope.lifecycle !== "superseded") {
+              l0Item.envelope.lifecycle = "superseded";
+              const payload = fspec.includes(":a:b")
+                ? encodeHtokPayload(l0Item.date, l0Item.envelope)
+                : encodePayload(l0Item.date, l0Item.envelope);
+              await env.runner.run(buildStoreInvocation(env.cfg.cormBin, fspec, l0Ref, payload, axes, cwd, eEnv));
+            }
+          } catch { /* best effort */ }
+        }
+      }
     }
 
     // 4. Clear committed pendingL1Transitions

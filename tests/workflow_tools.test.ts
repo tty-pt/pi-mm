@@ -72,6 +72,34 @@ Deno.test("workflow_tools: memory_record validates required fields and stores L0
   assert.ok((res.content[0].text ?? "").includes("Recorded episode at Ref 3"));
 });
 
+Deno.test("workflow_tools: memory_record with standing: true elevates to L2 invariant", async () => {
+  const { runner, invocations } = fakeRunner([
+    { stdout: "1\n2\n", stderr: "", code: 0 }, // list refs
+    { stdout: "", stderr: "", code: 0 },       // store
+  ]);
+
+  const tool = makeRecordTool(() => Promise.resolve(makeEnv(runner)));
+
+  const res = await runTool(tool, {
+    problem: "Never use raw pointers in request handlers",
+    approaches: [
+      { approach: "Enforce managed buffer API", outcome: "worked", reason: "Prevents dangling pointers" },
+    ],
+    findings: ["Raw pointers caused use-after-free"],
+    standing: true,
+    project: "site",
+    subsystem: "libcorm",
+  });
+
+  const details = res.details as { ref?: number; outcome?: string };
+  assert.strictEqual(details.ref, 3);
+
+  // Check store invocation payload
+  const storeInv = invocations.find((i) => i.ref === 3 || i.args.includes("-p"));
+  assert.ok(storeInv, "Store invocation should exist");
+  assert.strictEqual(storeInv?.ref, 3);
+});
+
 Deno.test("workflow_tools: memory_recall searches hybrid candidates and returns compact summary", async () => {
   const fakeHit = "3 0.85 2026-03-30:" + JSON.stringify({
     level: "L2",

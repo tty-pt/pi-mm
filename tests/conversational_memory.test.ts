@@ -879,5 +879,106 @@ Deno.test("conversational memory: end-to-end Session A 'I spoke to my grandfathe
   }
 });
 
+Deno.test("conversational memory: technical turn with tools and assistant discovery is distilled into L1 episode", async () => {
+  const tmpDir = Deno.makeTempDirSync({ prefix: "mm-assist-distill-" });
+  const sockPath = join(tmpDir, "cormd.sock");
+  const fspec = filespecFor(tmpDir, false);
+
+  try {
+    await ensureDaemon({ cormdBin, filespec: fspec, socketPath: sockPath, axisPath, cwd: tmpDir });
+    const shellExec = async (cmd: string, args: string[]) => {
+      const p = new Deno.Command(cmd, { args, cwd: tmpDir, stdout: "piped", stderr: "piped" });
+      const out = await p.output();
+      return { code: out.code, stdout: new TextDecoder().decode(out.stdout), stderr: new TextDecoder().decode(out.stderr) };
+    };
+
+    const daemonRunner = new DaemonCormRunner(sockPath, { run: (inv) => shellExec(inv.command, inv.args) });
+    const env = {
+      cfg: { ...DEFAULT_CONFIG, cormBin, cormdBin, memDir: tmpDir, captureMode: "judge" as const },
+      runner: daemonRunner,
+      nowProvider: () => new Date("2026-10-20T12:00:00Z"),
+      cwd: tmpDir,
+      sessionId: "sess-distill-1",
+    };
+    const envSource = () => Promise.resolve(env);
+
+    const listeners: Record<string, ((event: unknown, ctx?: unknown) => Promise<unknown>)[]> = {};
+    const mockPi = {
+      on: (ev: string, h: (e: unknown, c?: unknown) => Promise<unknown>) => {
+        listeners[ev] = listeners[ev] || [];
+        listeners[ev].push(h);
+      },
+    };
+
+    const ctx = {
+      cwd: tmpDir,
+      hasUI: false,
+      mode: "agent",
+      sessionId: "sess-distill-1",
+      sessionManager: { getSessionId: () => "sess-distill-1" },
+    };
+
+    // deno-lint-ignore no-explicit-any
+    installSessionHooks(mockPi as any, envSource);
+
+    const emit = async (ev: string, data: unknown) => {
+      for (const h of listeners[ev] || []) await h(data, ctx);
+    };
+
+    await emit("session_start", null);
+
+    // User asks a task (classified as skip by judge)
+    await emit("before_agent_start", {
+      messageType: "user",
+      prompt: "Investigate socket crash on disconnect in song module.",
+    });
+
+    // Tool executes code edit
+    await emit("tool_result", {
+      toolName: "edit",
+      input: { path: "mods/song.c" },
+      content: [{ type: "text", text: "Successfully replaced 1 block in mods/song.c" }],
+    });
+
+    // Assistant explains the discovery
+    await emit("message_end", {
+      message: {
+        role: "assistant",
+        content: "Found root cause: socket fd was closed twice due to missing NULL check. Added fd validation in mods/song.c.",
+      },
+    });
+
+    // Turn settles
+    await emit("agent_settled", null);
+
+    // Check records in mem.db: L0 tool record + L1 distilled episode
+    const listRes = await daemonRunner.run(buildListInvocation(cormBin, fspec, axisPath, tmpDir));
+    const refs = parseBareRefs(listRes.stdout);
+    assert.ok(refs.length >= 2, "Must create at least L0 tool record and L1 distilled episode");
+
+    let foundDistilledL1 = false;
+    for (const r of refs) {
+      const g = await daemonRunner.run(buildGetInvocation(cormBin, fspec, r, axisPath, tmpDir));
+      if (g.code === 0 && g.stdout.trim()) {
+        const { envelope } = decodePayload(g.stdout.trim());
+        if (envelope.level === "L1" && envelope.type === "episode") {
+          foundDistilledL1 = true;
+          assert.ok(envelope.summary.includes("Investigate socket crash"));
+          assert.ok(envelope.summary.includes("Found root cause: socket fd was closed twice"));
+          assert.ok(envelope.evidence && envelope.evidence.length > 0, "L1 episode must cite L0 tool evidence");
+        }
+      }
+    }
+    assert.ok(foundDistilledL1, "Must find distilled L1 episode in database");
+
+    // Clean up daemon
+    const lockData = JSON.parse(await Deno.readTextFile(join(tmpDir, ".cormd.lock")));
+    process.kill(lockData.pid, "SIGTERM");
+  } finally {
+    try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+  }
+});
+
+
 
 

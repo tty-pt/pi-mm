@@ -96,3 +96,26 @@ Deno.test("context_reinforcement: synthesizeReinforcementBlockFromDirectives for
   assert.equal(grpOnly.length, 1);
   assert.equal(grpOnly[0].ref, 1);
 });
+
+Deno.test("context_reinforcement: synthesizeReinforcementBlockFromDirectives orders directives newest-first", () => {
+  const scheduler = new ReinforcementScheduler();
+  scheduler.registerDirective({ ref: 1, summary: "Old directive from last week" });
+  scheduler.registerDirective({ ref: 2, summary: "Recent directive from yesterday" });
+  scheduler.registerDirective({ ref: 3, summary: "Newest directive from 5 minutes ago" });
+
+  const ctx = { cwd: "/tmp", hasUI: false, mode: "test" };
+  const block = synthesizeReinforcementBlockFromDirectives(
+    scheduler.getDirectives(),
+    ctx,
+    { trigger: false },
+    DEFAULT_REINFORCEMENT_CONFIG,
+  );
+
+  const idxNewest = block.indexOf("Newest directive from 5 minutes ago");
+  const idxRecent = block.indexOf("Recent directive from yesterday");
+  const idxOld = block.indexOf("Old directive from last week");
+
+  assert.ok(idxNewest !== -1 && idxRecent !== -1 && idxOld !== -1);
+  assert.ok(idxNewest < idxRecent, "Newest directive must appear before recent directive");
+  assert.ok(idxRecent < idxOld, "Recent directive must appear before old directive");
+});

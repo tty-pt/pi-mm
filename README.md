@@ -71,8 +71,8 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `captureEmbedModel` | `"bge-base"` | Classification embedding model (a multilingual model improves non-English recall) |
 | `captureMode` | `"all"`, or `"judge"` when `captureEmbedUrl` is set in your settings | What automatic conversational capture stores: `"all"` (every user turn), `"keyword"` (only turns starting with a capture keyword), `"judge"` (turns the embedding classifier says are worth remembering), `"off"` |
 | `captureEmbed` | `"auto"` | Classify turns by embeddings in `captureMode: "judge"`. Env: `PI_MM_CAPTURE_EMBED` |
-| `captureMinSimilarity` | `0.6` | Cosine floor for any embedding verdict (0..1) |
-| `captureMinMargin` | `0.075` | How far a "remember" verdict must beat "skip" (0..1); raise it to store less, lower it to store more |
+| `captureMinSimilarity` | `0.55` | Cosine floor for any embedding verdict (0..1) |
+| `captureMinMargin` | `0.025` | How far a "remember" verdict must beat "skip" (0..1); lower margin enables high-frequency technical capture |
 | `captureExemplars` | `{}` | Your own example sentences, `{ "remember": [...], "skip": [...] }`, any language, merged with the shipped ones |
 | `judgeFallback` | `"skip"` | Deterministic fallback when the classifier server is offline (`"skip"` or `"capture"`) |
 | `autoStartAuren` | `true` | Automatically launch `axil-auren` in the background if offline |
@@ -80,13 +80,17 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `semanticSearch` | `true` | Enable dense vector embeddings and semantic recall via `libsepal` |
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
+| `maxStorageBytes` | `107374182400` | Soft storage limit threshold in bytes (default 100 GB). Env: `PI_MM_MAX_STORAGE_BYTES` |
+| `l0RetentionPolicy` | `"keep_all"` | Raw L0 tool retention policy: `"keep_all"` (preserves full 100GB history) or `"prune_after_consolidation"` (supersedes raw tool traces once consolidated). Env: `PI_MM_L0_RETENTION_POLICY` |
+| `autoRecallBudgetChars` | `1500` | Maximum character budget injected into system prompt before a turn. Env: `PI_MM_AUTO_RECALL_BUDGET` |
+| `semanticDeduplication` | `true` | Automatically supersede older duplicate records in the same scope when cosine similarity >= 0.88. Env: `PI_MM_SEMANTIC_DEDUPLICATION` |
 | `advancedTools` | `false` | Expose the 9 advanced low-level memory inspection tools |
 | `recallEmbed` | `"auto"` | Classify user prompts by embeddings (`POST /v1/classify`) to detect recall intent (`"auto"` or `"off"`). Env: `PI_MM_RECALL_EMBED` |
 | `recallMinSimilarity` | `0.6` | Cosine floor for recall intent embedding classification (0..1) |
 | `recallMinMargin` | `0.08` | How far a `"recall_past"` verdict must beat `"standalone"` (0..1) |
 | `recallExemplars` | `{}` | Your own example sentences, `{ "recall_past": [...], "standalone": [...] }`, merged with shipped ones |
-| `recallFallback` | `"regex"` | Fallback when classifier endpoint is offline: `"regex"` (deterministic heuristics) or `"skip"` |
-| `recallAction` | `"hint"` | Action on recall inquiry or architectural wonder: `"hint"` (default, zero DB queries, emits epistemic hint advising agent to use `memory_recall` via inference) or `"query"` (legacy auto-injection). Env: `PI_MM_RECALL_ACTION` |
+| `recallFallback` | `"skip"` | Fallback when classifier endpoint is offline: `"skip"` (default, zero guessing) or `"capture"` |
+| `recallAction` | `"query"` | Action on recall inquiry: `"query"` (default, executes hybrid scan and injects matching memories) or `"hint"` (emits epistemic hint advising agent to use `memory_recall`). Env: `PI_MM_RECALL_ACTION` |
 | `wonderingEmbed` | `"auto"` | Classify assistant turns and thoughts by embeddings (`POST /v1/classify`) to detect cognitive wonderings and architectural curiosity (`"auto"` or `"off"`). Env: `PI_MM_WONDERING_EMBED` |
 | `wonderingMinSimilarity` | `0.6` | Cosine floor for assistant wondering embedding classification (0..1) |
 | `wonderingMinMargin` | `0.08` | How far a `"wondering"` verdict must beat `"routine_action"` (0..1) |
@@ -94,12 +98,12 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `directiveMinSimilarity` | `0.6` | Cosine floor for standing directive classification (0..1) |
 | `directiveMinMargin` | `0.08` | How far a `"standing_directive"` verdict must beat `"transient_task"` (0..1) |
 | `directiveExemplars` | `{}` | Custom examples `{ "standing_directive": [...], "transient_task": [...] }` merged with shipped ones |
-| `directiveFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
+| `directiveFallback` | `"skip"` | Fallback when endpoint is offline: `"skip"` (default, zero guessing) or `"capture"` |
 | `overviewEmbed` | `"auto"` | Classify direct memory inquiries by embeddings (`POST /v1/classify`) to detect open-ended overviews (`"auto"` or `"off"`). Env: `PI_MM_OVERVIEW_EMBED` |
 | `overviewMinSimilarity` | `0.6` | Cosine floor for overview routing classification (0..1) |
 | `overviewMinMargin` | `0.08` | How far an `"overview_query"` verdict must beat `"specific_query"` (0..1) |
 | `overviewExemplars` | `{}` | Custom examples `{ "overview_query": [...], "specific_query": [...] }` merged with shipped ones |
-| `overviewFallback` | `"regex"` | Fallback when endpoint is offline: `"regex"` or `"skip"` |
+| `overviewFallback` | `"skip"` | Fallback when endpoint is offline: `"skip"` (default, zero guessing) or `"capture"` |
 | `judgeProtocol` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeModel` | *(deprecated)* | Deprecated in favor of `POST /v1/classify` |
 | `judgeUrl` | *(deprecated)* | Deprecated; mapped to `captureEmbedUrl` |
@@ -138,7 +142,7 @@ In addition to write-path capture judging, `pi-mm` intelligently classifies the 
 1. **Hint-Only Architecture (`recallAction: "hint"`, default)**: When recall intent or architectural wondering is confirmed by embeddings, `auto_recall` executes **zero automated database scans** (`runScanWithTimeout` and `primeSubsystemInvariants` are completely bypassed). Instead, it injects a quiet epistemic hint into `event.systemPromptOptions.sections["memory_context"]` advising the agent to formulate queries via LLM inference and retrieve records using `memory_recall`. It sets `display: false` on the returned custom message, completely eliminating noisy, unprompted UI cards in the user's chat interface. For legacy auto-injected background recall, set `"recallAction": "query"`.
 2. **Lifting Unprompted Suppression**: In general conversational turns without memory keywords, context injection is conservative. When `recall_past` intent is confirmed by embeddings, unprompted context filtering is lifted, allowing vector and hybrid retrieval to surface relevant memories even without exact subsystem matches.
 3. **Actionable Agent Steering**: When recall intent is positive, `pi-mm` augments the agent's system prompt sections (`memory_context`) with explicit guidance directing the model to inspect `memory_recall` (and `zoomRef` if candidate records are retrieved) before guessing or invoking irrelevant bash or grep tools.
-4. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` seamlessly falls back to deterministic heuristics (`recallFallback: "regex"`).
+4. **Resilient Offline Fallback**: If `axil-auren` is offline or unconfigured, `pi-mm` safely defaults to skipping unprompted retrieval (`recallFallback: "skip"`), completely eliminating fragile regex guessing or false positives.
 
 ### Daemon Circuit Breaker & Resilient Timeout
 
@@ -175,6 +179,23 @@ npm --prefix .pi/extensions/pi-mm run eval:recall
 ```
 
 `npm test` is hermetic: it preloads `tests/no-live-network.ts`, which refuses any request to the real auren port (4242) or to a non-loopback host, and runs with `PI_MM_AUTO_START_AUREN=0` so no local server is started. Run with `PI_MM_ALLOW_LIVE=1` to lift the guard.
+
+### Quest Symbiosis & Standing Directive Reinforcement
+
+`pi-mm` works seamlessly with `pi-quest` for continuous memory distillation and operational discipline:
+
+- **Decoupled Quest Archive Distillation**:
+  When a quest concludes via `quest_archive`, `pi-mm` asynchronously processes the completed task metadata. Key findings, verified code diffs, execution metrics, and root-cause discoveries are distilled into structured episodic records (`memory_record`) without stalling the agent turn. Failed quests with setbacks are similarly preserved as lessons learned (`lifecycle: "observed"`, `approach: "failed"`).
+- **Dual-End Assistant Discovery Distillation**:
+  When a task turn involves informative tool executions (code modifications or test runs) and the assistant explains the fix, `pi-mm` distills the discovery into an L1 Task Episode citing the tool executions as evidence.
+- **Conversational Invariants & Negative Constraint Learning**:
+  Developer feedback (*"don't use raw pointers in request handlers"*, *"never mock the filesystem in tests"*, *"stop modifying the lockfile without running make"*, *"you made a mistake, that function requires three arguments"*) is semantically classified via `POST /v1/classify`, elevated to L2 invariants (`standing: true`), and continuously reinforced in the assistant's prompt across every turn with newest-first ordering.
+- **Scalable 100GB Mipmap Architecture**:
+  Stores up to 100GB of raw execution diffs and logs on disk via `libcorm` OS memory-mapped files (`mmap`) and `libsepal` Hamming sketches, while keeping LLM context lean via compact L1/L2 summaries and on-demand `zoomRef` drilldowns.
+- **Standing Directive Reinforcement Sync**:
+  Operational directives and invariants (`level: "L2"`, `standing: true`) are persisted to disk (`standing_directives.json`) and synchronized into the global cache. This guarantees that established invariants survive cross-session restarts and are automatically seeded into new `pi-quest` draft proposals.
+- **`cormd` JSON Protocol Support**:
+  High-throughput structured memory storage and retrieval over the native `cormd` daemon JSON IPC protocol.
 
 ---
 

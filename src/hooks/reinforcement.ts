@@ -70,10 +70,22 @@ export class ReinforcementScheduler {
 
   public registerDirective(item: StandingDirectiveItem): void {
     this.directives.set(item.ref, item);
+    this.syncGlobal();
   }
 
   public clearDirectives(): void {
     this.directives.clear();
+    this.syncGlobal();
+  }
+
+  private syncGlobal(): void {
+    try {
+      const g = globalThis as Record<string, unknown>;
+      g["__pi_mm_directives"] = Array.from(this.directives.values());
+      g["__pi_mm_scheduler"] = this;
+    } catch {
+      // Best-effort global synchronization
+    }
   }
 
   public getDirectives(activeSubsystems?: string[]): StandingDirectiveItem[] {
@@ -182,8 +194,10 @@ export function synthesizeReinforcementBlockFromDirectives(
   ];
 
   // Hard clamp: maximum 5 directives, respecting token budget
+  // Sort directives newest-first so recently learned rules take precedence
   const maxDirectives = Math.min(5, Math.max(1, Math.floor(config.maxTokens / 35)));
-  for (const dir of directives.slice(0, maxDirectives)) {
+  const sorted = directives.slice().reverse();
+  for (const dir of sorted.slice(0, maxDirectives)) {
     const scope = [dir.project, dir.subsystem].filter(Boolean).join("/");
     const scopeTag = scope ? ` (${scope})` : "";
     lines.push(`• Directive${scopeTag}: ${dir.summary}`);

@@ -420,7 +420,7 @@ Deno.test("loadConfig/applyEnv: autoStartAuren and autoDownloadModels default, v
 Deno.test("capture embedding settings: defaults, validation and env", () => {
   const d = loadConfig(undefined);
   check(d.captureEmbed === undefined && d.captureMinMargin === undefined && d.captureMinSimilarity === undefined, "unset stays unset so env can fill it");
-  check(captureMinMargin(d) === 0.075 && captureMinSimilarity(d) === 0.6, "calibrated defaults applied where used");
+  check(captureMinMargin(d) === 0.025 && captureMinSimilarity(d) === 0.55, "calibrated defaults applied where used");
   check(Object.keys(d.captureExemplars ?? {}).length === 0, "no operator exemplars by default");
   const c = loadConfig({
     captureEmbed: "off",
@@ -434,11 +434,41 @@ Deno.test("capture embedding settings: defaults, validation and env", () => {
   check(c.captureMinMargin === 0.2 && c.captureMinSimilarity === 0.7, "thresholds, numeric strings accepted");
   check(JSON.stringify(c.captureExemplars) === JSON.stringify({ remember: ["vou mudar"], skip: ["ok"] }), "exemplars sanitized to remember/skip");
   const bad = loadConfig({ captureEmbed: "maybe", captureMinMargin: 5, captureMinSimilarity: -1 });
-  check(bad.captureEmbed === undefined && captureMinMargin(bad) === 0.075 && captureMinSimilarity(bad) === 0.6, "invalid values fall back");
+  check(bad.captureEmbed === undefined && captureMinMargin(bad) === 0.025 && captureMinSimilarity(bad) === 0.55, "invalid values fall back");
   const env = applyEnv(loadConfig(undefined), { PI_MM_CAPTURE_EMBED: "off", PI_MM_CAPTURE_MIN_MARGIN: "0.3" });
   check(env.captureEmbed === "off" && env.captureMinMargin === 0.3, "env fills unset settings");
   const kept = applyEnv(loadConfig({ captureEmbed: "auto", captureMinMargin: 0.1 }), { PI_MM_CAPTURE_EMBED: "off", PI_MM_CAPTURE_MIN_MARGIN: "0.3" });
   check(kept.captureEmbed === "auto" && kept.captureMinMargin === 0.1, "settings win over env");
+});
+
+Deno.test("storage and scale settings: defaults, validation, and env", () => {
+  const d = loadConfig(undefined);
+  check(d.maxStorageBytes === 107374182400, "100GB default storage limit");
+  check(d.l0RetentionPolicy === "keep_all", "keep_all default retention");
+  check(d.autoRecallBudgetChars === 1500, "1500 char budget default");
+  check(d.semanticDeduplication === true, "semantic deduplication default enabled");
+
+  const c = loadConfig({
+    maxStorageBytes: 50000000000,
+    l0RetentionPolicy: "prune_after_consolidation",
+    autoRecallBudgetChars: 2500,
+    semanticDeduplication: false,
+  });
+  check(c.maxStorageBytes === 50000000000, "custom max storage");
+  check(c.l0RetentionPolicy === "prune_after_consolidation", "custom retention policy");
+  check(c.autoRecallBudgetChars === 2500, "custom recall budget");
+  check(c.semanticDeduplication === false, "custom deduplication");
+
+  const env = applyEnv(loadConfig(undefined), {
+    PI_MM_MAX_STORAGE_BYTES: "200000000000",
+    PI_MM_L0_RETENTION_POLICY: "prune_after_consolidation",
+    PI_MM_AUTO_RECALL_BUDGET: "3000",
+    PI_MM_SEMANTIC_DEDUPLICATION: "0",
+  });
+  check(env.maxStorageBytes === 200000000000, "env max storage");
+  check(env.l0RetentionPolicy === "prune_after_consolidation", "env retention");
+  check(env.autoRecallBudgetChars === 3000, "env budget");
+  check(env.semanticDeduplication === false, "env deduplication disabled");
 });
 
 Deno.test("loadConfig: absent judgeUrl defaults to axil-auren bringing a fully working system", () => {

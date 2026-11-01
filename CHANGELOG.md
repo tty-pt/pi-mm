@@ -2,6 +2,56 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.6.0] - 2026-11-01
+
+### Added
+- **Dual-End Assistant Discovery Distillation** (`src/hooks/events.ts`, `tests/conversational_memory.test.ts`):
+  - In `onRunSettled`, when a turn completes with tool execution (file edits or test verifications) and the assistant response contains substantive technical explanations (>= 40 characters), automatically distills the discovery into an L1 Task Episode (`level: "L1"`, `type: "episode"`, `lifecycle: "tested"` | `"supported"`).
+  - Captures engineering breakthroughs and bug fixes even when the user's initial prompt was a task command that the classifier marked `skip`.
+  - Links raw tool executions (L0) as cited evidence references (`evidence: [l0Refs]`).
+- **Conversational Negative Constraints & Mistake Corrections (Zero Slash Commands, Zero Regex Heuristics)** (`src/judge/directive-exemplars.ts`, `src/judge/capture-exemplars.ts`, `tests/directive_intent.test.ts`):
+  - Expanded bilingual `DIRECTIVE_EXEMPLARS.standing_directive` with natural developer corrections, negative constraints, and anti-patterns (*"don't use raw pointers in request handlers"*, *"never mock the filesystem in tests"*, *"stop modifying the lockfile without running make"*, *"you made a mistake, that function requires three arguments, never call it with two"*, *"avoid global mutable variables in C modules"*, *"não use variáveis globais em módulos C"*).
+  - Expanded `CAPTURE_EXEMPLARS.remember` with negative operational rules so conversational feedback is not classified as disposable task noise.
+  - Automatically elevates confirmed negative constraints to L2 invariants (`level: "L2"`, `type: "invariant"`, `standing: true`) without requiring manual `/mm rule` invocations.
+- **Continuous Standing Directives Prompt Retention Across All Turns** (`src/hooks/events.ts`, `src/hooks/reinforcement.ts`, `tests/context_reinforcement.test.ts`):
+  - Fixed a critical system prompt diffing issue where Pi's `diffSystemPromptSections` stripped `standing_directives` on Turn 2 because milestone triggers only fired on Turn 1.
+  - `before_agent_start` now continuously populates `event.systemPromptOptions.sections["standing_directives"] = block` on every turn whenever active directives exist.
+  - In `synthesizeReinforcementBlockFromDirectives`, directives are sorted **newest-first** (`directives.slice().reverse()`) so recently learned corrections take priority within the token budget.
+  - Updated `session_start` to treat `.pi/mm/standing_directives.json` on disk as authoritative rather than overwriting curated directives with uncurated historical tasks from `mem.db`.
+- **Scalable 100GB Storage Controls & Automatic Semantic Deduplication** (`src/config.ts`, `src/tools/store.ts`, `src/hooks/auto_recall.ts`, `tests/config.test.ts`):
+  - Added `maxStorageBytes` (default: 100GB = 107374182400 bytes, env `PI_MM_MAX_STORAGE_BYTES`) for large-scale memory indexing.
+  - Added `l0RetentionPolicy` (`"keep_all"` for full 100GB raw tool logs and diff history vs `"prune_after_consolidation"`, env `PI_MM_L0_RETENTION_POLICY`).
+  - Added `autoRecallBudgetChars` (default: 1500 chars, env `PI_MM_AUTO_RECALL_BUDGET`) to dynamically configure prompt context budget.
+  - Added `semanticDeduplication` (default: true, env `PI_MM_SEMANTIC_DEDUPLICATION`) in `executeStore`: when storing an invariant or decision, automatically supersedes older records in the same scope if cosine similarity >= 0.88, preventing duplicate memory accumulation in large databases.
+- **High-Frequency Capture Threshold Calibration** (`src/config.ts`, `src/judge/capture-exemplars.ts`, `tests/capture_modes.test.ts`):
+  - Calibrated `DEFAULT_CAPTURE_MIN_MARGIN` from `0.075` down to `0.025` and `DEFAULT_CAPTURE_MIN_SIMILARITY` to `0.55`.
+  - Expanded `CAPTURE_EXEMPLARS.remember` with technical root causes, compiler requirements, and architectural decisions (buffer overflows, race condition fixes, static memory allocation, module boundary invariants).
+- **Auto-Recall Generalization & Query Action Default** (`src/config.ts`, `src/hooks/auto_recall.ts`, `tests/auto_recall.test.ts`):
+  - Changed `DEFAULT_RECALL_ACTION` to `"query"` (previously `"hint"`), so recall inquiries automatically execute hybrid search and inject the matching memories directly into `systemPromptOptions.sections["memory_context"]` rather than returning an empty hint.
+  - Lifted the hardcoded 12 audio-subsystem whitelist gate in `buildInjectedContext`: dynamically matches any candidate subsystem that appears in the prompt or candidates, enabling recall across all projects and repositories.
+- **Failed Quest Setback Distillation** (`src/hooks/events.ts`, `tests/quest_symbiosis.test.ts`):
+  - Updated `distillQuestArchiveEvent` to distill failed quests with setbacks into memory with `approach: "failed"`, `outcome: "failure"`, and `lifecycle: "observed"`, preserving lessons learned from past quest setbacks.
+- **L2 Invariant Elevation in `memory_record` and `store`** (`src/tools/record.ts`, `src/tools/store.ts`, `tests/workflow_tools.test.ts`):
+  - When storing standing directives (`standing: true`), `executeRecord` and `executeStore` now store at `level: "L2"`, `type: "invariant"`, and automatically register with `reinforcementScheduler`, saving to `standing_directives.json` on disk instead of routing to the unpromoted L0 raw note tier.
+
+## [0.5.2] - 2026-10-31
+
+### Added
+- **Decoupled `quest_archive` Distillation** (`src/hooks/events.ts`, `tests/quest_symbiosis.test.ts`):
+  - Added asynchronous, non-blocking listener for completed quest archives emitted by `pi-quest`.
+  - Automatically distills completed quest findings, verified diffs, and execution metrics into structured memory records (`outcome`, `approaches`, `findings`, `diffs`, `verification`) without blocking or stalling the agent turn.
+- **`cormd` JSON Protocol Support** (`src/corm.ts`, `src/daemon.ts`, `tests/daemon.test.ts`):
+  - Added native structured JSON request/response protocol support to the `cormd` daemon runner for high-throughput memory storage, querying, and retrieval.
+- **Standing Directive Reinforcement Sync to Disk & Global Cache** (`src/hooks/events.ts`, `src/hooks/reinforcement.ts`):
+  - Automatically synchronizes active standing directives and operational invariants across the in-memory cache and persistent disk storage (`var/standing_directives.json`).
+  - Exposes registered repository invariants globally for immediate cross-session retrieval and cross-extension consumer integration (such as `pi-quest` draft seeding).
+
+### Removed
+- **Complete Elimination of Heuristics**:
+  - Removed `"heuristic"` from `JudgeMode`, `JudgeFallback`, and `JudgeDecisionSource`.
+  - Zero heuristic guessing: memory capture and semantic routing evaluate strictly via embeddings on `/v1/systemone` or explicit commands (`@remember`, `remember:`, `note:`).
+  - When offline or unavailable, fallback safely defaults to `"skip"`, never guessing.
+
 ## [0.5.1] - 2026-10-30
 
 ### Added

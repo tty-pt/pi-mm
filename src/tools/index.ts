@@ -106,7 +106,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
         });
         if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
           if (!cfg.captureEmbedUrl) cfg.captureEmbedUrl = DEFAULT_AUREN_URL;
-          if (!cfg.judgeUrl && cfg.judgeMode !== "off" && cfg.judgeMode !== "heuristic") {
+          if (!cfg.judgeUrl && cfg.judgeMode !== "off") {
             cfg.judgeUrl = DEFAULT_AUREN_URL;
             if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
           }

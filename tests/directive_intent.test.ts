@@ -196,3 +196,16 @@ Deno.test("directive_intent: natural phrasing caught by embeddings vs missed by 
   const res = await evaluateStandingDirective(naturalDirective, testCfg, mockFetch);
   assert.strictEqual(res, true);
 });
+
+Deno.test("directive_intent: negative constraints, developer corrections and anti-patterns are covered", () => {
+  const texts = DIRECTIVE_EXEMPLARS.standing_directive;
+  assert.ok(texts.some((s) => s.includes("don't use raw pointers")));
+  assert.ok(texts.some((s) => s.includes("never mock the filesystem")));
+  assert.ok(texts.some((s) => s.includes("stop modifying the lockfile")));
+  assert.ok(texts.some((s) => s.includes("you made a mistake")));
+  assert.ok(texts.some((s) => s.includes("avoid global mutable variables")));
+  assert.ok(texts.some((s) => s.includes("não use variáveis globais")));
+  assert.ok(texts.some((s) => s.includes("nunca use mocks")));
+  assert.ok(texts.some((s) => s.includes("você cometeu um erro")));
+});
+

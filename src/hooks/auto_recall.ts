@@ -282,6 +282,18 @@ export function buildInjectedContext(
   // L1 episodic notes and conversational history are latent: only recalled on explicit recall intent.
   const isKnowledgeQuery = isDirectQuestion || isExplicitRecall;
   const mentionedSubsystems = typeof prompt === "string" ? detectSubsystemMentions(prompt) : [];
+  const pLower = typeof prompt === "string" ? prompt.toLowerCase() : "";
+  if (pLower) {
+    for (const cand of valid) {
+      const sub = cand.envelope?.context?.subsystem;
+      if (sub && sub.length >= 3 && pLower.includes(sub.toLowerCase())) {
+        const norm = sub.startsWith("lib") ? sub.slice(3) : sub;
+        if (!mentionedSubsystems.includes(norm)) {
+          mentionedSubsystems.push(norm);
+        }
+      }
+    }
+  }
   const hasSubsystem = mentionedSubsystems.length > 0;
   const isUnprompted = typeof prompt === "string" && !isKnowledgeQuery && !hasSubsystem;
 
@@ -517,7 +529,7 @@ export async function handleBeforeAgentStart(
     if (isDirectQuestion) {
       const overview = await buildMemoryOverview(env, { limit: 8, maxScan: 200 });
       if (overview.totalRecords > 0) {
-        const budget = options?.budget ?? DEFAULT_AUTO_RECALL_BUDGET;
+        const budget = options?.budget ?? env.cfg.autoRecallBudgetChars ?? DEFAULT_AUTO_RECALL_BUDGET;
         let overviewText = overview.renderedOverview;
         if (overviewText.length > budget) {
           overviewText = overviewText.slice(0, budget - 40) + "\n\n[Overview truncated for budget...]";
@@ -598,7 +610,7 @@ export async function handleBeforeAgentStart(
       }
     }
 
-    const budget = options?.budget ?? DEFAULT_AUTO_RECALL_BUDGET;
+    const budget = options?.budget ?? env.cfg.autoRecallBudgetChars ?? DEFAULT_AUTO_RECALL_BUDGET;
     const excerptsMap = allCandidates.length > 0
       ? await enrichCandidatesWithSessionHistory(allCandidates, prompt, ctx.cwd)
       : undefined;

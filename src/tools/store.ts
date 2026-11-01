@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
@@ -168,15 +169,49 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
     return await withLock(cwd, async () => {
       const ref = await allocateNextRef(cwd, env.runner, bin, fspec, axes, eEnv);
       const { envelope } = buildEnvelope(params, summary, ep);
+      const jsonStr = JSON.stringify({ ...envelope, timestamp: date, summary });
       const payload = encodeHtokPayload(date, envelope);
 
-      const res = await env.runner.run(buildStoreInvocation(bin, fspec, ref, payload, axes, cwd, eEnv));
+      const res = await env.runner.run(buildStoreInvocation(bin, fspec, ref, payload, axes, cwd, eEnv, jsonStr));
       if (res.code !== 0) {
         return { content: [{ type: "text", text: `mm store failed (exit ${res.code}): ${res.stderr || res.stdout}` }], details: { ref, key: `@${date}`, error: res.stderr || res.stdout } };
       }
-      if (typeof params["supersedes"] === "number") await applySupersedes(env, fspec, axes, cwd, eEnv, params["supersedes"], ref, date);
+      if (typeof params["supersedes"] === "number") {
+        await applySupersedes(env, fspec, axes, cwd, eEnv, params["supersedes"], ref, date);
+      } else if (env.cfg.semanticDeduplication !== false && (envelope.type === "invariant" || envelope.type === "decision")) {
+        try {
+          if (envelope.context?.subsystem || envelope.context?.project) {
+            const { executeHybridScan } = await import("./scan.ts");
+            const scanRes = await executeHybridScan(env, {
+              topic: summary,
+              project: envelope.context?.project,
+              subsystem: envelope.context?.subsystem,
+              level: envelope.level,
+              limit: 2,
+              embed: sepalConfigured(env.cfg),
+            });
+            const topMatch = scanRes.records?.find((r) => r.ref !== ref && Number(r.score) >= 0.88);
+            if (topMatch && topMatch.lifecycle !== "superseded") {
+              await applySupersedes(env, fspec, axes, cwd, eEnv, topMatch.ref, ref, date);
+            }
+          }
+        } catch { /* best effort */ }
+      }
       if (envelope.context?.grid) await storeSpatialGrid(env, axes, cwd, ref, envelope.context.grid);
       void recordAssociations(cwd, summary).catch(() => {});
+      if (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant")) {
+        try {
+          const { reinforcementScheduler } = await import("../hooks/events.ts");
+          reinforcementScheduler.registerDirective({
+            ref,
+            summary: envelope.summary,
+            subsystem: envelope.context?.subsystem,
+            project: envelope.context?.project,
+          });
+          const dirs = reinforcementScheduler.getDirectives();
+          await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+        } catch { /* best effort */ }
+      }
       return exportDetail({ ref, key: `@${date}`, level: envelope.level, lifecycle: envelope.lifecycle, summary });
     });
   } catch (err) {

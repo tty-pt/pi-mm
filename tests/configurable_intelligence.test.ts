@@ -26,7 +26,7 @@ function computeMockVector(text: string): number[] {
 }
 
 // ----------------------------------------------------------------------------
-// Test 1: No inference services (judgeMode=heuristic, semanticSearch=false)
+// Test 1: No inference services (judgeMode=off, semanticSearch=false)
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 1. No inference services starts normally, FTS works, 0 network calls", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "ci-no-infer-" });
@@ -39,14 +39,15 @@ Deno.test("configurable intelligence: 1. No inference services starts normally, 
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "heuristic" as const,
+      judgeMode: "off" as const,
+      captureMode: "all" as const,
       semanticSearch: false,
     };
 
     assert.strictEqual(judgeConfigured(cfg), false);
     assert.strictEqual(sepalConfigured(cfg), false);
     const desc = describeCapabilities(cfg);
-    assert(desc.includes("judge=heuristic"), "Must describe judge as heuristic");
+    assert(desc.includes("judge=off (capture=all)"), "Must describe judge as off (capture=all)");
     assert(desc.includes("semantic=disabled"), "Must describe semantic as disabled");
     assert(desc.includes("lemma=active"), "Must describe stoma as active");
 
@@ -114,7 +115,7 @@ Deno.test("configurable intelligence: 1. No inference services starts normally, 
 
     const listRes = await daemonRunner.run(buildListInvocation(cormBin, fspec, axisPath, tmpDir));
     const refs = parseBareRefs(listRes.stdout);
-    assert.ok(refs.length >= 1, "Must capture memory via heuristic");
+    assert.ok(refs.length >= 1, "Must capture memory via capture=all");
 
     const toolEnv = await envSource(ctx);
     const fts = await queryLexicalPath(toolEnv, tmpDir, axisPath, 0, new Date(), undefined, "cherry", 5);
@@ -335,7 +336,7 @@ Deno.test("configurable intelligence: 2c. End-to-end classifier decision persist
 });
 
 // ----------------------------------------------------------------------------
-// Test 3: Semantic search only (judgeMode=heuristic, semanticSearch=true)
+// Test 3: Semantic search only (judgeMode=off, semanticSearch=true)
 // ----------------------------------------------------------------------------
 Deno.test("configurable intelligence: 3. [synthetic/mock] Semantic search only generates embeddings and retrieves via Sepal", async () => {
   const tmpDir = Deno.makeTempDirSync({ prefix: "ci-sem-only-" });
@@ -360,7 +361,8 @@ Deno.test("configurable intelligence: 3. [synthetic/mock] Semantic search only g
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "heuristic" as const,
+      judgeMode: "off" as const,
+      captureMode: "all" as const,
       semanticSearch: true,
       embedUrl,
       embedModel: "mock-embed",
@@ -476,7 +478,8 @@ Deno.test("configurable intelligence: 3b. [ephemeral sepal] Semantic search in e
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "heuristic" as const,
+      judgeMode: "off" as const,
+      captureMode: "all" as const,
       semanticSearch: true,
       ephemeralSepal: true,
       embedUrl,
@@ -856,7 +859,7 @@ Deno.test("configurable intelligence: 6. Real live Jev integration test", async 
 
   const techResult = await evaluateTurnWithJudge(techPrompt, techReply, rawCfg);
   if (techResult.degraded || techResult.source !== "llm") {
-    assert.fail(`Live Jev inference failed: ${techResult.error || "Fell back to heuristic, Jev did not respond"}`);
+    assert.fail(`Live Jev inference failed: ${techResult.error || "Jev did not respond"}`);
   }
   assert(
     techResult.decision.action === "remember" || techResult.decision.action === "update",
@@ -872,7 +875,7 @@ Deno.test("configurable intelligence: 6. Real live Jev integration test", async 
   const trivReply = "Good morning! How can I assist you today?";
   const trivResult = await evaluateTurnWithJudge(trivPrompt, trivReply, rawCfg);
   if (trivResult.degraded || trivResult.source !== "llm") {
-    assert.fail(`Live Jev inference on trivial exchange failed: ${trivResult.error || "Fell back to heuristic"}`);
+    assert.fail(`Live Jev inference on trivial exchange failed: ${trivResult.error || "Inference failed"}`);
   }
   assert.strictEqual(trivResult.decision.action, "skip", "Trivial pleasantry should be skipped by live Jev judge");
 
@@ -1042,7 +1045,8 @@ Deno.test("configurable intelligence: 7. [synthetic/mock] Cross-session recall o
       cormdBin,
       memDir: tmpDir,
       axisLibs: axisPath,
-      judgeMode: "heuristic" as const,
+      judgeMode: "off" as const,
+      captureMode: "all" as const,
       semanticSearch: true,
       embedUrl,
       embedModel: "mock-embed",

@@ -9,7 +9,7 @@ export interface JudgeDecision {
   findings?: string[];
 }
 
-export type JudgeDecisionSource = "embed" | "llm" | "fallback" | "explicit" | "disabled" | "heuristic";
+export type JudgeDecisionSource = "embed" | "llm" | "fallback" | "explicit" | "disabled";
 
 export interface JudgeResult {
   decision: JudgeDecision;
