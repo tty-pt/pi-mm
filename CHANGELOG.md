@@ -2,6 +2,47 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [Unreleased] (target: v0.7.0)
+
+### Added
+- **Unified Status Bar (`mm-judge`)** (`src/hooks/events.ts`, `src/code/manager.ts`):
+  - Unified model readiness (`⚡ bge-base`), busy hourglass indicator (`⏳`), and transient recall/store/consolidation activity badges into a single `mm-judge` status bar slot.
+- **Multi-Axis Codebase Mipmap Graph & Lore Fusion (`scope: "code"`, replacing `pi-cbm`)** (`src/code/lexer.ts`, `src/code/scanner.ts`, `src/code/store.ts`, `src/code/graph.ts`, `src/code/recall.ts`, `src/code/manager.ts`):
+  - Added zero-regex character-stream lexer and structural scanner (`scanSourceFile`) for C/C++, TypeScript/JavaScript, and Python, extracting `Function`, `Method`, `Class`, `Struct`, `Interface`, `Enum`, `Macro`, `TypeAlias`, and `Route` symbols, doc comments, `#include`/`import`/`xy_load` dependencies, and `rawCallees` while ignoring comments and string literals.
+  - Added library-agnostic structural HTTP route detection based purely on call-argument shape: method calls (`obj.<http_method>("/path"[, handler])`), two-string registrations (`fn("<http_method>", "/path"[, handler])`), and method-prefixed route strings (`fn("<HTTP_METHOD>:/path"[, handler])` / `fn("<HTTP_METHOD> /path"[, handler])`).
+  - Added `CodeStore` backed by `libcorm` (`joint,lemma,sepal`) and `libislet` (`code-islet.db` 2D `[fileHash, startLine..endLine]` interval index) with incremental `mtime` delta indexing, priority root scanning (`mods/`, `src/`, `include/`, `lib/`, `app/`, `bin/` before `external/`, `vendor/`, `tests/`), git submodule change filtering, and single-flight `refreshLock` serialization.
+  - Added call-graph disambiguation (`CodeGraph`): filters C/POSIX stdlib routines (`malloc`, `free`, `memcpy`, etc.) and C struct pointer member calls (`ops->load()`) from `rawCallees`, isolates call edges by language family and module/import affinity, and prioritizes `XY_IMPL` definitions over `XY_DECL` forward declarations (`isDeclaration: true`).
+  - Integrated 5 codebase workflows into `memory_recall`: hybrid symbol search with unambiguous auto-preview (`scope: "code", query`), fail-closed concrete symbol / batch source read (`symbol` / `symbols`, `neighbors`, `lineRange`) with automatic fusion of linked `pi-mm` invariants and past debugging episodes (`queryLinkedLoreForSymbols`), multi-hop call graph trace (`trace`, `direction`, `depth`), L3/L2 architecture overview (`scope: "code", overview: true`), and `libislet`-backed worktree `git diff` blast-radius analysis (`diff: true`).
+- **Ephemeral Semantic Session Memory, Progressive 3-Tier Recall & Mipmap Compaction (`scope: "session"`, replacing `pi-vcc`)** (`src/session/store.ts`, `src/session/sink.ts`, `src/session/lineage.ts`, `src/session/recall.ts`, `src/session/compaction.ts`, `src/session/manager.ts`):
+  - Added asymmetric session ingestion (`SessionSink` & `SessionStore`) indexing settled conversational turns into per-session `libcorm` stores at 3 granularities (`turn` L1, `block` L1, `symbol` L0) alongside raw turn payloads (`turns/turn-<N>.json`).
+  - Serialized all `SessionStore` write and index rebuild operations via `withWriteLock` to eliminate concurrent `corm` CLI races.
+  - Added `LineageTracker` DAG ancestry resolution (`lineage: "active" | "all"`) with automatic linear ancestry reconstruction for persisted turns across mid-session reloads.
+  - Added progressive 3-tier session retrieval (`executeSessionRecall`): Tier 1 Index Cards, Tier 2 Focused Excerpts, and Tier 3 Exact Line Slices (`zoomTurn`, `toolIndex`, `lineRange`), fusing C multi-axis recall with exact symbol matching and unified `scope: "all"` RRF merging.
+  - Added mipmap-driven context compaction (`buildMipmapCompaction` on `session_before_compact`), replacing destructive transcript truncation with structured L2/L1 session mipmaps and `memory_recall({ scope: "session", zoomTurn })` pointers.
+
+
+### Fixed & Improved
+- **L0 Consolidation Queue Unwedging & Idle Backlog Drain** (`src/tools/consolidate.ts`, `src/config.ts`, `tests/consolidation_backlog.test.ts`):
+  - Solved queue stalls where missing, non-L0, superseded, or terminally inactive references blocked the head of the consolidation queue (`disposedL0Refs`).
+  - Added `orderPendingL0Refs`: ensures fresh turns captured in the current turn are processed first (so live work reaches L1 immediately), with remaining backlog ordered newest-first.
+  - Added bounded idle queue draining (`drainL0Backlog`) bounded by `consolidateDrainMs` (default 250ms, env `PI_MM_CONSOLIDATE_DRAIN_MS`), incrementally draining backlogged L0 records without blocking interactive turns.
+- **Zero-Config Local Synthesis Auto-Wiring** (`src/config.ts`, `src/tools/pipeline_status.ts`, `tests/synth_pipeline_status.test.ts`):
+  - Automatically derives the OpenAI-compatible chat completions URL (`defaultLocalSynthUrl`) on the local `axil-auren` server whenever the judge/embedding endpoint is active, defaulting to `smollm` (`DEFAULT_LOCAL_SYNTH_MODEL`).
+  - Prevents L2/L3 abstraction synthesis from silently stalling when users configure a local judge without explicitly configuring synthesis. Opt out cleanly with `synthUrl: "off"`.
+- **Enriched L0 Tool Capture & Self-Introspection Noise Filtering** (`src/hooks/events.ts`, `tests/capture_signal.test.ts`):
+  - Added `formatToolEventSummary` to capture meaningful command names, touched paths, and concise first-line outputs for edit, write, read, and bash executions.
+  - Filtered internal `pi-mm` and `corm` inspection commands to prevent memory introspections from generating self-referential capture records.
+  - Added same-session event deduplication to drop identical repetitive summaries on the same path.
+- **Byte-Exact Payload Decoding** (`src/payload.ts`, `tests/decode_result.test.ts`):
+  - Added `decodeResult` helper preferring raw `Uint8Array` (`stdoutBytes`) over lossy string decodes, preventing corrupted binary HTOK payload deserialization.
+- **Targeted Recall L0 Inclusion & Episode Exemption** (`src/tools/ranking.ts`, `src/tools/recall.ts`, `src/tools/scan.ts`):
+  - Added `includeL0` to hybrid scan and recall, enabling explicit retrieval of L0 task memories while ranking synthesized L1/L2 records above raw tool noise.
+  - Updated `isCodeOrDocArtifact` to strictly exempt structured episodes (`envelope.type === "episode"` or `envelope.episode`) from code artifact pruning.
+- **Consolidation Pipeline Observability in `/mm doctor`** (`src/tools/pipeline_status.ts`, `src/index.ts`):
+  - Added `describeConsolidationPipeline` to `/mm doctor`, providing live visibility into L2/L3 synthesis status, pending L0 and dirty L1 queue depths, drain rate, and backlog or stale L2 alerts.
+- **Retrieval-Quality Benchmark Gate** (`scripts/eval-retrieval.ts`, `tests/retrieval_quality.test.ts`):
+  - Added automated retrieval evaluation asserting recall@5 = 1.0, MRR $\ge$ 0.5, and proper prioritization of synthesized abstractions over raw tool noise across golden benchmark queries.
+
 ## [0.6.0] - 2026-11-01
 
 ### Added

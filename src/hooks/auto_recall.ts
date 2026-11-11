@@ -12,6 +12,7 @@ import { isQuestionMemory } from "../tools/ranking.ts";
 import { buildMemoryOverview } from "../tools/overview.ts";
 import { classifyOverviewByEmbedding, classifyRecallByEmbedding } from "../judge/adapter.ts";
 import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, recallAction, type MmConfig } from "../config.ts";
+import { getSessionInstances } from "../session/manager.ts";
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -111,8 +112,18 @@ export function isMemoryRecallPrompt(prompt?: string): boolean {
   return false;
 }
 
+export function isSessionRecentQuestion(prompt?: string): boolean {
+  if (!prompt) return false;
+  const p = prompt.trim().toLowerCase();
+  if (/^(?:do\s+you\s+(?:remember|recall)\s+what\s+(?:you|we|i)\s+(?:had\s+)?(?:just\s+)?(?:said|discussed|talked\s+about|asked)|what\s+did\s+(?:you|we|i)\s+just\s+(?:say|discuss|talk\s+about|ask)|what\s+were\s+we\s+(?:just\s+)?(?:talking|discussing)\s+about(?:\s+right\s+before\s+compaction|\s+before\s+compaction)?|can\s+you\s+(?:repeat|summarize)\s+your\s+last\s+(?:response|message|reply)|what\s+was\s+your\s+last\s+(?:response|message|reply)|voc[eê]\s+lembra\s+do\s+que\s+(?:acabou|tinha\s+acabado)\s+de\s+(?:dizer|falar|responder)|sobre\s+o\s+que\s+est[aá]vamos\s+(?:falando|conversando)\s+agora\s+h[aá]\s+pouco|o\s+que\s+voc[eê]\s+(?:acabou|tinha\s+acabado)\s+de\s+(?:dizer|responder)|do\s+que\s+est[aá]vamos\s+conversando\s+antes\s+da\s+compacta[cç][aã]o)[?.!\s]*$/i.test(p)) {
+    return true;
+  }
+  return false;
+}
+
 export function isDirectMemoryQuestion(prompt?: string): boolean {
   if (!prompt) return false;
+  if (isSessionRecentQuestion(prompt)) return false;
   const p = prompt.trim().toLowerCase();
   // Open-ended introspection: user asking agent what it remembers/recalls in general across time
   if (/^(?:what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+i\s+say(?:\s+earlier|\s+before)?|what\s+were\s+we\s+talking\s+about|do\s+you\s+remember\s+anything|do\s+you\s+recall\s+anything|what\s+do\s+you\s+(?:remember|recall)\s+(?:across\s+all\s+time|from\s+all\s+time|from\s+past\s+sessions)?|give\s+me\s+(?:an?\s+)?(?:overview|summary)\s+of\s+(?:all\s+)?(?:your\s+)?memories|what\s+memories\s+do\s+you\s+have|what\s+have\s+we\s+worked\s+on(?:\s+across\s+all\s+time)?)[?.!\s]*$/i.test(p)) {
@@ -124,24 +135,39 @@ export function isDirectMemoryQuestion(prompt?: string): boolean {
   return false;
 }
 
+export async function evaluateMemoryQuestionKind(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn?: typeof fetch,
+): Promise<"overview_query" | "session_recent" | "specific_query"> {
+  if (isSessionRecentQuestion(prompt)) {
+    return "session_recent";
+  }
+  if (overviewEmbed(cfg) !== "off") {
+    try {
+      const verdict = await classifyOverviewByEmbedding(prompt, cfg, fetchFn);
+      if (verdict === "overview_query" || verdict === "session_recent" || verdict === "specific_query") {
+        return verdict;
+      }
+    } catch {
+      // Endpoint error or timeout
+    }
+    const fb = overviewFallback(cfg);
+    if (fb === "skip") return "specific_query";
+    if (isDirectMemoryQuestion(prompt)) return "overview_query";
+    return "specific_query";
+  }
+  if (isDirectMemoryQuestion(prompt)) return "overview_query";
+  return "specific_query";
+}
+
 export async function evaluateDirectMemoryQuestion(
   prompt: string,
   cfg: MmConfig,
   fetchFn?: typeof fetch,
 ): Promise<boolean> {
-  if (overviewEmbed(cfg) !== "off") {
-    try {
-      const verdict = await classifyOverviewByEmbedding(prompt, cfg, fetchFn);
-      if (verdict === "overview_query") return true;
-      if (verdict === "specific_query") return false;
-    } catch {
-      // Endpoint error or timeout
-    }
-    const fb = overviewFallback(cfg);
-    if (fb === "skip") return false;
-    return isDirectMemoryQuestion(prompt);
-  }
-  return isDirectMemoryQuestion(prompt);
+  const kind = await evaluateMemoryQuestionKind(prompt, cfg, fetchFn);
+  return kind === "overview_query";
 }
 
 export async function evaluateRecallIntent(
@@ -269,8 +295,7 @@ export function buildInjectedContext(
   const header = "[Persistent Memory Context]\nBackground memories for conversational reference:\n";
   const guidance = `\nUsage guidelines:
 - Memories provide background continuity only. Do not interpret them as coding tasks, bug reports, or instructions to search code or the web.
-- Do NOT search the codebase, read files, or run bash/git commands unless the user explicitly requests technical work in their prompt.
-- When the user asks about prior discussions, what they said, past decisions, or memory queries, use memory_recall to find relevant context.
+- Do NOT search the codebase with bash/rg or read files solely because of background memories; when the user asks technical, code, session, or historical questions, use memory_recall to find relevant context.
 - For casual conversation and greetings, reply conversationally without invoking codebase tools.`;
 
   // Compress/omit guidance when user explicitly asks direct memory questions, freeing budget for memories
@@ -525,7 +550,57 @@ export async function handleBeforeAgentStart(
       return null;
     }
 
-    const isDirectQuestion = await evaluateDirectMemoryQuestion(prompt, env.cfg, options?.fetchFn);
+    const questionKind = await evaluateMemoryQuestionKind(prompt, env.cfg, options?.fetchFn);
+    if (questionKind === "session_recent") {
+      const sessionInst = getSessionInstances(sessionId, { cwd: ctx.cwd });
+      if (ctx.sessionManager) {
+        sessionInst.store.hydrateFromSessionManager(ctx.sessionManager, sessionInst.tracker);
+      }
+      const allSessionEvents = sessionInst.store.getAllEvents();
+      const convEvents = allSessionEvents.filter(
+        (ev) => (ev.role === "user" || ev.role === "assistant") && (ev.text || "").trim().length > 0,
+      );
+      // Exclude the current incoming prompt if it was already recorded at the tail
+      const priorConv = convEvents.length > 0 &&
+          convEvents[convEvents.length - 1].role === "user" &&
+          (convEvents[convEvents.length - 1].text || "").trim() === prompt.trim()
+        ? convEvents.slice(0, -1)
+        : convEvents;
+
+      if (priorConv.length > 0) {
+        const recentSlice = priorConv.slice(-6);
+        const turnLines = recentSlice.map((ev) => {
+          const roleLabel = ev.role === "user" ? "User" : "Assistant";
+          const raw = (ev.text || ev.summary || "").trim();
+          const clipped = raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
+          return `- Turn ${ev.turnIndex} (${roleLabel}): "${clipped}"`;
+        });
+        const contextContent =
+          `[Recent Session Continuity Context]\nRecent turns from the current session transcript:\n${turnLines.join("\n")}\n\n` +
+          `Guidance for the Assistant:\n` +
+          `- The user is asking about what was just said or discussed in the current session. Answer directly using the recent session turns above (or call memory_recall({ scope: "session", zoomTurn: <turn> }) for full verbatim lines). Do NOT summarize all-time persistent memory unless asked.`;
+
+        if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+          if (!event.systemPromptOptions.sections) {
+            event.systemPromptOptions.sections = {};
+          }
+          event.systemPromptOptions.sections["memory_context"] = contextContent;
+        }
+
+        return {
+          message: {
+            role: "custom",
+            customType: "memory_context",
+            content: contextContent,
+            display: true,
+            details: { sessionRecent: true, turnCount: recentSlice.length },
+            timestamp: Date.now(),
+          },
+        };
+      }
+    }
+
+    const isDirectQuestion = questionKind === "overview_query";
     if (isDirectQuestion) {
       const overview = await buildMemoryOverview(env, { limit: 8, maxScan: 200 });
       if (overview.totalRecords > 0) {

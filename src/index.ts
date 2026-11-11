@@ -3,6 +3,8 @@ import { installSessionHooks, persistConversationalMemory } from "./hooks/events
 import { checkMmHealth } from "./judge/adapter.ts";
 import { readMmConfig, describeCapabilities, sepalConfigured } from "./config.ts";
 import { buildMemoryOverview } from "./tools/overview.ts";
+import { describeConsolidationPipeline } from "./tools/pipeline_status.ts";
+import { readConsolidationJournal } from "./tools/consolidation_journal.ts";
 import { filespecFor, buildListInvocation, embedEnv } from "./corm.ts";
 import { parseBareRefs } from "./resolve.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
@@ -144,6 +146,10 @@ async function runDoctorReport(
   }
 
   lines.push(`[-] Pipeline: ${describeCapabilities(cfg)}`);
+  try {
+    const journal = await readConsolidationJournal(resolveMemDir(targetCwd, cfg.memDir));
+    lines.push(...describeConsolidationPipeline(cfg, journal, new Date()));
+  } catch { /* journal unreadable: reported elsewhere */ }
   const keywords = cfg.captureKeywords && cfg.captureKeywords.length > 0
     ? cfg.captureKeywords
     : (cfg.captureKeyword ? [cfg.captureKeyword] : ["@remember", "@memory", "remember:", "note:"]);
@@ -236,6 +242,14 @@ async function runDoctorReport(
   } else {
     lines.push(`[-] Total Indexed Records: 0 (starts fresh on first store)`);
   }
+
+  // Codebase Graph Index status
+  try {
+    const { getCodeInstances } = await import("./code/manager.ts");
+    const codeInst = getCodeInstances({ projectRoot: targetCwd });
+    const stats = codeInst.store.getStats();
+    lines.push(`[✓] Codebase Graph Index: ${stats.files} files, ${stats.symbols} symbols, ${stats.callEdges} call edges`);
+  } catch { /* ignore */ }
 
   // Zero-config diagnostics: config, models, daemon log, actionable notices
   const uCfg = findUserConfig({ cwd: targetCwd });

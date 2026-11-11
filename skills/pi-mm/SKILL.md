@@ -41,11 +41,16 @@ For routine coding tasks, agents use the 3 streamlined tools:
 1. **Automatic Context Recall**:
    Pi automatically injects compact, relevant memory context before your turn starts via the `before_agent_start` hook. You do not need to call a memory tool just to check if prior experience exists.
 
-2. **`memory_recall({ query?, overview?, zoomRef?, ... })`**:
-   Multi-resolution memory retrieval: search semantically across topics, generate all-time high-level overviews, or zoom in to inspect specific memory investigations, approaches, diffs, and evidence trees.
-   - `query`: natural language problem, error text, or symbol. Omit or pass `"overview"` to generate an all-time high-level memory overview. Inline shorthand queries like `ref:42` or `zoom:42` delegate directly to zoom-in.
-   - `overview: true`: synthesizes a structured timeline and hierarchical overview across all operational time (principles, invariants, milestones, epochs).
+2. **`memory_recall({ query?, overview?, zoomRef?, scope?, symbol?, symbols?, file?, kind?, parentSymbol?, neighbors?, trace?, direction?, depth?, diff?, zoomTurn?, toolIndex?, lineage?, lineRange?, maxLines?, fullOutput?, ... })`**:
+   Multi-resolution memory & codebase retrieval: search semantically across topics, explore live codebase symbols and call graphs (`scope: "code"`), inspect active session turns (`scope: "session"`), generate all-time overviews, or zoom into specific investigations.
+   - `scope`: `"persistent"` (cross-session project memory), `"session"` (active session history), `"code"` (live codebase symbol graph, call graph, and source slices), or `"all"` (unified).
+   - `query`: natural language problem, error text, or code symbol. Omit or pass `"overview"` to generate an all-time high-level memory overview. Inline shorthand queries like `ref:42` or `zoom:42` delegate directly to zoom-in.
+   - `overview: true`: synthesizes a structured timeline across operational time, or an L3/L2 codebase architecture overview (modules, `#include`/`import`/`xy_load` dependencies, entry points/routes, call hotspots) when `scope: "code"`.
+   - `symbol` / `symbols`: resolve and read concrete code symbol(s) with fail-closed ambiguity handling (`file`, `kind`, `parentSymbol` disambiguators; prioritizes `XY_IMPL` definitions over `XY_DECL` forward declarations), exact `file:startLine-endLine` source slicing (`lineRange: [start, end]`, `maxLines`, `fullOutput`), direct `neighbors` (`"none" | "callers" | "callees" | "both"`), and automatic fusion of linked `pi-mm` invariants and past debugging episodes.
+   - `trace`: multi-hop call graph traversal (`direction: "inbound" | "outbound" | "both"`, `depth: 3`), with stdlib/member-call filtering and language/module call isolation.
+   - `diff: true`: maps `git diff` worktree hunks via `libislet` 2D interval spans to modified symbols (filtering out unedited git submodule directories) and traces inbound callers up to `depth` hops to report blast radius.
    - `zoomRef: number`: zoom directly into a specific memory reference number, returning its complete multi-resolution details: problem statement, attempted approaches (worked/failed/abandoned), diffs, findings, outcome, and evidence tree.
+   - `zoomTurn: number` / `toolIndex: number` / `lineRange: [start, end]` / `lineage: "active" | "all"`: progressive 3-tier retrieval (Index Card $\rightarrow$ Focused Excerpt $\rightarrow$ Exact Line Slice) across active session history.
    - `project` / `subsystem`: optional project filter/boost (e.g. `site`).
    - `level`: optional resolution level filter (`'L0'`, `'L1'`, `'L2'`, `'L3'`).
    - `includeEvidence: true`: automatically fetches and attaches supporting evidence trees.
@@ -128,4 +133,15 @@ memory_review(1, "update_lifecycle", {
   reason: "Superseded by verified handle aliasing implementation in Ref 2",
   evidenceRef: 2,
 });
+
+// 7. Read concrete codebase symbol with direct callers/callees and fused persistent lore
+memory_recall({ symbol: "render_song_item", file: "song.c", neighbors: "both", lineRange: [1, 80] });
+
+// 8. Trace multi-hop inbound & outbound call graph or inspect git diff blast radius
+memory_recall({ trace: "song_install", direction: "both", depth: 3 });
+memory_recall({ diff: true, depth: 2 });
+
+// 9. Progressive session recall and exact turn line slicing
+memory_recall({ scope: "session", query: "handle aliasing" });
+memory_recall({ scope: "session", zoomTurn: 4, lineRange: [10, 40] });
 ```

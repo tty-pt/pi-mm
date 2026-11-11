@@ -10,6 +10,10 @@ import { enrichCandidatesWithSessionHistory } from "../hooks/auto_recall.ts";
 import type { SessionExcerpt } from "../session_history.ts";
 import { canonicalSortByRef } from "../blocks.ts";
 import type { MipmapLevel } from "../types.ts";
+import { getSessionInstances } from "../session/manager.ts";
+import { formatUnifiedRecallOutput } from "../session/recall.ts";
+import { extractSessionId, setMmBusy } from "../hooks/events.ts";
+import { executeCodeRecallWithLore, getCodeInstances, hasExplicitCodeParams } from "../code/manager.ts";
 
 const RECALL_PARAMS = {
   type: "object",
@@ -24,13 +28,30 @@ const RECALL_PARAMS = {
     },
     overview: {
       type: "boolean",
-      description: "If true, returns a structured timeline and hierarchical overview across all operational time.",
+      description: "If true, returns a structured timeline and hierarchical overview (or L3/L2 codebase architecture overview when scope='code').",
     },
     project: { type: "string", description: "Filter or boost memories matching a specific project scope." },
     subsystem: { type: "string", description: "Filter or boost memories matching a specific subsystem." },
     level: { type: "string", enum: ["L0", "L1", "L2", "L3"], description: "Optional resolution level filter ('L0'|'L1'|'L2'|'L3')." },
     includeEvidence: { type: "boolean", description: "If true, automatically fetches and includes the supporting evidence tree for each memory." },
     limit: { type: "number", description: "Maximum number of memories to return (default 5 for search, 15 for overview, max 30)." },
+    scope: { type: "string", enum: ["session", "persistent", "code", "all"], description: "Memory scope: 'session' (current active session), 'persistent' (cross-session project memory), 'code' (live codebase symbols, call graph, and source), or 'all' (unified)." },
+    zoomTurn: { type: "number", description: "Specific turn number to inspect in session history." },
+    toolIndex: { type: "number", description: "Specific tool execution index within zoomTurn." },
+    lineRange: { type: "array", items: { type: "number" }, description: "Specific [startLine, endLine] slice for zoomTurn or code symbol inspection." },
+    lineage: { type: "string", enum: ["active", "all"], description: "Lineage scope for session recall ('active' branch vs 'all' branches)." },
+    symbol: { type: "string", description: "Concrete code symbol name or qualified_name to resolve and read (fails closed with candidates if ambiguous)." },
+    symbols: { type: "array", items: { type: "string" }, description: "Batch array of concrete code symbol names or qualified_names to resolve and read in one call." },
+    file: { type: "string", description: "File path substring or suffix filter/disambiguator for code recall." },
+    kind: { type: "string", description: "Code symbol kind filter ('Function'|'Method'|'Class'|'Struct'|'Interface'|'Type'|'Enum'|'Macro'|'Route')." },
+    parentSymbol: { type: "string", description: "Enclosing class/struct/interface name disambiguator for code methods." },
+    neighbors: { type: "string", enum: ["none", "callers", "callees", "both"], description: "Direct call graph neighbors to include when reading a symbol (default 'both')." },
+    trace: { type: "string", description: "Function or method name to trace multi-hop callers and/or callees across the code graph." },
+    direction: { type: "string", enum: ["inbound", "outbound", "both"], description: "Call graph trace direction ('inbound' callers, 'outbound' callees, or 'both')." },
+    depth: { type: "number", description: "Maximum call graph trace depth (default 3) or diff blast-radius depth (default 2)." },
+    diff: { type: "boolean", description: "If true, analyzes git worktree diff hunks, maps modified line intervals to symbols, and traces inbound caller blast radius." },
+    maxLines: { type: "number", description: "Maximum source lines returned per code symbol before compacting (default 120)." },
+    fullOutput: { type: "boolean", description: "If true, returns complete uncompacted code symbol source blocks." },
   },
   additionalProperties: false,
 };
@@ -192,11 +213,14 @@ async function executeTargetedHybridRecall(
   cwd: string,
 ) {
   const limit = Math.min(Math.max(Number(params["limit"]) || 5, 1), 20);
+  const filterLevel = params["level"];
+  const includeL0 = filterLevel === undefined || filterLevel === "L0";
   const { records, details } = await executeHybridScan(env, {
     topic: query,
     project: typeof params["project"] === "string" ? params["project"].trim() : undefined,
     subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
-    level: params["level"],
+    level: filterLevel,
+    includeL0,
     limit,
     embed: true,
   });
@@ -254,10 +278,107 @@ async function executeRecall(
       return await zoomInMemory(env, Number(zoomMatch[1]));
     }
 
+    // Codebase-specific recall mode (scope='code' or explicit code navigation parameters)
+    const scope = typeof params["scope"] === "string" ? params["scope"] : undefined;
+    if (scope === "code" || hasExplicitCodeParams(params)) {
+      return await executeCodeRecallWithLore(env, params, ctx);
+    }
+
+    // Session-specific recall mode or zoomTurn inspection
+    const isSessionExplicit = scope === "session" || typeof params["zoomTurn"] === "number";
+    const embed = sepalConfigured(env.cfg);
+    const sessionOpts = {
+      cwd: ctx?.cwd,
+      cormBin: env.cfg.cormBin,
+      axisLibs: env.cfg.axisLibs,
+      embedUrl: embed ? env.cfg.embedUrl : undefined,
+      embedModel: env.cfg.embedModel,
+      embedKey: env.cfg.embedKey,
+      ephemeralSepal: env.cfg.ephemeralSepal,
+    };
+
+    if (isSessionExplicit) {
+      const sessionId = extractSessionId(ctx);
+      const instances = getSessionInstances(sessionId, sessionOpts);
+      const zoomTurn = typeof params["zoomTurn"] === "number" ? params["zoomTurn"] : undefined;
+      const toolIndex = typeof params["toolIndex"] === "number" ? params["toolIndex"] : undefined;
+      const rawLineRange = Array.isArray(params["lineRange"]) && params["lineRange"].length === 2
+        ? [Number(params["lineRange"][0]), Number(params["lineRange"][1])] as [number, number]
+        : undefined;
+      const lineage = params["lineage"] === "all" ? "all" : "active";
+      const sessionQuery = params["overview"] === true ? "" : rawQuery;
+
+      const sessionResult = await instances.engine.search({
+        query: sessionQuery,
+        zoomTurn,
+        toolIndex,
+        lineRange: rawLineRange,
+        lineage,
+        limit: typeof params["limit"] === "number" ? params["limit"] : (params["overview"] === true ? 10 : 5),
+        leafId: ctx?.sessionManager?.getLeafId?.(),
+      }, ctx?.sessionManager);
+
+      const rendered = formatUnifiedRecallOutput(sessionResult, sessionQuery);
+      return {
+        content: [{ type: "text", text: rendered }],
+        details: { sessionResult, totalMatches: sessionResult.totalMatches },
+      };
+    }
+
     // 2. High-Level Memory Overview Mode
     const isOverview = params["overview"] === true || rawQuery === "" || rawQuery.toLowerCase() === "overview" || rawQuery === "*";
     if (isOverview) {
       return await executeOverviewRecall(env, params);
+    }
+
+    // Unified Session + Code + Persistent Recall when scope is "all" or omitted with active session history
+    if (scope !== "persistent") {
+      const sessionId = extractSessionId(ctx);
+      const instances = getSessionInstances(sessionId, sessionOpts);
+      if (scope === "all" || instances.store.getEventCount() > 0) {
+        const sessionResult = await instances.engine.search({
+          query: rawQuery,
+          limit: 3,
+          leafId: ctx?.sessionManager?.getLeafId?.(),
+        }, ctx?.sessionManager);
+
+        let codeText = "";
+        if (scope === "all" && rawQuery) {
+          const codeInst = getCodeInstances({
+            projectRoot: ctx?.cwd || env.cwd,
+            cormBin: env.cfg.cormBin,
+            axisLibs: env.cfg.axisLibs,
+            embedUrl: embed ? env.cfg.embedUrl : undefined,
+            embedModel: env.cfg.embedModel,
+            embedKey: env.cfg.embedKey,
+            ephemeralSepal: env.cfg.ephemeralSepal,
+          });
+          setMmBusy(ctx, true);
+          try {
+            const codeOut = await codeInst.engine.execute({ query: rawQuery, limit: 3 });
+            if (codeOut.symbols.length > 0) codeText = codeOut.rendered;
+          } finally {
+            setMmBusy(ctx, false);
+          }
+        }
+
+        if (scope === "all" || sessionResult.cards.length > 0) {
+          const persistentResult = await executeTargetedHybridRecall(env, rawQuery, params, ctx.cwd);
+          const sessionText = sessionResult.cards.length > 0 ? formatUnifiedRecallOutput(sessionResult, rawQuery) : "";
+          const persistentText = persistentResult.content[0]?.text || "";
+
+          const combinedText = [
+            sessionText,
+            codeText,
+            persistentText,
+          ].filter(Boolean).join("\n\n---\n\n");
+
+          return {
+            content: [{ type: "text", text: combinedText }],
+            details: { sessionResult, persistentDetails: persistentResult.details },
+          };
+        }
+      }
     }
 
     // 3. Targeted Hybrid Semantic & Lexical Recall
@@ -271,8 +392,9 @@ async function executeRecall(
 export function makeRecallTool(envSource: EnvSource): PiToolSpec {
   return {
     name: "memory_recall",
-    label: "Recall Relevant Memories",
-    description: "Multi-resolution memory retrieval: search semantically across topics, generate all-time high-level overviews, or zoom in to inspect specific memory investigations, approaches, diffs, and evidence trees.",
+    label: "Codebase Symbol Graph, Session Transcript & Persistent Memory Recall",
+    description:
+      "Primary codebase symbol search, AST source reader, call-graph tracer, and git diff blast-radius analyzer (scope: 'code', symbol, symbols, trace, diff), plus active session transcript search/zoom (scope: 'session', zoomTurn) and persistent engineering lore (scope: 'persistent', zoomRef). Prefer this tool over grep/rg for finding functions, structs, callers, callees, and prior decisions.",
     parameters: RECALL_PARAMS,
     execute: (_id, params, _sig, _upd, ctx) => executeRecall(envSource, params, ctx as PiCtx),
   };

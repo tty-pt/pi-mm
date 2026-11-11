@@ -382,8 +382,8 @@ Deno.test("describeProgress and describeModelStatus: non-blocking visual feedbac
     configPath: null,
     notices: [],
   };
-  check(describeProgress(dlState) === "⬇ bge-base (50%)", "progress includes model id and percentage");
-  check(describeModelStatus(dlState) === "⬇ bge-base (50%)", "model status reflects download progress");
+  check(describeProgress(dlState) === "⬇️ bge-base (50%)", "progress includes model id and percentage");
+  check(describeModelStatus(dlState) === "⬇️ bge-base (50%)", "model status reflects download progress");
 
   const runningState = {
     phase: "ready" as const,
@@ -424,3 +424,53 @@ Deno.test("ensureAuren: skips downloading when an embedding model is already pre
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+Deno.test("pi-mm unified status bar: ⚡/🔌 model state, ⏳ busy hourglass, ⬇️ download, and transient flashes", async () => {
+  const {
+    resetMmStatus,
+    setMmAurenOnline,
+    setMmBusy,
+    setMmDownloadProgress,
+    notifyMmEvent,
+    formatMmStatusText,
+  } = await import("../src/hooks/events.ts");
+
+  const slots = new Map<string, string | undefined>();
+  const ctx = {
+    cwd: "/tmp",
+    hasUI: true,
+    mode: "agent",
+    ui: {
+      setStatus: (id: string, text: string | undefined) => {
+        slots.set(id, text);
+      },
+    },
+  };
+
+  resetMmStatus(ctx, false);
+  check(slots.get("auren-model") === undefined, "clears legacy auren-model slot");
+  check(slots.get("pi-mm") === "🧠 0 🔌", `initial offline state expected '🧠 0 🔌', got '${slots.get("pi-mm")}'`);
+
+  setMmAurenOnline(ctx, true);
+  check(slots.get("pi-mm") === "🧠 0 ⚡", `online state expected '🧠 0 ⚡', got '${slots.get("pi-mm")}'`);
+
+  setMmBusy(ctx, true);
+  check(slots.get("pi-mm") === "🧠 0 ⏳ ⚡", `busy online state expected '🧠 0 ⏳ ⚡', got '${slots.get("pi-mm")}'`);
+
+  setMmDownloadProgress(ctx, "⬇️ bge-base (42%)");
+  check(slots.get("pi-mm") === "🧠 0 ⏳ ⬇️ bge-base (42%)", `busy downloading state expected '🧠 0 ⏳ ⬇️ bge-base (42%)', got '${slots.get("pi-mm")}'`);
+
+  setMmDownloadProgress(ctx, undefined);
+  setMmBusy(ctx, false);
+  check(slots.get("pi-mm") === "🧠 0 ⚡", `restored steady state expected '🧠 0 ⚡', got '${slots.get("pi-mm")}'`);
+
+  notifyMmEvent(ctx, "saved", 1);
+  check(slots.get("pi-mm") === "🧠 +1 ⚡", `transient saved flash keeps lightning bolt: got '${slots.get("pi-mm")}'`);
+  check(formatMmStatusText() === "🧠 1 ⚡", `steady count incremented to 1: got '${formatMmStatusText()}'`);
+
+  notifyMmEvent(ctx, "recalled", 3);
+  check(slots.get("pi-mm") === "🧠 ↑3 ⚡", `transient recall flash keeps lightning bolt: got '${slots.get("pi-mm")}'`);
+
+  resetMmStatus(ctx, false);
+});
+

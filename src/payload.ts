@@ -1239,3 +1239,16 @@ export function decodePayload(raw: string | Uint8Array): { date: string; envelop
     },
   };
 }
+
+/**
+ * Byte-exact decode helper for corm result objects ({ stdout, stdoutBytes?, stderr, code }).
+ * Prefers raw Uint8Array (stdoutBytes) to avoid lossy UTF-8 decodes and trailing-trim corruption
+ * of binary HTOK payloads.
+ */
+export function decodeResult(res: { stdout?: string; stdoutBytes?: Uint8Array }): { date: string; envelope: MemoryEnvelope } {
+  if (res.stdoutBytes && res.stdoutBytes.length > 0) {
+    return decodePayload(res.stdoutBytes);
+  }
+  const text = (res.stdout ?? "").trim();
+  return decodePayload(text);
+}

@@ -5,7 +5,7 @@ import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildStoreInvocation, buildGetInvocation, embedEnv, payloadDate } from "../corm.ts";
 import { allocateNextRef } from "./ref_allocator.ts";
-import { encodePayload, decodePayload, encodeHtokPayload } from "../payload.ts";
+import { encodePayload, decodeResult, encodeHtokPayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
 import { recordAssociations } from "../associative.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord, MemoryContext } from "../types.ts";
@@ -82,7 +82,7 @@ async function applySupersedes(
   const bin = env.cfg.cormBin || env.cfg.qmapBin || "";
   const getOld = await env.runner.run(buildGetInvocation(bin, fspec, oldRef, axes, cwd, eEnv));
   if (getOld.code === 0 && getOld.stdout.trim()) {
-    const { date: oldDate, envelope: oldEnv } = decodePayload(getOld.stdout.trim());
+    const { date: oldDate, envelope: oldEnv } = decodeResult(getOld);
     const prev = oldEnv.lifecycle;
     oldEnv.lifecycle = "superseded";
     oldEnv.supersededBy = newRef;
@@ -212,6 +212,10 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
           await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
         } catch { /* best effort */ }
       }
+      try {
+        const { notifyMmEvent } = await import("../hooks/events.ts");
+        notifyMmEvent(ctx, "saved");
+      } catch { /* best effort */ }
       return exportDetail({ ref, key: `@${date}`, level: envelope.level, lifecycle: envelope.lifecycle, summary });
     });
   } catch (err) {

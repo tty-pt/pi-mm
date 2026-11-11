@@ -2,7 +2,7 @@ import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildGetInvocation, buildStoreInvocation, embedEnv } from "../corm.ts";
-import { decodePayload, encodePayload } from "../payload.ts";
+import { decodeResult, encodePayload } from "../payload.ts";
 import type { LifecycleState, LifecycleTransition } from "../types.ts";
 
 const PERMITTED_TRANSITIONS: Record<LifecycleState, LifecycleState[]> = {
@@ -72,7 +72,7 @@ export async function validateEvidenceRef(
   if (res.code !== 0 || !res.stdout.trim()) {
     return { valid: false, reason: `evidence reference ${ref} not found in database` };
   }
-  const { envelope } = decodePayload(res.stdout.trim());
+  const { envelope } = decodeResult(res);
   if (envelope.lifecycle === "contradicted" || envelope.lifecycle === "superseded") {
     return { valid: false, reason: `evidence reference ${ref} is ${envelope.lifecycle} and cannot support new conclusions` };
   }
@@ -127,7 +127,7 @@ export async function executeLifecycle(
       return { content: [{ type: "text", text: `mm lifecycle: ref ${ref} not found` }], details: { error: "not-found", ref } };
     }
 
-    const { date, envelope } = decodePayload(getRes.stdout.trim());
+    const { date, envelope } = decodeResult(getRes);
     const fromState = envelope.lifecycle;
     const err = validateTransition(fromState, nextState, reason, evidenceRef, envelope.evidence);
     if (err) {

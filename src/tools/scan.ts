@@ -4,7 +4,7 @@ import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildScanInvocation, buildGetInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
 import type { MipmapLevel } from "../types.ts";
 import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria } from "./ranking.ts";
-import { decodePayload, isCleanSummaryText } from "../payload.ts";
+import { decodePayload, isCleanSummaryText, isHtokPayload } from "../payload.ts";
 import { debugLog } from "../debug.ts";
 import { getAssociatedTokens } from "../associative.ts";
 
@@ -188,6 +188,7 @@ export interface HybridScanOptions {
   limit?: number;
   dedupe?: boolean;
   overfetch?: boolean;
+  includeL0?: boolean;
 }
 
 export async function executeHybridScan(
@@ -253,7 +254,7 @@ export async function executeHybridScan(
   const eEnv = embedEnv(env.cfg);
   for (const cand of fused.slice(0, Math.min(rawFetchLimit, 15))) {
     const decoded = decodePayload(cand.record);
-    if (!isCleanSummaryText(decoded.envelope.summary) || decoded.envelope.summary.startsWith("[Corrupted payload")) {
+    if (isHtokPayload(cand.record) || !isCleanSummaryText(decoded.envelope.summary) || decoded.envelope.summary.startsWith("[Corrupted payload")) {
       try {
         const getRes = await env.runner.run(buildGetInvocation(bin, filespecFor(cwd, wantEmbed), cand.ref, axes, cwd, eEnv));
         if (getRes.code === 0 && (getRes.stdoutBytes || getRes.stdout.trim())) {
@@ -277,6 +278,7 @@ export async function executeHybridScan(
     limit,
     query: topic,
     dedupe: opts.dedupe,
+    includeL0: opts.includeL0,
   };
   const records = filterAndEnrich(fused, filterCrit);
   details["records"] = records;

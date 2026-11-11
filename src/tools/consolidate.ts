@@ -3,7 +3,7 @@ import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { synthConfigured } from "../config.ts";
 import { filespecFor, buildGetInvocation, buildStoreInvocation, buildListInvocation, embedEnv } from "../corm.ts";
-import { decodePayload, encodePayload, encodeHtokPayload } from "../payload.ts";
+import { decodeResult, encodePayload, encodeHtokPayload } from "../payload.ts";
 import { isMemoryRecallPrompt } from "../hooks/auto_recall.ts";
 import { parseBareRefs, nextRef } from "../resolve.ts";
 import { withLock } from "../lock.ts";
@@ -154,7 +154,7 @@ async function checkIdempotency(
     const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (res.code === 0 && res.stdout.trim()) {
-      const { envelope } = decodePayload(res.stdout.trim());
+      const { envelope } = decodeResult(res);
       // Disregard superseded and contradicted abstractions during targeted idempotency checking
       if (envelope.lifecycle === "superseded" || envelope.lifecycle === "contradicted") continue;
       if (envelope.level === targetLevel && envelope.summary === summary) {
@@ -181,7 +181,7 @@ async function validateSources(
       missing.push(r);
       continue;
     }
-    const { envelope } = decodePayload(res.stdout.trim());
+    const { envelope } = decodeResult(res);
     if ((LEVEL_RANK[envelope.level] ?? 0) >= targetRank) {
       return { valid: false, error: `cannot use ${envelope.level} source (ref ${r}) to create ${targetLevel} abstraction`, missing: [] };
     }
@@ -205,7 +205,7 @@ async function scanAllItems(
     const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (res.code === 0 && res.stdout.trim()) {
-      const { date, envelope } = decodePayload(res.stdout.trim());
+      const { date, envelope } = decodeResult(res);
       items.push({ ref: r, date, envelope });
     }
   }
@@ -242,7 +242,12 @@ async function autoL0ToL1(
   journal?: ConsolidationJournal,
 ): Promise<{ created: number[]; representedL0Refs: number[] }> {
   const batchLimit = env.cfg.consolidateBatchLimit ?? 20;
-  const uncited = items.filter((i) => i.envelope.level === "L0" && !cited.has(i.ref)).slice(0, batchLimit);
+  // Chronological order within the batch keeps evidence lists and successor chains stable even
+  // though the queue itself is processed newest-first.
+  const uncited = items
+    .filter((i) => i.envelope.level === "L0" && !cited.has(i.ref))
+    .sort((a, b) => a.ref - b.ref)
+    .slice(0, batchLimit);
   const created: number[] = [];
   const representedL0Refs: number[] = [];
   const l1Candidates = items.filter((i) => i.envelope.level === "L1").map((i) => i.ref);
@@ -327,7 +332,7 @@ async function autoL0ToL1(
 
     if (existingL1) {
       // Reconcile into evolving investigation via successor L1
-      const mergedEvidence = Array.from(new Set([...(existingL1.envelope.evidence || []), ...groupEvidence]));
+      const mergedEvidence = Array.from(new Set([...(existingL1.envelope.evidence || []), ...groupEvidence])).sort((a, b) => a - b);
       const priorFindings = existingL1.envelope.episode?.findings ?? [existingL1.envelope.summary];
       const mergedFindings = Array.from(new Set([...priorFindings, ...allFindings]));
       const priorApproaches = existingL1.envelope.episode?.approaches ?? [];
@@ -745,7 +750,7 @@ async function reconcilePendingL1Transitions(
         continue;
       }
 
-      const succDecoded = decodePayload(succRes.stdout.trim());
+      const succDecoded = decodeResult(succRes);
       const succEnv = succDecoded.envelope;
 
       // Validate recovered successor identity and evidence representation
@@ -788,7 +793,7 @@ async function reconcilePendingL1Transitions(
             stderr: predRes.stderr,
           });
         } else {
-          const predDecoded = decodePayload(predRes.stdout.trim());
+          const predDecoded = decodeResult(predRes);
           if (predDecoded.envelope.lifecycle === "superseded" && predDecoded.envelope.supersededBy === tr.successorRef) {
             predReconciled = true;
           } else {
@@ -900,7 +905,7 @@ async function reconcileInterruptedSuccessors(
       const predRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, item.predecessorRef, axes, cwd, eEnv));
       if (budget) budget.charge("get", 1);
       if (predRes.code === 0 && predRes.stdout.trim()) {
-        const decoded = decodePayload(predRes.stdout.trim());
+        const decoded = decodeResult(predRes);
         decoded.envelope.lifecycle = "superseded";
         decoded.envelope.supersededBy = item.successorRef;
         const updateRes = await env.runner.run(
@@ -1131,6 +1136,18 @@ async function autoL1ToL2(
   return { created, results };
 }
 
+/**
+ * Orders the L0 consolidation queue: refs captured in the current turn first (so live work always
+ * reaches L1), then the remaining backlog newest-first. Deduplicated; the journal stays the store of
+ * record, this only decides which slice a bounded run processes.
+ */
+export function orderPendingL0Refs(pending: readonly number[], newRefs?: readonly number[]): number[] {
+  const fresh = Array.from(new Set(newRefs ?? []));
+  const freshSet = new Set(fresh);
+  const backlog = Array.from(new Set(pending)).filter((r) => !freshSet.has(r)).sort((a, b) => b - a);
+  return [...fresh, ...backlog];
+}
+
 export async function runAutoConsolidation(
   env: ToolEnv,
   _ctx: PiCtx,
@@ -1152,7 +1169,12 @@ export async function runAutoConsolidation(
       Object.assign(initialJournal, refreshed);
     }
     const pendingL0FromJournal = initialJournal.pendingL0Refs || [];
-    const combinedL0Refs = Array.from(new Set([...pendingL0FromJournal, ...(opts?.newL0Refs || [])]));
+    const combinedL0Refs = orderPendingL0Refs(pendingL0FromJournal, opts?.newL0Refs);
+    // Refs that reached a terminal decision in this run (missing, non-L0, superseded, skipped as
+    // memory introspection, or already cited) are disposed from the pending queue so they can never
+    // wedge the head of the queue again.
+    const disposedL0Refs: number[] = [];
+    let targetRefs: number[] = [];
 
     if (opts?.incrementalOnly && combinedL0Refs.length === 0) {
       const eligibility = checkConsolidationEligibility(env.cfg, initialJournal, env.nowProvider());
@@ -1172,12 +1194,19 @@ export async function runAutoConsolidation(
     if (combinedL0Refs.length > 0) {
       // INCREMENTAL & BOUNDED: Fetch ONLY the pending L0 references without full list!
       const batchLimit = env.cfg.consolidateBatchLimit ?? 20;
-      const targetRefs = combinedL0Refs.slice(0, batchLimit);
+      targetRefs = combinedL0Refs.slice(0, batchLimit);
       for (const r of targetRefs) {
         const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
         if (res.code === 0 && res.stdout.trim() && res.stdout.trim() !== "-1") {
-          const { date, envelope } = decodePayload(res.stdout.trim());
+          const { date, envelope } = decodeResult(res);
+          if (envelope.level !== "L0") {
+            disposedL0Refs.push(r);
+            continue;
+          }
           items.push({ ref: r, date, envelope });
+        } else if (res.code === 0) {
+          // Definitively absent (deleted / never stored): drop it. Non-zero codes are transient; keep.
+          disposedL0Refs.push(r);
         }
       }
 
@@ -1185,7 +1214,7 @@ export async function runAutoConsolidation(
       if (activeConversationTurn.activeMemoryRef && activeConversationTurn.activeSessionId && activeConversationTurn.activeSessionId === _ctx.sessionId) {
         const activeRes = await env.runner.run(buildGetInvocation(cormBin(env), fspec, activeConversationTurn.activeMemoryRef, axes, cwd, eEnv));
         if (activeRes.code === 0 && activeRes.stdout.trim() && activeRes.stdout.trim() !== "-1") {
-          const { date, envelope } = decodePayload(activeRes.stdout.trim());
+          const { date, envelope } = decodeResult(activeRes);
           items.push({ ref: activeConversationTurn.activeMemoryRef, date, envelope });
         }
       }
@@ -1201,7 +1230,7 @@ export async function runAutoConsolidation(
         if (candidateL1Ref && !items.some((it) => it.ref === candidateL1Ref)) {
           const l1Res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, candidateL1Ref, axes, cwd, eEnv));
           if (l1Res.code === 0 && l1Res.stdout.trim() && l1Res.stdout.trim() !== "-1") {
-            const { date, envelope } = decodePayload(l1Res.stdout.trim());
+            const { date, envelope } = decodeResult(l1Res);
             items.push({ ref: candidateL1Ref, date, envelope });
           }
         }
@@ -1269,6 +1298,24 @@ export async function runAutoConsolidation(
       await recordActiveL1ForRunId(cwd, runId, l1Ref);
     }
 
+    // Every fetched target L0 that is now cited (represented, subsumed, or deliberately skipped)
+    // or terminally inactive is done, unless its run still has an unresolved L1 transition.
+    for (const r of targetRefs) {
+      const it = items.find((x) => x.ref === r && x.envelope.level === "L0");
+      if (!it) continue;
+      const runId = it.envelope.episode?.runId;
+      const blocked = Boolean(runId && initialJournal.pendingL1Transitions?.[runId]);
+      const inactive = it.envelope.lifecycle === "superseded" || it.envelope.lifecycle === "contradicted";
+      if (!blocked && (cited.has(r) || inactive)) disposedL0Refs.push(r);
+    }
+    if (disposedL0Refs.length > 0) {
+      // Never dispose refs that guard an unresolved L1 transition (including ones recorded this run).
+      const live = await readConsolidationJournal(cwd);
+      const guarded = new Set(Object.values(live.pendingL1Transitions ?? {}).flatMap((t) => t.sourceL0Refs ?? []));
+      const disposable = Array.from(new Set(disposedL0Refs)).filter((r) => !guarded.has(r));
+      if (disposable.length > 0) await pruneProcessedL0InJournal(cwd, disposable);
+    }
+
     // 3. Prune represented L0 references from journal
     const combinedRepresentedL0 = Array.from(new Set([...representedL0Refs, ...alreadyRepresentedL0]));
     if (combinedRepresentedL0.length > 0) {
@@ -1319,6 +1366,50 @@ export async function runAutoConsolidation(
       note: unscopedL1Count > 0 ? "higher-level consolidation waiting for scope information" : undefined,
     });
   });
+}
+
+export interface BacklogDrainResult {
+  batches: number;
+  drained: number;
+  remaining: number;
+  createdL1: number[];
+  stoppedBy: "empty" | "time" | "maxRefs" | "noProgress" | "disabled";
+}
+
+/**
+ * Drains the pending L0 backlog in bounded `consolidateBatchLimit` batches until the wall-clock
+ * budget or `maxRefs` is spent, the queue is empty, or a batch makes no progress. Each batch is a
+ * normal locked incremental run, so live turns interleave between batches and are never blocked
+ * for longer than one batch.
+ */
+export async function drainL0Backlog(
+  env: ToolEnv,
+  ctx: PiCtx,
+  opts: { timeBudgetMs: number; maxRefs?: number; now?: () => number },
+): Promise<BacklogDrainResult> {
+  const now = opts.now ?? (() => performance.now());
+  const cwd = memDir(env);
+  const start = now();
+  const maxRefs = opts.maxRefs ?? Number.POSITIVE_INFINITY;
+  const createdL1: number[] = [];
+  let batches = 0;
+  let drained = 0;
+  let remaining = (await readConsolidationJournal(cwd)).pendingL0Refs?.length ?? 0;
+  if (opts.timeBudgetMs <= 0) return { batches, drained, remaining, createdL1, stoppedBy: "disabled" };
+  for (;;) {
+    if (remaining === 0) return { batches, drained, remaining, createdL1, stoppedBy: "empty" };
+    if (now() - start >= opts.timeBudgetMs) return { batches, drained, remaining, createdL1, stoppedBy: "time" };
+    if (drained >= maxRefs) return { batches, drained, remaining, createdL1, stoppedBy: "maxRefs" };
+    const res = await runAutoConsolidation(env, ctx, { incrementalOnly: true });
+    batches++;
+    const created = (res.details as { createdL1?: number[] } | undefined)?.createdL1 ?? [];
+    createdL1.push(...created);
+    const after = (await readConsolidationJournal(cwd)).pendingL0Refs?.length ?? 0;
+    const progress = remaining - after;
+    remaining = after;
+    if (progress <= 0) return { batches, drained, remaining, createdL1, stoppedBy: "noProgress" };
+    drained += progress;
+  }
 }
 
 export interface DeferredConsolidateOptions {
@@ -1477,7 +1568,7 @@ export async function runDeferredConsolidation(
       const res = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
       budget.charge("get", 1);
       if (res.code === 0 && res.stdout.trim()) {
-        const { date, envelope } = decodePayload(res.stdout.trim());
+        const { date, envelope } = decodeResult(res);
         items.push({ ref: r, date, envelope });
       }
     }
@@ -1735,7 +1826,7 @@ async function validateL3Generalization(
     const item = await env.runner.run(buildGetInvocation(cormBin(env), fspec, r, axes, cwd, eEnv));
     if (budget) budget.charge("get", 1);
     if (item.code === 0 && item.stdout.trim()) {
-      const { envelope } = decodePayload(item.stdout.trim());
+      const { envelope } = decodeResult(item);
       if (envelope.level !== "L2" || envelope.lifecycle !== "supported") {
         return { valid: false, error: `source ref ${r} is not a supported L2 project invariant` };
       }

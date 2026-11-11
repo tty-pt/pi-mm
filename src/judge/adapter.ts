@@ -178,15 +178,16 @@ export async function classifyDirectiveByEmbedding(
 }
 
 /**
- * Embedding verdict on whether a memory query is requesting an open-ended retrospective overview.
- * `overview_query` needs `overviewMinSimilarity` AND `overviewMinMargin` over `specific_query`;
+ * Embedding verdict on whether a memory query is requesting an open-ended retrospective overview
+ * or immediate session continuity recall (`session_recent`).
+ * `overview_query` and `session_recent` need `overviewMinSimilarity` AND `overviewMinMargin` over `specific_query`;
  * anything weaker becomes `specific_query` (harmless targeted search).
  */
 export async function classifyOverviewByEmbedding(
   prompt: string,
   cfg: MmConfig,
   fetchFn: typeof fetch = globalThis.fetch,
-): Promise<"overview_query" | "specific_query" | null> {
+): Promise<"overview_query" | "session_recent" | "specific_query" | null> {
   const examples = mergeExemplars(OVERVIEW_EXEMPLARS, cfg.overviewExemplars ?? {}, OVERVIEW_KINDS);
   const verdict = await nearestExemplar(cfg, examples, prompt, fetchFn);
   if (verdict === null) return null;
@@ -194,8 +195,8 @@ export async function classifyOverviewByEmbedding(
     minSimilarity: overviewMinSimilarity(cfg),
     minMargin: overviewMinMargin(cfg),
     harmless: "specific_query",
-    actionable: new Set(["overview_query"]),
-  }) as "overview_query" | "specific_query";
+    actionable: new Set(["overview_query", "session_recent"]),
+  }) as "overview_query" | "session_recent" | "specific_query";
 }
 
 export async function evaluateTurnWithJudge(

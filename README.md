@@ -8,9 +8,9 @@
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue.svg)](LICENSE)
 [![Zero-Config](https://img.shields.io/badge/zero--config-auren-16A34A)](https://github.com/tty-pt/axil-auren)
 
-> Multi-resolution persistent memory for the Pi Coding Agent powered by native C engines (`libcorm`, `libsepal`, `liblemma`).
+> Multi-resolution persistent memory, active session recall, and live codebase mipmap graphs for the Pi Coding Agent powered by native C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`).
 
-`pi-mm` gives your [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) long-term memory that survives context compaction and cross-session restarts. It automatically injects relevant prior technical decisions into context before each turn and captures new learnings when tasks conclude—with **zero manual configuration**.
+`pi-mm` gives your [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) a unified multi-resolution memory space spanning **persistent cross-session lore** (`scope: "persistent"`), **ephemeral active session transcripts & lossless compaction** (`scope: "session"`), and **live codebase symbol graphs, call graphs, and git diff blast radius** (`scope: "code"`). It automatically injects relevant prior technical decisions into context before each turn, compacts long sessions into navigable mipmaps, and fuses historical debugging episodes directly into code symbol reads—with **zero manual configuration**.
 
 ---
 
@@ -24,7 +24,7 @@ pi install npm:@tty-pt/pi-mm
 
 `pi-mm` works out of the box:
 1. **Automatic Daemon Startup**: Checks if `axil-auren` is running on port 4242. If offline, it brings up the local server automatically.
-2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads the required fast embedding model (`bge-base`, 117 MB) with sha256 verification. Heavy and unused inference/chat models are never downloaded. Shows non-blocking visual progress (`⬇ bge-base (42%)`) and usage status (`⚡ bge-base`) in the status bar (`mm-judge`).
+2. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads the required fast embedding model (`bge-base`, 117 MB) with sha256 verification. Heavy and unused inference/chat models are never downloaded. Shows non-blocking visual progress (`⬇️ bge-base (42%)`) and usage status (`⚡ bge-base`) in the status bar (`mm-judge`).
 3. **Proactive Dependency Checks**: On `session_start`, `pi-mm` automatically checks core C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `axil`, `axil-auren`) and displays actionable remediation toasts if anything is missing.
 
 ### Verify Memory Health
@@ -33,7 +33,7 @@ Inside Pi, run:
 ```text
 /mm doctor
 ```
-Outputs live endpoint connectivity, latency, loaded models, storage footprint, and core C engine versions.
+Outputs live endpoint connectivity, latency, loaded models, storage footprint, consolidation pipeline health (L2/L3 synthesis status, L0/L1 queue depths, drain rate, backlog/stale alerts), and core C engine versions.
 
 ---
 
@@ -43,11 +43,52 @@ By default, `pi-mm` exposes 3 focused tools to keep the agent's context clean an
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
-| `memory_recall` | `query`, `overview`, `zoomRef`, `project`, `level`, `includeEvidence` | Multi-resolution retrieval: search semantically, generate all-time timeline overviews (`overview: true`), or zoom vertically into a specific investigation (`zoomRef: 42`). |
+| `memory_recall` | `query`, `scope`, `overview`, `zoomRef`, `zoomTurn`, `toolIndex`, `lineage`, `symbol`, `symbols`, `file`, `kind`, `parentSymbol`, `neighbors`, `trace`, `direction`, `depth`, `diff`, `lineRange`, `maxLines`, `fullOutput`, `project`, `subsystem`, `level`, `includeEvidence`, `limit` | Unified multi-resolution retrieval across persistent lore (`scope: "persistent"`), active session turns (`scope: "session"`), and live codebase structure & call graphs (`scope: "code"`). |
 | `memory_record` | `problem`, `approaches`, `diffs`, `findings`, `outcome`, `verification` | Explicitly records an episode, bug fix, or project invariant with verified test commands. |
 | `memory_review` | `ref`, `action`, `lifecycle`, `reason`, `evidenceRef` | Inspects memory evidence hierarchy (`action: "inspect"`) or transitions factual lifecycle status (`action: "update_lifecycle"`). |
 
 *Advanced fine-grained tools (`memory_store`, `memory_scan`, `memory_think`, `memory_forget`, etc.) can be enabled via `"advancedTools": true`.*
+
+### 2.1 Multi-Axis Codebase Mipmap Graph & Lore Fusion (`scope: "code"`)
+
+`pi-mm` indexes live repository source code directly into the C multi-axis recall kernel (`libcorm` + `liblemma` + `libsepal` + `libislet`), replacing standalone AST/graph tools with a unified codebase mipmap space:
+
+- **Zero-Regex Character-Stream Structural Scanner** (`src/code/lexer.ts`, `src/code/scanner.ts`):
+  - Single-pass character-stream state machine tracking string literals, line/block comments, preprocessor directives, brace/paren depth, and line numbers across **C/C++**, **TypeScript/JavaScript**, and **Python**.
+  - Extracts `Function` (including `XY_IMPL(...)` definitions vs `XY_DECL(...)` forward declarations), `Method`, `Class`, `Struct`, `Interface`, `Enum`, `Macro`, `TypeAlias`, and HTTP `Route` symbols, plus `#include`, `import`, and `xy_load(...)` module dependencies.
+  - **Library-Agnostic Structural Route Detection**: Detects route registrations purely from call-argument structure without hardcoded framework names:
+    1. Method calls: `obj.<http_method>("/path"[, handler])` (e.g. `app.get("/v1/classify", handler)`)
+    2. Two-string calls: `fn("<http_method>", "/path"[, handler])` (e.g. `register_route("POST", "/song/edit", handler)`)
+    3. Method-prefixed route strings: `fn("<HTTP_METHOD>:/path"[, handler])` or `fn("<HTTP_METHOD> /path"[, handler])` (e.g. `route("GET:/api/song/:id", handler)`)
+- **Incremental Multi-Axis Code Store & Concurrency Safety** (`src/code/store.ts`, `src/code/graph.ts`):
+  - Stores L2 file summaries and L1/L0 symbol records in `code.db` (`joint,lemma,sepal`) and 2D `[fileHash, startLine..endLine]` interval spans in `code-islet.db` (`libislet`).
+  - **Priority Root Indexing**: Scans primary project roots (`mods/`, `src/`, `include/`, `lib/`, `app/`, `bin/`) before `external/`, `vendor/`, or `tests/` so first-party code is always indexed within the file budget, and skips nested git submodule directories when `git status` reports only submodule commit changes.
+  - **Single-Flight Refresh Serialization**: Serializes concurrent `refreshIncremental()` calls behind an in-memory promise lock (`refreshLock`), preventing parallel `corm -c` rebuilds from racing on `code.db`.
+  - **Call-Graph Disambiguation**: Filters language keywords, C/POSIX stdlib routines (`malloc`, `free`, `memcpy`, `printf`, etc.), and C struct member pointer invocations (`ops->load()`) from `rawCallees`; resolves call edges with language-family isolation, same-file/same-module/import-path affinity, and `XY_IMPL` definition preference over `XY_DECL` header declarations.
+- **Five Unified Codebase Workflows**:
+  1. **Hybrid Symbol Search & Auto-Preview**: `memory_recall({ scope: "code", query: "<symbol or concept>", file?, kind? })` — fuses `liblemma` identifier/signature matching and `libsepal` semantic search; automatically expands full source, callers/callees, and linked lore when a single symbol matches unambiguously.
+  2. **Concrete Symbol / Batch Source Read (Fail-Closed on Ambiguity)**: `memory_recall({ symbol: "render_song_item", file?, parentSymbol?, neighbors?: "both", lineRange?: [1, 80] })` or `memory_recall({ symbols: ["SymA", "SymB"] })` — returns exact `file:startLine-endLine` source slices, direct callers/callees, and automatically fuses linked `pi-mm` persistent invariants and past debugging episodes (`queryLinkedLoreForSymbols`).
+  3. **Multi-Hop Call Graph Traversal**: `memory_recall({ trace: "song_install", direction: "inbound" | "outbound" | "both", depth: 3 })` — BFS traversal with cycle detection and per-hop file:line citations.
+  4. **Architecture Overview (L3/L2 Mipmap)**: `memory_recall({ scope: "code", overview: true })` — synthesizes module clusters, `#include`/`import`/`xy_load` dependency DAG, HTTP routes & entry points, and high-degree call hotspots.
+  5. **Worktree Change Impact & Blast Radius**: `memory_recall({ diff: true, depth: 2 })` — maps `git diff` modified line hunks via `libislet` 2D interval spans to affected symbols and traces inbound callers up to `depth` hops.
+
+### 2.2 Ephemeral Semantic Session Memory, Progressive Recall & Mipmap Compaction (`scope: "session"`)
+
+`pi-mm` indexes active conversational turns and tool outputs into an ephemeral per-session multi-axis store (`.pi/mm/sessions/<sessionId>/session.db`), enabling progressive in-session recall and lossless context compaction:
+
+- **Asymmetric Multi-Granularity Ingestion & Write Serialization** (`src/session/sink.ts`, `src/session/store.ts`):
+  - Decomposes each settled turn into **Turn (L1)** summaries, **Block (L1)** tool/reasoning segments, and **Symbol (L0)** exact identifier/path records over `libcorm` (`joint,lemma,sepal`), while preserving raw line-addressable turn payloads on disk (`turns/turn-<N>.json`).
+  - Serializes all `ingestTurn` and `rebuildSessionIndex` mutations through a per-store promise queue (`withWriteLock`), preventing concurrent `corm -p` / `corm -c` CLI invocations from corrupting `session.db`.
+- **Active Branch Lineage DAG & Reload Resilience** (`src/session/lineage.ts`, `src/session/manager.ts`):
+  - Tracks turn parent-child edges across session branches and forks so `lineage: "active"` (default) filters out abandoned sibling branches while `lineage: "all"` searches the entire session DAG.
+  - Automatically reconstructs linear ancestry for previously persisted turns if the extension is reloaded mid-session or a session is resumed without in-memory lineage nodes.
+- **Progressive 3-Tier Session Retrieval** (`src/session/recall.ts`):
+  - Fuses C multi-axis (`liblemma` + `libsepal` + `libjoint`) scores with exact symbol/identifier boosts and formats matches according to query specificity:
+    - **Tier 1 (Index Card)**: Compact turn metadata, timestamp, summary, and extracted symbols.
+    - **Tier 2 (Focused Excerpt)**: Relevant message/tool block excerpt surrounding the matched query terms.
+    - **Tier 3 (Exact Line Slice)**: Exact line range (`memory_recall({ scope: "session", zoomTurn: 7, toolIndex?: 0, lineRange: [10, 40] })`) sliced directly from the stored turn payload.
+- **Mipmap-Driven Context Compaction** (`src/session/compaction.ts`):
+  - Hooks `session_before_compact` to synthesize a structured L2/L1 session mipmap (session objectives, completed milestones, active files & symbols, verified decisions, and unresolved blockers) with explicit `memory_recall({ scope: "session", zoomTurn })` drill-down pointers, ensuring compacted turns remain 100% retrievable on demand.
 
 ---
 
@@ -80,6 +121,10 @@ Configure settings in `.pi/settings.json` (or user `~/.pi/agent/settings.json`):
 | `semanticSearch` | `true` | Enable dense vector embeddings and semantic recall via `libsepal` |
 | `embedUrl` | `"http://127.0.0.1:4242/v1/embeddings"` | Embedding generation endpoint |
 | `embedModel` | `"bge-base"` | Embedding model identifier (`"bge-base"` for 768-d, `"bge-small"` for 384-d) |
+| `synthUrl` | auto (auren chat endpoint) | Chat completions URL for L2/L3 abstraction synthesis (defaults to `/v1/chat/completions` on the local auren server, or `"off"` to disable). Env: `PI_MM_SYNTH_URL` |
+| `synthModel` | `"smollm"` | Model name for L2/L3 synthesis when auto-defaulted to local auren. Env: `PI_MM_SYNTH_MODEL` |
+| `consolidateDrainMs` | `250` | Wall-clock budget in ms per turn to drain the pending L0 consolidation queue; 0 disables idle backlog draining. Env: `PI_MM_CONSOLIDATE_DRAIN_MS` |
+| `consolidateBatchLimit` | `20` | Maximum number of memories processed per consolidation batch. Env: `PI_MM_CONSOLIDATE_BATCH_LIMIT` |
 | `maxStorageBytes` | `107374182400` | Soft storage limit threshold in bytes (default 100 GB). Env: `PI_MM_MAX_STORAGE_BYTES` |
 | `l0RetentionPolicy` | `"keep_all"` | Raw L0 tool retention policy: `"keep_all"` (preserves full 100GB history) or `"prune_after_consolidation"` (supersedes raw tool traces once consolidated). Env: `PI_MM_L0_RETENTION_POLICY` |
 | `autoRecallBudgetChars` | `1500` | Maximum character budget injected into system prompt before a turn. Env: `PI_MM_AUTO_RECALL_BUDGET` |
@@ -186,8 +231,12 @@ npm --prefix .pi/extensions/pi-mm run eval:recall
 
 - **Decoupled Quest Archive Distillation**:
   When a quest concludes via `quest_archive`, `pi-mm` asynchronously processes the completed task metadata. Key findings, verified code diffs, execution metrics, and root-cause discoveries are distilled into structured episodic records (`memory_record`) without stalling the agent turn. Failed quests with setbacks are similarly preserved as lessons learned (`lifecycle: "observed"`, `approach: "failed"`).
-- **Dual-End Assistant Discovery Distillation**:
-  When a task turn involves informative tool executions (code modifications or test runs) and the assistant explains the fix, `pi-mm` distills the discovery into an L1 Task Episode citing the tool executions as evidence.
+- **Dual-End Assistant Discovery Distillation & Enriched L0 Summaries**:
+  When a task turn involves informative tool executions (code modifications or test runs) and the assistant explains the fix, `pi-mm` distills the discovery into an L1 Task Episode citing the tool executions as evidence. Tool executions are summarized with rich file paths, commands, and first-line outputs (`formatToolEventSummary`), while internal memory introspection queries and corm database inspection commands are filtered out to prevent self-referential capture loops.
+- **Unwedged L0 Consolidation & Zero-Config Local Synthesis**:
+  L0 tool episodes are consolidated into L1 episodes without queue stalls. Fresh turns are consolidated first, followed by the remaining backlog ordered newest-first (`orderPendingL0Refs`). Idle turns drain remaining L0 items within a configurable wall-clock budget (`consolidateDrainMs`, default 250ms). When a local `axil-auren` server is running, L2/L3 abstraction synthesis is automatically wired to its OpenAI-compatible chat endpoint (`/v1/chat/completions`) using `smollm`, eliminating stalled consolidation queues without manual configuration.
+- **Retrieval-Quality Gate & L0 Targeted Recall**:
+  Targeted recall via `memory_recall` includes L0 task memories when requested (`level: "L0"` or untiered searches) while strictly exempting structured technical episodes from code artifact pruning. Golden retrieval quality is asserted via a rigorous benchmark gate (`scripts/eval-retrieval.ts`) requiring recall@5 = 1.0, MRR $\ge$ 0.5, and synthesized L1/L2 records ranked above raw tool noise.
 - **Conversational Invariants & Negative Constraint Learning**:
   Developer feedback (*"don't use raw pointers in request handlers"*, *"never mock the filesystem in tests"*, *"stop modifying the lockfile without running make"*, *"you made a mistake, that function requires three arguments"*) is semantically classified via `POST /v1/classify`, elevated to L2 invariants (`standing: true`), and continuously reinforced in the assistant's prompt across every turn with newest-first ordering.
 - **Scalable 100GB Mipmap Architecture**:
@@ -209,6 +258,7 @@ npm --prefix .pi/extensions/pi-mm run eval:recall
 | **`libsepal`** | Pure-C Approximate Nearest Neighbor (ANN) dense vector store. | [libsepal](https://github.com/tty-pt/libsepal#installation--build) |
 | **`libjoint`** | Interval-tree temporal presence engine for historical co-occurrence. | [libjoint](https://github.com/tty-pt/libjoint#installation--build) |
 | **`liblemma`** | Diacritic-preserving full-text search tokenizer (`pão ≠ pao`). | [liblemma](https://github.com/tty-pt/liblemma#installation--build) |
+| **`libislet`** | 2D spatial & interval-span indexing engine (file line-range intersection & spatial grids). | [libislet](https://github.com/tty-pt/libislet#installation--build) |
 | **`axil-auren`** | Local LLM inference, embeddings, and fast decision judging. | [axil-auren](https://github.com/tty-pt/axil-auren#installation--build) |
 
 Prebuilt packages are available via [tty.pt packages](https://github.com/tty-pt/ci/blob/main/docs/install.md) for APT, Homebrew, and pacman.
@@ -218,10 +268,11 @@ Prebuilt packages are available via [tty.pt packages](https://github.com/tty-pt/
 ## 6. Development & Verification
 
 ```bash
-npm --prefix .pi/extensions/pi-mm test             # Run hermetic test suite (450+ tests)
+npm --prefix .pi/extensions/pi-mm test             # Run hermetic test suite (500+ tests)
 npm --prefix .pi/extensions/pi-mm run lint         # Lint all TypeScript source and scripts
 npm --prefix .pi/extensions/pi-mm run eval:recall  # Benchmark recall intent classification against live auren
 npm --prefix .pi/extensions/pi-mm run eval:surfaces # Benchmark directive, overview, and kind classification
+npm --prefix .pi/extensions/pi-mm run eval:retrieval # Benchmark retrieval quality (recall@5, MRR, ranking)
 npm --prefix .pi/extensions/pi-mm run test:playbook # Non-destructive bootstrap verification playbook
 npm --prefix .pi/extensions/pi-mm run demo          # Interactive live bootstrap demonstration
 npm --prefix .pi/extensions/pi-mm run zip           # Package distribution bundle

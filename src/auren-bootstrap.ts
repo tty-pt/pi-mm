@@ -710,12 +710,12 @@ export function getBootstrapState(): BootstrapState {
   return { ...liveState, downloads: [...liveState.downloads], failures: [...liveState.failures], notices: [...liveState.notices] };
 }
 
-/** Compact progress text for a status bar, e.g. "⬇ bge-base (42%)"; undefined when nothing is downloading. */
+/** Compact progress text for a status bar, e.g. "⬇️ bge-base (42%)"; undefined when nothing is downloading. */
 export function describeProgress(state: BootstrapState = liveState): string | undefined {
   if (state.downloads.length === 0) return undefined;
   const dl = state.downloads[0];
   const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-  return `⬇ ${dl.id} (${pct}%)`;
+  return `⬇️ ${dl.id} (${pct}%)`;
 }
 
 export const AUREN_STATUS_SLOT = "auren-model";

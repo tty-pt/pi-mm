@@ -2,7 +2,7 @@ import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, sepalConfigured } from "./index.ts";
 import { filespecFor, buildGetInvocation, buildListInvocation, embedEnv } from "../corm.ts";
-import { decodePayload } from "../payload.ts";
+import { decodeResult } from "../payload.ts";
 import { parseBareRefs } from "../resolve.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord } from "../types.ts";
 
@@ -30,7 +30,7 @@ export async function fetchEnvelope(
   const bin = env.cfg.cormBin;
   const res = await env.runner.run(buildGetInvocation(bin, fspec, ref, axes, cwd, eEnv));
   if (res.code !== 0 || !res.stdout.trim()) return null;
-  return decodePayload(res.stdout.trim());
+  return decodeResult(res);
 }
 
 export async function traverseDown(
