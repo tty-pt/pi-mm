@@ -6,14 +6,73 @@ import { executeHybridScan } from "./scan.ts";
 import { fetchEnvelope, traverseDown, renderTree } from "./traverse.ts";
 import { buildMemoryOverview } from "./overview.ts";
 import type { FusedCandidate } from "./ranking.ts";
-import { enrichCandidatesWithSessionHistory } from "../hooks/auto_recall.ts";
+import {
+  enrichCandidatesWithSessionHistory,
+  indexCandidateSessions,
+  indexSingleMemorySession,
+  type IndexedSessionSummary,
+} from "../hooks/auto_recall.ts";
 import type { SessionExcerpt } from "../session_history.ts";
 import { canonicalSortByRef } from "../blocks.ts";
 import type { MipmapLevel } from "../types.ts";
-import { getSessionInstances } from "../session/manager.ts";
-import { formatUnifiedRecallOutput } from "../session/recall.ts";
+import {
+  getSessionInstances,
+  discoverPeerSessions,
+  resolveTargetSessions,
+} from "../session/manager.ts";
+import {
+  formatUnifiedRecallOutput,
+  searchAcrossSessions,
+} from "../session/recall.ts";
 import { extractSessionId, setMmBusy } from "../hooks/events.ts";
 import { executeCodeRecallWithLore, getCodeInstances, hasExplicitCodeParams } from "../code/manager.ts";
+
+function parseInlineZoomRef(rawQuery: string): number | null {
+  const lower = rawQuery.trim().toLowerCase();
+  let rest = "";
+  if (lower.startsWith("ref:")) {
+    rest = lower.slice(4).trim();
+  } else if (lower.startsWith("zoom:")) {
+    rest = lower.slice(5).trim();
+  } else if (lower.startsWith("ref ")) {
+    rest = lower.slice(4).trim();
+  } else if (lower.startsWith("zoom ")) {
+    rest = lower.slice(5).trim();
+  } else {
+    return null;
+  }
+  if (!rest) return null;
+  for (let i = 0; i < rest.length; i++) {
+    const code = rest.charCodeAt(i);
+    if (code < 48 || code > 57) return null;
+  }
+  const num = Number(rest);
+  return Number.isInteger(num) && num > 0 ? num : null;
+}
+
+function formatIndexedSessionBlock(ref: number, indexed?: IndexedSessionSummary): string {
+  if (!indexed || indexed.totalEvents === 0) return "";
+  const slotPart = indexed.workspaceLabel ? ` (${indexed.workspaceLabel})` : "";
+  const lines: string[] = [
+    `  Indexed Source Session: ${indexed.shortId}${slotPart} (Turns 1-${Math.max(1, indexed.totalTurns)}, ${indexed.totalEvents} events)`,
+  ];
+  for (const card of indexed.matchedCards.slice(0, 3)) {
+    const status = card.exitCode !== undefined
+      ? (card.exitCode === 0 ? " · SUCCESS (0)" : ` · FAILED (Exit ${card.exitCode})`)
+      : "";
+    lines.push(
+      `    • [Turn ${card.turnIndex} · ${card.speaker}${status}] ${card.summary} (${card.lineCount} lines)`,
+    );
+  }
+  const primaryCard = indexed.matchedCards[0];
+  const targetTurn = primaryCard ? primaryCard.turnIndex : 1;
+  const toolIdxPart = primaryCard?.toolIndex !== undefined ? `, toolIndex: ${primaryCard.toolIndex}` : "";
+  const maxLines = primaryCard ? Math.min(Math.max(1, primaryCard.lineCount), 60) : 60;
+  lines.push(
+    `    • Zoom Session Turn: memory_recall({ zoomRef: ${ref}, zoomTurn: ${targetTurn}${toolIdxPart}, lineRange: [1, ${maxLines}] })`,
+  );
+  return lines.join("\n");
+}
 
 const RECALL_PARAMS = {
   type: "object",
@@ -36,7 +95,8 @@ const RECALL_PARAMS = {
     includeEvidence: { type: "boolean", description: "If true, automatically fetches and includes the supporting evidence tree for each memory." },
     limit: { type: "number", description: "Maximum number of memories to return (default 5 for search, 15 for overview, max 30)." },
     scope: { type: "string", enum: ["session", "persistent", "code", "all"], description: "Memory scope: 'session' (current active session), 'persistent' (cross-session project memory), 'code' (live codebase symbols, call graph, and source), or 'all' (unified)." },
-    zoomTurn: { type: "number", description: "Specific turn number to inspect in session history." },
+    session: { type: "string", description: "Target session selector: 'current', 'parallel', 'all', session UUID/prefix (e.g. '01a1c8f7'), or workspace/slot label (e.g. 'slot-6')." },
+    zoomTurn: { type: "number", description: "Specific turn number to inspect in session history (or within a persistent memory's session when combined with zoomRef)." },
     toolIndex: { type: "number", description: "Specific tool execution index within zoomTurn." },
     lineRange: { type: "array", items: { type: "number" }, description: "Specific [startLine, endLine] slice for zoomTurn or code symbol inspection." },
     lineage: { type: "string", enum: ["active", "all"], description: "Lineage scope for session recall ('active' branch vs 'all' branches)." },
@@ -56,7 +116,12 @@ const RECALL_PARAMS = {
   additionalProperties: false,
 };
 
-function formatResult(cand: FusedCandidate, evidenceText?: string, excerpts?: SessionExcerpt[]): string {
+function formatResult(
+  cand: FusedCandidate,
+  evidenceText?: string,
+  excerpts?: SessionExcerpt[],
+  indexedSession?: IndexedSessionSummary,
+): string {
   const ref = cand.ref;
   const env = cand.envelope;
   const level = env?.level ?? cand.level ?? "L2";
@@ -79,6 +144,11 @@ function formatResult(cand: FusedCandidate, evidenceText?: string, excerpts?: Se
 
   if (excerpts && excerpts.length > 0) {
     text += `\n  Source Session Excerpts:\n` + excerpts.map((e) => `    ${e.role === "user" ? "User" : "Assistant"}: "${e.text}"`).join("\n");
+  }
+
+  const sessionBlock = formatIndexedSessionBlock(ref, indexedSession);
+  if (sessionBlock) {
+    text += `\n${sessionBlock}`;
   }
 
   return text;
@@ -115,14 +185,15 @@ async function attachEvidence(
 async function zoomInMemory(
   env: ToolEnv,
   ref: number,
+  cwd?: string,
 ) {
   const embed = sepalConfigured(env.cfg);
-  const cwd = memDir(env);
-  const fspec = filespecFor(cwd, embed);
+  const memCwd = memDir(env);
+  const fspec = filespecFor(memCwd, embed);
   const axes = axisPath(env);
   const eEnv = embedEnv(env.cfg);
 
-  const item = await fetchEnvelope(env, fspec, axes, cwd, eEnv, ref);
+  const item = await fetchEnvelope(env, fspec, axes, memCwd, eEnv, ref);
   if (!item) {
     return {
       content: [{ type: "text", text: `Memory Ref ${ref} not found in database.` }],
@@ -131,8 +202,9 @@ async function zoomInMemory(
   }
 
   const { envelope, date } = item;
-  const tree = await traverseDown(env, fspec, axes, cwd, eEnv, ref, 0, 3, new Set());
+  const tree = await traverseDown(env, fspec, axes, memCwd, eEnv, ref, 0, 3, new Set());
   const treeText = tree ? renderTree(tree).trim() : `[${envelope.level}] Ref ${ref}: ${envelope.summary}`;
+  const indexedSession = await indexSingleMemorySession(env, ref, envelope, undefined, cwd || env.cwd);
 
   const scopeParts: string[] = [];
   if (envelope.context?.project) scopeParts.push(envelope.context.project);
@@ -176,15 +248,30 @@ async function zoomInMemory(
     }
   }
 
+  if (indexedSession) {
+    lines.push(`\n${formatIndexedSessionBlock(ref, indexedSession).trimStart()}`);
+  }
+
   lines.push(`\nEvidence Hierarchy (Mipmap Lineage):`);
   lines.push(treeText);
 
   lines.push(`\n---`);
   lines.push(`💡 To inspect supporting evidence in further detail, run: memory_recall({ zoomRef: <childRef> })`);
 
+  const serializableSession = indexedSession
+    ? {
+        sessionId: indexedSession.sessionId,
+        shortId: indexedSession.shortId,
+        workspaceLabel: indexedSession.workspaceLabel,
+        totalTurns: indexedSession.totalTurns,
+        totalEvents: indexedSession.totalEvents,
+        matchedCards: indexedSession.matchedCards,
+      }
+    : undefined;
+
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    details: { ref, envelope, date, tree },
+    details: { ref, envelope, date, tree, indexedSession: serializableSession },
   };
 }
 
@@ -238,11 +325,19 @@ async function executeTargetedHybridRecall(
   }
 
   const excerptsMap = await enrichCandidatesWithSessionHistory(records, query, cwd);
+  const indexedSessionsMap = await indexCandidateSessions(env, records, query, cwd);
   const sortedRecords = canonicalSortByRef(records);
 
   const lines = [`Found ${sortedRecords.length} relevant memory record(s) for "${query}":\n`];
   for (const rec of sortedRecords) {
-    lines.push(formatResult(rec, evidenceMap?.get(rec.ref), excerptsMap.get(rec.ref)));
+    lines.push(
+      formatResult(
+        rec,
+        evidenceMap?.get(rec.ref),
+        excerptsMap.get(rec.ref),
+        indexedSessionsMap.get(rec.ref),
+      ),
+    );
   }
 
   lines.push(`\nTip: To zoom into any of these memories, call memory_recall({ zoomRef: <ref> }).`);
@@ -265,17 +360,61 @@ async function executeRecall(
       return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm", results: [] } };
     }
 
-    // 1. Direct Zoom-In by Reference ID
+    // 1. Direct Zoom-In by Reference ID (with optional zoomTurn into the memory's source session)
     if (typeof params["zoomRef"] === "number" && Number.isInteger(params["zoomRef"])) {
-      return await zoomInMemory(env, params["zoomRef"]);
+      const targetRef = params["zoomRef"];
+      if (typeof params["zoomTurn"] === "number" && Number.isInteger(params["zoomTurn"])) {
+        const embed = sepalConfigured(env.cfg);
+        const memCwd = memDir(env);
+        const fspec = filespecFor(memCwd, embed);
+        const axes = axisPath(env);
+        const eEnv = embedEnv(env.cfg);
+        const item = await fetchEnvelope(env, fspec, axes, memCwd, eEnv, targetRef);
+        if (!item) {
+          return {
+            content: [{ type: "text", text: `Memory Ref ${targetRef} not found in database.` }],
+            details: { error: "not-found", ref: targetRef },
+          };
+        }
+        const indexed = await indexSingleMemorySession(env, targetRef, item.envelope, undefined, ctx?.cwd || env.cwd);
+        if (!indexed) {
+          return {
+            content: [{ type: "text", text: `Memory Ref ${targetRef} does not have an indexed source session transcript.` }],
+            details: { error: "no-session", ref: targetRef },
+          };
+        }
+        const toolIndex = typeof params["toolIndex"] === "number" ? params["toolIndex"] : undefined;
+        const rawLineRange = Array.isArray(params["lineRange"]) && params["lineRange"].length === 2
+          ? [Number(params["lineRange"][0]), Number(params["lineRange"][1])] as [number, number]
+          : undefined;
+        const zoomResult = await indexed.instances.engine.search({
+          query: "",
+          zoomTurn: params["zoomTurn"],
+          toolIndex,
+          lineRange: rawLineRange,
+        });
+        if (zoomResult.zoom) {
+          zoomResult.zoom.sessionId = indexed.sessionId;
+          zoomResult.zoom.sessionShortId = indexed.shortId;
+          zoomResult.zoom.sessionOrigin = "persistent-ref";
+          zoomResult.zoom.workspaceLabel = indexed.workspaceLabel;
+          zoomResult.zoom.sourceMemoryRef = targetRef;
+        }
+        const rendered = formatUnifiedRecallOutput(zoomResult);
+        return {
+          content: [{ type: "text", text: rendered }],
+          details: { ref: targetRef, sessionId: indexed.sessionId, sessionResult: zoomResult, totalMatches: zoomResult.totalMatches },
+        };
+      }
+      return await zoomInMemory(env, targetRef, ctx?.cwd);
     }
 
     const rawQuery = typeof params["query"] === "string" ? params["query"].trim() : "";
 
     // Check if query is an inline zoom command (e.g. "ref:42" or "zoom:42")
-    const zoomMatch = /^(?:ref|zoom):?\s*(\d+)$/i.exec(rawQuery);
-    if (zoomMatch) {
-      return await zoomInMemory(env, Number(zoomMatch[1]));
+    const inlineRef = parseInlineZoomRef(rawQuery);
+    if (inlineRef !== null) {
+      return await zoomInMemory(env, inlineRef, ctx?.cwd);
     }
 
     // Codebase-specific recall mode (scope='code' or explicit code navigation parameters)
@@ -284,8 +423,9 @@ async function executeRecall(
       return await executeCodeRecallWithLore(env, params, ctx);
     }
 
-    // Session-specific recall mode or zoomTurn inspection
-    const isSessionExplicit = scope === "session" || typeof params["zoomTurn"] === "number";
+    // Session-specific recall mode, explicit session selector, or zoomTurn inspection
+    const sessionParam = typeof params["session"] === "string" ? params["session"].trim() : undefined;
+    const isSessionExplicit = scope === "session" || typeof params["zoomTurn"] === "number" || Boolean(sessionParam);
     const embed = sepalConfigured(env.cfg);
     const sessionOpts = {
       cwd: ctx?.cwd,
@@ -307,6 +447,45 @@ async function executeRecall(
         : undefined;
       const lineage = params["lineage"] === "all" ? "all" : "active";
       const sessionQuery = params["overview"] === true ? "" : rawQuery;
+      const limit = typeof params["limit"] === "number" ? params["limit"] : (params["overview"] === true ? 10 : 5);
+      const leafId = ctx?.sessionManager?.getLeafId?.();
+
+      if (sessionParam) {
+        const targetEntries = resolveTargetSessions(sessionParam, {
+          cwd: ctx?.cwd,
+          currentSessionId: sessionId,
+          sessionOpts,
+        });
+        const sessionResult = await searchAcrossSessions(
+          targetEntries,
+          { query: sessionQuery, zoomTurn, toolIndex, lineRange: rawLineRange, lineage, limit, leafId },
+          ctx?.sessionManager,
+        );
+        const rendered = formatUnifiedRecallOutput(sessionResult, sessionQuery);
+        return {
+          content: [{ type: "text", text: rendered }],
+          details: { sessionResult, totalMatches: sessionResult.totalMatches },
+        };
+      }
+
+      const peerEntries = discoverPeerSessions({
+        cwd: ctx?.cwd,
+        currentSessionId: sessionId,
+        sessionOpts,
+      });
+
+      if (peerEntries.length > 1 && zoomTurn === undefined) {
+        const sessionResult = await searchAcrossSessions(
+          peerEntries,
+          { query: sessionQuery, zoomTurn, toolIndex, lineRange: rawLineRange, lineage, limit, leafId },
+          ctx?.sessionManager,
+        );
+        const rendered = formatUnifiedRecallOutput(sessionResult, sessionQuery);
+        return {
+          content: [{ type: "text", text: rendered }],
+          details: { sessionResult, totalMatches: sessionResult.totalMatches },
+        };
+      }
 
       const sessionResult = await instances.engine.search({
         query: sessionQuery,
@@ -314,8 +493,8 @@ async function executeRecall(
         toolIndex,
         lineRange: rawLineRange,
         lineage,
-        limit: typeof params["limit"] === "number" ? params["limit"] : (params["overview"] === true ? 10 : 5),
-        leafId: ctx?.sessionManager?.getLeafId?.(),
+        limit,
+        leafId,
       }, ctx?.sessionManager);
 
       const rendered = formatUnifiedRecallOutput(sessionResult, sessionQuery);
@@ -335,12 +514,27 @@ async function executeRecall(
     if (scope !== "persistent") {
       const sessionId = extractSessionId(ctx);
       const instances = getSessionInstances(sessionId, sessionOpts);
-      if (scope === "all" || instances.store.getEventCount() > 0) {
-        const sessionResult = await instances.engine.search({
-          query: rawQuery,
-          limit: 3,
-          leafId: ctx?.sessionManager?.getLeafId?.(),
-        }, ctx?.sessionManager);
+      const peerEntries = discoverPeerSessions({
+        cwd: ctx?.cwd,
+        currentSessionId: sessionId,
+        sessionOpts,
+      });
+      if (scope === "all" || instances.store.getEventCount() > 0 || peerEntries.length > 1) {
+        const sessionResult = peerEntries.length > 1
+          ? await searchAcrossSessions(
+            peerEntries,
+            {
+              query: rawQuery,
+              limit: 3,
+              leafId: ctx?.sessionManager?.getLeafId?.(),
+            },
+            ctx?.sessionManager,
+          )
+          : await instances.engine.search({
+            query: rawQuery,
+            limit: 3,
+            leafId: ctx?.sessionManager?.getLeafId?.(),
+          }, ctx?.sessionManager);
 
         let codeText = "";
         if (scope === "all" && rawQuery) {

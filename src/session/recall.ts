@@ -1,5 +1,6 @@
 import type { SessionStore } from "./store.ts";
 import type { SessionLineageTracker, LineageSessionManagerLike } from "./lineage.ts";
+import type { DiscoveredSessionEntry } from "./manager.ts";
 import type {
   SessionQueryOptions,
   SessionQueryResult,
@@ -9,6 +10,16 @@ import type {
 } from "./types.ts";
 import { fuseRankingsRRF } from "../tools/ranking.ts";
 import { debugLog } from "../debug.ts";
+
+const ERROR_QUERY_KEYWORDS = ["fail", "failed", "error", "err", "panic", "crash", "bug", "broken"];
+
+function hasErrorQueryWord(queryLower: string): boolean {
+  const parts = queryLower.split(/[^a-z0-9_]+/).filter(Boolean);
+  for (const p of parts) {
+    if (ERROR_QUERY_KEYWORDS.includes(p)) return true;
+  }
+  return false;
+}
 
 export class SessionRecallEngine {
   private readonly store: SessionStore;
@@ -50,9 +61,10 @@ export class SessionRecallEngine {
         };
       }
 
+      const hasToolEvent = turnEvents.some((e) => e.event.role === "tool");
       const hasConversationalPair =
-        turnEvents.some((e) => e.event.role === "user") ||
-        (turnEvents.some((e) => e.event.role === "assistant") && options.lineRange === undefined);
+        (turnEvents.some((e) => e.event.role === "user") || turnEvents.some((e) => e.event.role === "assistant")) &&
+        (options.lineRange === undefined || !hasToolEvent);
 
       if (turnEvents.length > 1 && hasConversationalPair) {
         const combinedLines: string[] = [];
@@ -196,8 +208,8 @@ export class SessionRecallEngine {
 
     // Fuse with in-memory exact token/identifier & diagnostic signal matching
     const queryLower = query.toLowerCase();
-    const queryTerms = queryLower.split(/\s+/).filter((t) => t.length > 1);
-    const isErrorQuery = /\b(fail|failed|error|err|panic|crash|bug|broken)\b/i.test(queryLower);
+    const queryTerms = queryLower.trim().split(" ").map((t) => t.trim()).filter((t) => t.length > 1);
+    const isErrorQuery = hasErrorQueryWord(queryLower);
 
     for (const ev of rawEvents) {
       const summaryLower = (ev.summary || "").toLowerCase();
@@ -282,6 +294,102 @@ export class SessionRecallEngine {
   }
 }
 
+export async function searchAcrossSessions(
+  entries: DiscoveredSessionEntry[],
+  options: SessionQueryOptions,
+  currentSessionManager?: LineageSessionManagerLike,
+): Promise<SessionQueryResult> {
+  if (entries.length === 0) {
+    return { cards: [], totalMatches: 0 };
+  }
+
+  // 1. Direct line-level zoom across candidate sessions
+  if (typeof options.zoomTurn === "number" && Number.isInteger(options.zoomTurn)) {
+    for (const entry of entries) {
+      const mgr = entry.origin === "current" ? currentSessionManager : undefined;
+      const res = await entry.instances.engine.search(options, mgr);
+      if (res.zoom) {
+        res.zoom.sessionId = entry.sessionId;
+        res.zoom.sessionShortId = entry.shortId;
+        res.zoom.sessionOrigin = entry.origin;
+        res.zoom.workspaceLabel = entry.workspaceLabel;
+        res.zoom.sourceMemoryRef = entry.sourceMemoryRef;
+        return res;
+      }
+    }
+    return { cards: [], totalMatches: 0 };
+  }
+
+  // 2. Multi-session card search
+  const limit = Math.max(1, options.limit ?? 5);
+  const allCards: SessionCardHit[] = [];
+
+  for (const entry of entries) {
+    const mgr = entry.origin === "current" ? currentSessionManager : undefined;
+    const subResult = await entry.instances.engine.search(
+      {
+        ...options,
+        leafId: entry.origin === "current" ? options.leafId : undefined,
+        limit,
+      },
+      mgr,
+    );
+    for (const card of subResult.cards) {
+      const originBoost = entry.origin === "current" ? 0.05 : 0;
+      allCards.push({
+        ...card,
+        score: Number((card.score + originBoost).toFixed(4)),
+        sessionId: entry.sessionId,
+        sessionShortId: entry.shortId,
+        sessionOrigin: entry.origin,
+        workspaceLabel: entry.workspaceLabel,
+        sourceMemoryRef: entry.sourceMemoryRef,
+      });
+    }
+  }
+
+  allCards.sort((a, b) => b.score - a.score);
+  const topCards = allCards.slice(0, limit).map((c, idx) => ({
+    ...c,
+    ref: idx + 1,
+  }));
+
+  return {
+    cards: topCards,
+    totalMatches: allCards.length,
+  };
+}
+
+function formatCardProvenancePrefix(c: SessionCardHit): string {
+  if (!c.sessionOrigin) {
+    return `Turn ${c.turnIndex}`;
+  }
+  if (c.sessionOrigin === "current") {
+    return `Current Session · Turn ${c.turnIndex}`;
+  }
+  if (c.sessionOrigin === "parallel") {
+    const shortId = c.sessionShortId || (c.sessionId ? c.sessionId.slice(0, 8) : "peer");
+    const slotPart = c.workspaceLabel ? ` (${c.workspaceLabel})` : "";
+    return `Parallel Session ${shortId}${slotPart} · Turn ${c.turnIndex}`;
+  }
+  const shortId = c.sessionShortId || (c.sessionId ? c.sessionId.slice(0, 8) : "hist");
+  const refPart = c.sourceMemoryRef !== undefined ? ` (via Ref ${c.sourceMemoryRef})` : "";
+  return `Session ${shortId}${refPart} · Turn ${c.turnIndex}`;
+}
+
+function formatCardZoomCommand(c: SessionCardHit): string {
+  const toolIdxParam = c.toolIndex !== undefined ? `, toolIndex: ${c.toolIndex}` : "";
+  const endLine = Math.min(Math.max(1, c.lineCount), 50);
+  if (c.sessionOrigin === "persistent-ref" && c.sourceMemoryRef !== undefined) {
+    return `memory_recall({ zoomRef: ${c.sourceMemoryRef}, zoomTurn: ${c.turnIndex}${toolIdxParam}, lineRange: [1, ${endLine}] })`;
+  }
+  if (c.sessionOrigin === "parallel" && (c.sessionShortId || c.sessionId)) {
+    const targetId = c.sessionShortId || c.sessionId!;
+    return `memory_recall({ session: "${targetId}", zoomTurn: ${c.turnIndex}${toolIdxParam}, lineRange: [1, ${endLine}] })`;
+  }
+  return `memory_recall({ zoomTurn: ${c.turnIndex}${toolIdxParam}, lineRange: [1, ${endLine}] })`;
+}
+
 export function formatSessionCards(cards: SessionCardHit[], query?: string): string {
   if (cards.length === 0) {
     return query ? `No session events found matching "${query}".` : "No session events recorded.";
@@ -297,7 +405,8 @@ export function formatSessionCards(cards: SessionCardHit[], query?: string): str
       ? (c.exitCode === 0 ? "SUCCESS (0)" : `FAILED (Exit ${c.exitCode})`)
       : undefined;
 
-    lines.push(`[Turn ${c.turnIndex} · ${c.speaker}${statusLabel ? ` · ${statusLabel}` : ""}]`);
+    const headPrefix = formatCardProvenancePrefix(c);
+    lines.push(`[${headPrefix} · ${c.speaker}${statusLabel ? ` · ${statusLabel}` : ""}]`);
     lines.push(`  ├─ Summary: ${c.summary}`);
     if (statusLabel) {
       lines.push(`  ├─ Status: ${statusLabel}`);
@@ -308,8 +417,7 @@ export function formatSessionCards(cards: SessionCardHit[], query?: string): str
     if (c.filesTouched && c.filesTouched.length > 0) {
       lines.push(`  ├─ Files: ${c.filesTouched.join(", ")}`);
     }
-    const toolIdxParam = c.toolIndex !== undefined ? `, toolIndex: ${c.toolIndex}` : "";
-    lines.push(`  └─ Zoom: memory_recall({ zoomTurn: ${c.turnIndex}${toolIdxParam}, lineRange: [1, ${Math.min(Math.max(1, c.lineCount), 50)}] })`);
+    lines.push(`  └─ Zoom: ${formatCardZoomCommand(c)}`);
     lines.push("");
   }
 
@@ -319,10 +427,21 @@ export function formatSessionCards(cards: SessionCardHit[], query?: string): str
 
 export function formatSessionZoom(zoom: SessionZoomHit): string {
   const toolSuffix = zoom.toolName ? ` · Tool: ${zoom.toolName}` : "";
-  const header = `=== Turn ${zoom.turnIndex}${toolSuffix} (Lines ${zoom.startLine}-${zoom.endLine} of ${zoom.totalLines}) ===\n`;
+  const header = `=== Turn ${zoom.turnIndex}${toolSuffix} (Lines ${zoom.startLine}-${zoom.endLine} of ${zoom.totalLines}) ===`;
+  let provenanceLine = "";
+  if (zoom.sessionOrigin === "parallel") {
+    const shortId = zoom.sessionShortId || (zoom.sessionId ? zoom.sessionId.slice(0, 8) : "peer");
+    const slotPart = zoom.workspaceLabel ? ` (${zoom.workspaceLabel})` : "";
+    provenanceLine = `\nSession: ${shortId}${slotPart} [parallel]`;
+  } else if (zoom.sessionOrigin === "persistent-ref" || zoom.sourceMemoryRef !== undefined) {
+    const shortId = zoom.sessionShortId || (zoom.sessionId ? zoom.sessionId.slice(0, 8) : "hist");
+    const slotPart = zoom.workspaceLabel ? ` (${zoom.workspaceLabel})` : "";
+    const refPart = zoom.sourceMemoryRef !== undefined ? ` (via Ref ${zoom.sourceMemoryRef})` : "";
+    provenanceLine = `\nSession: ${shortId}${slotPart}${refPart} [persistent-ref]`;
+  }
 
   const renderedLines = zoom.lines.map((l) => `${l.lineNum} | ${l.text}`).join("\n");
-  return `${header}\n${renderedLines}\n\nTip: Adjust lineRange: [${zoom.startLine}, ${zoom.endLine}] to slice surrounding lines.`;
+  return `${header}${provenanceLine}\n\n${renderedLines}\n\nTip: Adjust lineRange: [${zoom.startLine}, ${zoom.endLine}] to slice surrounding lines.`;
 }
 
 export function formatUnifiedRecallOutput(result: SessionQueryResult, query?: string): string {

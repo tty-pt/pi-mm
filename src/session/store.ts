@@ -1,12 +1,14 @@
 import { mkdir } from "node:fs/promises";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   SessionTurnEvent,
   SessionStoreOptions,
   SessionZoomHit,
+  SessionMetadata,
 } from "./types.ts";
-import type { LineageSessionManagerLike, SessionLineageTracker } from "./lineage.ts";
+import type { LineageSessionManagerLike, SessionLineageTracker, SessionBranchEntry } from "./lineage.ts";
 import {
   encodeSessionPayload,
   decodeSessionPayload,
@@ -24,14 +26,211 @@ import {
 import { resolveCormBin, resolveAxisPath, runtimeEnv } from "../config.ts";
 import { debugLog } from "../debug.ts";
 
-interface SessionPersistedManifest {
+export interface SessionPersistedManifest {
   version: number;
   nextRef: number;
+  meta?: SessionMetadata;
   events: Array<{ ref: number; event: SessionTurnEvent; lineOffsets: number[] }>;
 }
 
 const SESSION_MANIFEST_VERSION = 1;
-const SYNTHETIC_ACP_LINE_RE = /^\[Antigravity tool(?: update)?: [^\n]+\]$/gm;
+
+const SHELL_TOOL_NAMES = new Set([
+  "bash",
+  "sh",
+  "exec",
+  "run_command",
+  "quest_run_test",
+  "test",
+  "pi_bash",
+  "pi_quest_run_test",
+]);
+
+const ERROR_KEYWORDS = [
+  "fail",
+  "failed",
+  "error",
+  "fatal",
+  "panic",
+  "undefined",
+  "unresolved",
+  "exception",
+];
+
+function isWordChar(ch: string): boolean {
+  if (!ch) return false;
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95
+  );
+}
+
+function containsWholeKeyword(haystackLower: string, keyword: string): boolean {
+  let idx = haystackLower.indexOf(keyword);
+  while (idx !== -1) {
+    const before = idx > 0 ? haystackLower[idx - 1] : "";
+    const after = idx + keyword.length < haystackLower.length ? haystackLower[idx + keyword.length] : "";
+    if (!isWordChar(before) && !isWordChar(after)) {
+      if (keyword === "failed") {
+        const prefix = haystackLower.slice(Math.max(0, idx - 4), idx).trim();
+        if (prefix === "0") {
+          idx = haystackLower.indexOf(keyword, idx + keyword.length);
+          continue;
+        }
+      }
+      return true;
+    }
+    idx = haystackLower.indexOf(keyword, idx + keyword.length);
+  }
+  return false;
+}
+
+function lineHasErrorKeyword(line: string): boolean {
+  const lower = line.toLowerCase();
+  for (const kw of ERROR_KEYWORDS) {
+    if (containsWholeKeyword(lower, kw)) return true;
+  }
+  return false;
+}
+
+export function extractWorkspaceLabel(cwd?: string): string | undefined {
+  if (!cwd || typeof cwd !== "string") return undefined;
+  const parts = cwd.split("/").filter(Boolean);
+  if (parts.length === 0) return undefined;
+  for (let i = 0; i < parts.length - 2; i++) {
+    if (parts[i] === ".pi" && parts[i + 1] === "scratch" && parts[i + 2].startsWith("slot-")) {
+      return parts[i + 2];
+    }
+  }
+  return parts[parts.length - 1];
+}
+
+export function resolvePrimaryRepoRootFromSlot(cwd: string): string | null {
+  const isAbs = cwd.startsWith("/");
+  const parts = cwd.split("/").filter(Boolean);
+  for (let i = 0; i < parts.length - 2; i++) {
+    if (parts[i] === ".pi" && parts[i + 1] === "scratch" && parts[i + 2].startsWith("slot-")) {
+      const prefix = parts.slice(0, i).join("/");
+      const candidateRoot = isAbs ? `/${prefix}` : prefix || ".";
+      if (existsSync(join(candidateRoot, ".pi"))) {
+        return candidateRoot;
+      }
+    }
+  }
+  return null;
+}
+
+function isTestRunnerDefaultCwd(resolvedCwd: string): boolean {
+  const defaultCwd = resolveRuntimeCwd();
+  if (resolvedCwd !== defaultCwd) return false;
+  if (typeof Deno !== "undefined" && typeof Deno.mainModule === "string") {
+    if (
+      Deno.mainModule.endsWith(".test.ts") ||
+      Deno.mainModule.includes("/tests/") ||
+      Deno.mainModule.includes("/test/")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resolveSharedSessionCacheRoot(cwd?: string): string {
+  const resolved = resolveRuntimeCwd(cwd);
+  if (isTestRunnerDefaultCwd(resolved)) {
+    const pid = typeof process !== "undefined" ? process.pid : 0;
+    return join(tmpdir(), `pi-mm-test-sessions-${pid}`, ".pi", "cache", "sessions");
+  }
+  const primaryRoot = resolvePrimaryRepoRootFromSlot(resolved);
+  if (primaryRoot) {
+    return join(primaryRoot, ".pi", "cache", "sessions");
+  }
+  return join(resolved, ".pi", "cache", "sessions");
+}
+
+export function listCandidateSessionCacheRoots(cwd?: string): string[] {
+  const resolved = resolveRuntimeCwd(cwd);
+  if (isTestRunnerDefaultCwd(resolved)) {
+    return [resolveSharedSessionCacheRoot(resolved)];
+  }
+  const primaryRoot = resolvePrimaryRepoRootFromSlot(resolved) ?? resolved;
+  const roots: string[] = [];
+  const seen = new Set<string>();
+
+  const addRoot = (dir: string) => {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      roots.push(dir);
+    }
+  };
+
+  addRoot(resolveSharedSessionCacheRoot(resolved));
+  addRoot(join(resolved, ".pi", "cache", "sessions"));
+
+  const scratchDir = join(primaryRoot, ".pi", "scratch");
+  if (existsSync(scratchDir)) {
+    try {
+      const entries = readdirSync(scratchDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.startsWith("slot-")) {
+          const slotCache = join(scratchDir, entry.name, ".pi", "cache", "sessions");
+          if (existsSync(slotCache)) {
+            addRoot(slotCache);
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable scratch dir
+    }
+  }
+
+  return roots;
+}
+
+function formatHydratedToolSummary(
+  toolName: string,
+  toolArgs: Record<string, unknown> | undefined,
+  rawOutput: string,
+  exitCode: number | undefined,
+  errorSnippet: string | undefined,
+): string {
+  const statusStr = exitCode !== undefined && exitCode !== 0 ? ` (exit ${exitCode})` : "";
+  const cmd = typeof toolArgs?.["command"] === "string"
+    ? toolArgs["command"].trim().split("\n")[0].slice(0, 120)
+    : typeof toolArgs?.["CommandLine"] === "string"
+    ? toolArgs["CommandLine"].trim().split("\n")[0].slice(0, 120)
+    : undefined;
+  const pathArg = typeof toolArgs?.["path"] === "string"
+    ? toolArgs["path"]
+    : typeof toolArgs?.["file"] === "string"
+    ? toolArgs["file"]
+    : typeof toolArgs?.["TargetFile"] === "string"
+    ? toolArgs["TargetFile"]
+    : typeof toolArgs?.["AbsolutePath"] === "string"
+    ? toolArgs["AbsolutePath"]
+    : undefined;
+
+  let base = `${toolName}${statusStr}`;
+  if (cmd) {
+    base += `: ${cmd}`;
+  } else if (pathArg) {
+    base += `: ${pathArg}`;
+  } else {
+    const firstOut = rawOutput.split("\n").map((l) => l.trim()).find(Boolean) || "";
+    if (firstOut) {
+      base += `: ${firstOut.slice(0, 120)}`;
+    }
+  }
+
+  if (errorSnippet && !base.includes(errorSnippet.slice(0, 40))) {
+    base += ` -> ${errorSnippet.slice(0, 100)}`;
+  }
+
+  return base.length > 200 ? `${base.slice(0, 197)}...` : base;
+}
 
 export class SessionStore {
   readonly sessionId: string;
@@ -51,6 +250,12 @@ export class SessionStore {
   private readonly inFlightWrites = new Set<Promise<void>>();
   private initialized = false;
   private loadedFromDisk = false;
+  private lastLoadedMtimeMs = -1;
+  private lastLoadedSize = -1;
+  private metaCwd?: string;
+  private metaWorkspaceLabel?: string;
+  private metaSessionFile?: string;
+  private attachedTracker?: SessionLineageTracker;
 
   private readonly options: SessionStoreOptions;
 
@@ -74,7 +279,10 @@ export class SessionStore {
     this.options = options;
     this.sessionId = options.sessionId;
     const cwd = resolveRuntimeCwd(options.cwd);
-    this.sessionDir = options.sessionDir ?? join(cwd, ".pi", "cache", "sessions", this.sessionId);
+    this.metaCwd = options.cwd || cwd;
+    this.metaWorkspaceLabel = options.workspaceLabel || extractWorkspaceLabel(this.metaCwd);
+    this.metaSessionFile = options.sessionFile;
+    this.sessionDir = options.sessionDir ?? join(resolveSharedSessionCacheRoot(cwd), this.sessionId);
     this.manifestPath = join(this.sessionDir, "events.json");
 
     // Resolve corm and axes
@@ -110,10 +318,69 @@ export class SessionStore {
     }
 
     this.runner = customRunner ?? createDefaultRunner();
-    this.loadEventsFromDisk();
+    this.refreshFromDiskIfNeeded();
+  }
+
+  attachTracker(tracker: SessionLineageTracker): void {
+    this.attachedTracker = tracker;
+    for (const ev of this.eventsByRef.values()) {
+      if (ev.entryId) {
+        tracker.addEntry(ev.entryId, ev.parentId);
+      }
+    }
+  }
+
+  setSessionFile(sessionFile?: string): void {
+    if (sessionFile && sessionFile.trim()) {
+      this.metaSessionFile = sessionFile.trim();
+    }
+  }
+
+  setWorkspaceCwd(cwd?: string): void {
+    if (cwd && cwd.trim()) {
+      this.metaCwd = cwd.trim();
+      this.metaWorkspaceLabel = extractWorkspaceLabel(this.metaCwd) ?? this.metaWorkspaceLabel;
+    }
+  }
+
+  getMetadata(): SessionMetadata {
+    this.refreshFromDiskIfNeeded();
+    let startedAt = "";
+    let updatedAt = "";
+    let maxTurn = 0;
+    let firstUserPrompt: string | undefined;
+
+    for (const ev of this.eventsByRef.values()) {
+      if (ev.timestamp) {
+        if (!startedAt || ev.timestamp < startedAt) startedAt = ev.timestamp;
+        if (!updatedAt || ev.timestamp > updatedAt) updatedAt = ev.timestamp;
+      }
+      if (ev.turnIndex > maxTurn) maxTurn = ev.turnIndex;
+      if (firstUserPrompt === undefined && ev.role === "user" && ev.text) {
+        const clean = ev.text.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+        if (clean) {
+          firstUserPrompt = clean.length > 120 ? `${clean.slice(0, 117)}...` : clean;
+        }
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    return {
+      sessionId: this.sessionId,
+      shortId: this.sessionId.slice(0, 8),
+      cwd: this.metaCwd,
+      workspaceLabel: this.metaWorkspaceLabel || extractWorkspaceLabel(this.metaCwd),
+      sessionFile: this.metaSessionFile,
+      startedAt: startedAt || nowIso,
+      updatedAt: updatedAt || startedAt || nowIso,
+      turnCount: maxTurn,
+      eventCount: this.eventsByRef.size,
+      firstUserPrompt,
+    };
   }
 
   getMaxTurnIndex(): number {
+    this.refreshFromDiskIfNeeded();
     let maxTurn = 0;
     for (const ev of this.eventsByRef.values()) {
       if (ev.turnIndex > maxTurn) maxTurn = ev.turnIndex;
@@ -127,6 +394,7 @@ export class SessionStore {
     toolCallId?: string,
     toolName?: string,
   ): { ref: number; event: SessionTurnEvent } | null {
+    this.refreshFromDiskIfNeeded();
     const normText = text.trim();
     for (const [ref, ev] of this.eventsByRef.entries()) {
       if (toolCallId && ev.id === toolCallId) {
@@ -152,17 +420,49 @@ export class SessionStore {
     if (parentId) {
       ev.parentId = parentId;
     }
+    if (this.attachedTracker) {
+      this.attachedTracker.addEntry(entryId, parentId);
+    }
   }
 
-  private loadEventsFromDisk(): void {
-    if (this.loadedFromDisk) return;
-    this.loadedFromDisk = true;
-    if (!existsSync(this.manifestPath)) return;
+  refreshFromDiskIfNeeded(tracker?: SessionLineageTracker): boolean {
+    if (tracker) {
+      this.attachedTracker = tracker;
+    }
+    if (!existsSync(this.manifestPath)) return false;
     try {
+      const st = statSync(this.manifestPath);
+      if (
+        this.loadedFromDisk &&
+        st.mtimeMs === this.lastLoadedMtimeMs &&
+        st.size === this.lastLoadedSize
+      ) {
+        return false;
+      }
       const raw = readFileSync(this.manifestPath, "utf-8");
       const parsed = JSON.parse(raw) as SessionPersistedManifest;
-      if (!parsed || parsed.version !== SESSION_MANIFEST_VERSION || !Array.isArray(parsed.events)) return;
+      if (!parsed || parsed.version !== SESSION_MANIFEST_VERSION || !Array.isArray(parsed.events)) {
+        return false;
+      }
+
+      this.loadedFromDisk = true;
+      this.lastLoadedMtimeMs = st.mtimeMs;
+      this.lastLoadedSize = st.size;
+
+      if (parsed.meta) {
+        if (parsed.meta.cwd) this.metaCwd = parsed.meta.cwd;
+        if (parsed.meta.workspaceLabel) {
+          this.metaWorkspaceLabel = parsed.meta.workspaceLabel;
+        }
+        if (parsed.meta.sessionFile && !this.metaSessionFile) {
+          this.metaSessionFile = parsed.meta.sessionFile;
+        }
+      }
+
       this.nextRef = Math.max(this.nextRef, parsed.nextRef || 1);
+      let addedAny = false;
+      const activeTracker = tracker ?? this.attachedTracker;
+
       for (const item of parsed.events) {
         if (!item || typeof item.ref !== "number" || !item.event) continue;
         const ev = item.event;
@@ -171,9 +471,16 @@ export class SessionStore {
           if (!cleaned && !ev.thinking) continue;
           ev.text = cleaned;
         }
+        if (this.eventsByRef.has(item.ref)) {
+          const existing = this.eventsByRef.get(item.ref)!;
+          if (ev.entryId && existing.entryId !== ev.entryId) {
+            this.aliasEntryId(item.ref, ev.entryId, ev.parentId);
+          }
+          continue;
+        }
         // Skip previously persisted duplicate hydrated entries if an earlier live event already matches
         if (ev.id.startsWith("ev-hydrated-")) {
-          const dup = this.findMatchingEvent(ev.role, ev.text || "", undefined, ev.toolName);
+          const dup = this.findMatchingEventInMemory(ev.role, ev.text || "", undefined, ev.toolName);
           if (dup) {
             this.aliasEntryId(dup.ref, ev.entryId, ev.parentId);
             continue;
@@ -183,17 +490,45 @@ export class SessionStore {
         this.lineOffsetsByRef.set(item.ref, item.lineOffsets ?? computeLineOffsets(ev.text || ""));
         if (ev.entryId) {
           this.eventsByEntryId.set(ev.entryId, ev);
+          if (activeTracker) {
+            activeTracker.addEntry(ev.entryId, ev.parentId);
+          }
         }
         if (item.ref >= this.nextRef) this.nextRef = item.ref + 1;
+        addedAny = true;
       }
+      return addedAny;
     } catch {
-      // Ignore corrupt cache
+      // Ignore corrupt or concurrently written cache
+      return false;
     }
+  }
+
+  private findMatchingEventInMemory(
+    role: SessionTurnEvent["role"],
+    text: string,
+    toolCallId?: string,
+    toolName?: string,
+  ): { ref: number; event: SessionTurnEvent } | null {
+    const normText = text.trim();
+    for (const [ref, ev] of this.eventsByRef.entries()) {
+      if (toolCallId && ev.id === toolCallId) {
+        return { ref, event: ev };
+      }
+      if (ev.role !== role) continue;
+      if (role === "tool" && toolName && ev.toolName && ev.toolName !== toolName) continue;
+      if (normText && (ev.text || "").trim() === normText) {
+        return { ref, event: ev };
+      }
+    }
+    return null;
   }
 
   private saveEventsToDisk(): void {
     try {
-      if (!existsSync(this.sessionDir)) return;
+      if (!existsSync(this.sessionDir)) {
+        mkdirSync(this.sessionDir, { recursive: true });
+      }
       const events: Array<{ ref: number; event: SessionTurnEvent; lineOffsets: number[] }> = [];
       for (const [ref, event] of this.eventsByRef.entries()) {
         events.push({
@@ -205,38 +540,106 @@ export class SessionStore {
       const manifest: SessionPersistedManifest = {
         version: SESSION_MANIFEST_VERSION,
         nextRef: this.nextRef,
+        meta: this.getMetadataSnapshot(),
         events,
       };
       const tmpPath = `${this.manifestPath}.tmp.${process.pid}`;
       writeFileSync(tmpPath, JSON.stringify(manifest), "utf-8");
       renameSync(tmpPath, this.manifestPath);
+      try {
+        const st = statSync(this.manifestPath);
+        this.lastLoadedMtimeMs = st.mtimeMs;
+        this.lastLoadedSize = st.size;
+        this.loadedFromDisk = true;
+      } catch {
+        // Ignore stat error
+      }
     } catch {
       // Best-effort cache write
     }
   }
 
+  private getMetadataSnapshot(): SessionMetadata {
+    let startedAt = "";
+    let updatedAt = "";
+    let maxTurn = 0;
+    let firstUserPrompt: string | undefined;
+
+    for (const ev of this.eventsByRef.values()) {
+      if (ev.timestamp) {
+        if (!startedAt || ev.timestamp < startedAt) startedAt = ev.timestamp;
+        if (!updatedAt || ev.timestamp > updatedAt) updatedAt = ev.timestamp;
+      }
+      if (ev.turnIndex > maxTurn) maxTurn = ev.turnIndex;
+      if (firstUserPrompt === undefined && ev.role === "user" && ev.text) {
+        const clean = ev.text.split("\n").map((l) => l.trim()).filter(Boolean).join(" ");
+        if (clean) {
+          firstUserPrompt = clean.length > 120 ? `${clean.slice(0, 117)}...` : clean;
+        }
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    return {
+      sessionId: this.sessionId,
+      shortId: this.sessionId.slice(0, 8),
+      cwd: this.metaCwd,
+      workspaceLabel: this.metaWorkspaceLabel || extractWorkspaceLabel(this.metaCwd),
+      sessionFile: this.metaSessionFile,
+      startedAt: startedAt || nowIso,
+      updatedAt: updatedAt || startedAt || nowIso,
+      turnCount: maxTurn,
+      eventCount: this.eventsByRef.size,
+      firstUserPrompt,
+    };
+  }
+
   /**
-   * Hydrates missing session events from Pi's sessionManager branch/entries (e.g. after session restart or tree navigation).
+   * Hydrates missing session events from raw Pi branch/session entries (in-memory or parsed from .jsonl).
    */
-  hydrateFromSessionManager(
-    sessionManager?: LineageSessionManagerLike,
+  hydrateFromRawEntries(
+    rawEntries: SessionBranchEntry[],
     tracker?: SessionLineageTracker,
-  ): void {
-    if (!sessionManager) return;
-    const rawEntries = sessionManager.getEntries?.() || sessionManager.getBranch?.() || [];
-    if (!Array.isArray(rawEntries) || rawEntries.length === 0) return;
+  ): boolean {
+    if (!Array.isArray(rawEntries) || rawEntries.length === 0) return false;
+    this.refreshFromDiskIfNeeded(tracker);
+    const activeTracker = tracker ?? this.attachedTracker;
 
     let turnIdx = this.getMaxTurnIndex();
     let added = false;
+    const pendingToolCalls = new Map<string, { name: string; args?: Record<string, unknown> }>();
 
     for (const entry of rawEntries) {
       if (!entry || typeof entry !== "object") continue;
       const entryId = entry.id;
-      const parentId = entry.parentId;
-      if (entryId && tracker) {
-        tracker.addEntry(entryId, parentId);
+      const parentId = entry.parentId ?? undefined;
+      if (entryId && activeTracker) {
+        activeTracker.addEntry(entryId, parentId);
       }
       if (!entry.message || (entry.type && entry.type !== "message")) continue;
+
+      // Always collect toolCall definitions from assistant messages even if entry was already seen
+      if (Array.isArray(entry.message.content)) {
+        for (const p of entry.message.content) {
+          if (typeof p === "object" && p !== null) {
+            const part = p as {
+              type?: string;
+              id?: string;
+              name?: string;
+              arguments?: Record<string, unknown>;
+              input?: Record<string, unknown>;
+              args?: Record<string, unknown>;
+            };
+            if ((part.type === "toolCall" || part.type === "tool_use") && part.id && part.name) {
+              pendingToolCalls.set(part.id, {
+                name: part.name,
+                args: part.arguments ?? part.input ?? part.args,
+              });
+            }
+          }
+        }
+      }
+
       if (entryId && this.eventsByEntryId.has(entryId)) {
         const existingByEntry = this.eventsByEntryId.get(entryId)!;
         if (existingByEntry.turnIndex > turnIdx) turnIdx = existingByEntry.turnIndex;
@@ -275,7 +678,20 @@ export class SessionStore {
       let role: "user" | "assistant" | "tool" = "user";
       let speaker = "User";
       let toolName: string | undefined;
+      let toolArgs: Record<string, unknown> | undefined;
+      let filesTouched: string[] | undefined;
       let exitCode: number | undefined;
+      let errorSnippet: string | undefined;
+
+      const msgAny = entry.message as {
+        role?: string;
+        toolName?: string;
+        toolCallId?: string;
+        isError?: boolean;
+        input?: Record<string, unknown>;
+        args?: Record<string, unknown>;
+        arguments?: Record<string, unknown>;
+      };
 
       if (roleRaw === "user") {
         role = "user";
@@ -285,18 +701,49 @@ export class SessionStore {
         speaker = "Assistant";
       } else if (roleRaw === "tool" || roleRaw === "toolResult") {
         role = "tool";
-        toolName = entry.message.toolName || "tool";
+        const callInfo = msgAny.toolCallId ? pendingToolCalls.get(msgAny.toolCallId) : undefined;
+        toolName = msgAny.toolName || callInfo?.name || "tool";
         speaker = toolName;
-        if (toolName === "memory_recall" || toolName === "memory_record" || toolName === "memory_review") {
+        if (
+          toolName === "memory_recall" ||
+          toolName === "memory_record" ||
+          toolName === "memory_review" ||
+          toolName === "pi_memory_recall" ||
+          toolName === "pi_memory_record" ||
+          toolName === "pi_memory_review"
+        ) {
           continue;
         }
-        exitCode = entry.message.isError ? 1 : 0;
+        toolArgs = msgAny.input ?? msgAny.args ?? msgAny.arguments ?? callInfo?.args;
+        const pathVal = typeof toolArgs?.["path"] === "string"
+          ? toolArgs["path"]
+          : typeof toolArgs?.["file"] === "string"
+          ? toolArgs["file"]
+          : typeof toolArgs?.["TargetFile"] === "string"
+          ? toolArgs["TargetFile"]
+          : typeof toolArgs?.["AbsolutePath"] === "string"
+          ? toolArgs["AbsolutePath"]
+          : undefined;
+        if (pathVal) {
+          filesTouched = [pathVal];
+        }
+
+        const isShellOrTest = SHELL_TOOL_NAMES.has(toolName.toLowerCase());
+        const allOutLines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+        const errLines = isShellOrTest || msgAny.isError
+          ? allOutLines.filter((l) => lineHasErrorKeyword(l))
+          : [];
+        const failed = Boolean(msgAny.isError) || (isShellOrTest && errLines.length > 0);
+        exitCode = failed ? 1 : 0;
+        if (failed) {
+          errorSnippet = (errLines[0] || allOutLines[allOutLines.length - 1])?.slice(0, 150);
+        }
       } else {
         continue;
       }
 
       // Deduplicate against live events recorded via SessionSink
-      const existingMatch = this.findMatchingEvent(role, text, entry.message.toolCallId, toolName);
+      const existingMatch = this.findMatchingEventInMemory(role, text, msgAny.toolCallId, toolName);
       if (existingMatch) {
         if (entryId) {
           this.aliasEntryId(existingMatch.ref, entryId, parentId);
@@ -314,18 +761,25 @@ export class SessionStore {
         turnIdx = 1;
       }
 
-      const firstLine = (text || thinking || "").split("\n")[0] || "";
-      const summary = firstLine.length > 200 ? `${firstLine.slice(0, 197)}...` : firstLine;
+      const effectiveText = text || (thinking ? `[Thinking]\n${thinking}` : "");
+      let summary: string;
+      if (role === "tool" && toolName) {
+        summary = formatHydratedToolSummary(toolName, toolArgs, effectiveText, exitCode, errorSnippet);
+      } else {
+        const firstLine = (text || thinking || "").split("\n")[0] || "";
+        summary = firstLine.length > 200 ? `${firstLine.slice(0, 197)}...` : firstLine;
+      }
+
       const eId = entryId || `hydrated-${turnIdx}-${role}-${this.nextRef}`;
       if (this.eventsByEntryId.has(eId)) continue;
 
-      const lineOffsets = computeLineOffsets(text);
-      const lineCount = text.length === 0 ? 0 : text.split("\n").length;
-      const byteLength = new TextEncoder().encode(text).length;
+      const lineOffsets = computeLineOffsets(effectiveText);
+      const lineCount = effectiveText.length === 0 ? 0 : effectiveText.split("\n").length;
+      const byteLength = new TextEncoder().encode(effectiveText).length;
       const ref = this.nextRef++;
 
       const fullEvent: SessionTurnEvent = {
-        id: `ev-hydrated-${eId}`,
+        id: msgAny.toolCallId || `ev-hydrated-${eId}`,
         turnIndex: Math.max(1, turnIdx),
         entryId: eId,
         parentId,
@@ -333,10 +787,13 @@ export class SessionStore {
         role,
         speaker,
         summary,
-        text,
+        text: effectiveText,
         thinking,
         toolName,
+        toolArgs,
         exitCode,
+        filesTouched,
+        errorSnippet,
         lineCount,
         byteLength,
       };
@@ -349,6 +806,68 @@ export class SessionStore {
 
     if (added) {
       this.saveEventsToDisk();
+    }
+    return added;
+  }
+
+  /**
+   * Hydrates missing session events from Pi's sessionManager branch/entries (e.g. after session restart or tree navigation).
+   */
+  hydrateFromSessionManager(
+    sessionManager?: LineageSessionManagerLike,
+    tracker?: SessionLineageTracker,
+  ): void {
+    if (!sessionManager) return;
+    const rawEntries = sessionManager.getEntries?.() || sessionManager.getBranch?.() || [];
+    if (!Array.isArray(rawEntries) || rawEntries.length === 0) return;
+    this.hydrateFromRawEntries(rawEntries, tracker);
+  }
+
+  /**
+   * Hydrates full-fidelity session events directly from a Pi .jsonl transcript file on disk.
+   */
+  hydrateFromJsonlFile(
+    filePath: string,
+    tracker?: SessionLineageTracker,
+  ): boolean {
+    if (!filePath || !existsSync(filePath)) return false;
+    this.metaSessionFile = filePath;
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      const lines = raw.split("\n");
+      const entries: SessionBranchEntry[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("{")) continue;
+        try {
+          const obj = JSON.parse(trimmed) as Record<string, unknown>;
+          if (obj["type"] === "session") {
+            if (typeof obj["cwd"] === "string" && obj["cwd"].trim()) {
+              this.setWorkspaceCwd(obj["cwd"]);
+            }
+            continue;
+          }
+          if (obj["type"] === "message" || obj["message"]) {
+            entries.push(obj as unknown as SessionBranchEntry);
+          }
+        } catch {
+          // Ignore malformed individual JSONL line
+        }
+      }
+
+      if (entries.length === 0) return false;
+      const changed = this.hydrateFromRawEntries(entries, tracker);
+      if (!changed && !existsSync(this.manifestPath) && this.eventsByRef.size > 0) {
+        this.saveEventsToDisk();
+      }
+      return this.eventsByRef.size > 0;
+    } catch (err) {
+      debugLog("session", "Failed to hydrate SessionStore from JSONL file", {
+        filePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
     }
   }
 
@@ -382,7 +901,7 @@ export class SessionStore {
       if (!existsSync(this.sessionDir)) {
         await mkdir(this.sessionDir, { recursive: true });
       }
-      this.loadEventsFromDisk();
+      this.refreshFromDiskIfNeeded();
       this.initialized = true;
       debugLog("session", "SessionStore initialized with C multi-axis filespec", {
         sessionId: this.sessionId,
@@ -405,6 +924,7 @@ export class SessionStore {
    */
   async appendEvent(eventData: Omit<SessionTurnEvent, "lineCount" | "byteLength">): Promise<number> {
     await this.init();
+    this.refreshFromDiskIfNeeded();
 
     const rawText = eventData.text || "";
     const lineOffsets = computeLineOffsets(rawText);
@@ -461,6 +981,7 @@ export class SessionStore {
   }
 
   async getEvent(ref: number): Promise<SessionTurnEvent | null> {
+    this.refreshFromDiskIfNeeded();
     if (this.eventsByRef.has(ref)) {
       return this.eventsByRef.get(ref)!;
     }
@@ -494,14 +1015,17 @@ export class SessionStore {
   }
 
   getEventByEntryId(entryId: string): SessionTurnEvent | null {
+    this.refreshFromDiskIfNeeded();
     return this.eventsByEntryId.get(entryId) ?? null;
   }
 
   getAllEvents(): SessionTurnEvent[] {
+    this.refreshFromDiskIfNeeded();
     return Array.from(this.eventsByRef.values());
   }
 
   getEventCount(): number {
+    this.refreshFromDiskIfNeeded();
     return this.eventsByRef.size;
   }
 
@@ -562,6 +1086,7 @@ export class SessionStore {
    * Slices lines from an event's text payload using the line-offset jump table in O(1).
    */
   sliceLines(ref: number, range?: [number, number]): SessionZoomHit | null {
+    this.refreshFromDiskIfNeeded();
     const ev = this.eventsByRef.get(ref);
     if (!ev) return null;
 
@@ -609,6 +1134,7 @@ export class SessionStore {
   }
 
   getEventsByTurn(turnIndex: number): Array<{ ref: number; event: SessionTurnEvent }> {
+    this.refreshFromDiskIfNeeded();
     const results: Array<{ ref: number; event: SessionTurnEvent }> = [];
     for (const [ref, ev] of this.eventsByRef.entries()) {
       if (ev.turnIndex === turnIndex) {
@@ -623,6 +1149,9 @@ export class SessionStore {
     this.lineOffsetsByRef.clear();
     this.eventsByEntryId.clear();
     this.nextRef = 1;
+    this.lastLoadedMtimeMs = -1;
+    this.lastLoadedSize = -1;
+    this.loadedFromDisk = false;
     try {
       if (existsSync(this.manifestPath)) {
         unlinkSync(this.manifestPath);
@@ -634,7 +1163,28 @@ export class SessionStore {
 }
 
 export function cleanSyntheticText(text: string): string {
-  return text.replace(SYNTHETIC_ACP_LINE_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let emptyRun = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (
+      (trimmed.startsWith("[Antigravity tool: ") || trimmed.startsWith("[Antigravity tool update: ")) &&
+      trimmed.endsWith("]")
+    ) {
+      continue;
+    }
+    if (trimmed === "") {
+      emptyRun++;
+      if (emptyRun <= 1) {
+        kept.push("");
+      }
+    } else {
+      emptyRun = 0;
+      kept.push(line);
+    }
+  }
+  return kept.join("\n").trim();
 }
 
 export function resolveRuntimeCwd(explicitCwd?: string): string {

@@ -4,6 +4,31 @@
 
 export type SessionRole = "user" | "assistant" | "tool";
 
+export type SessionOriginKind = "current" | "parallel" | "persistent-ref";
+
+export interface SessionMetadata {
+  /** Full session identifier */
+  sessionId: string;
+  /** First 8 characters of sessionId for compact badges */
+  shortId: string;
+  /** Working directory associated with the session */
+  cwd?: string;
+  /** Short workspace or slot label (e.g. "slot-6" or "site") */
+  workspaceLabel?: string;
+  /** Path to native .jsonl transcript if known */
+  sessionFile?: string;
+  /** ISO timestamp of earliest event */
+  startedAt: string;
+  /** ISO timestamp of latest event */
+  updatedAt: string;
+  /** Maximum 1-based turn index in session */
+  turnCount: number;
+  /** Total number of recorded events */
+  eventCount: number;
+  /** Preview of Turn 1 user prompt (up to 120 chars) */
+  firstUserPrompt?: string;
+}
+
 export interface SessionTurnEvent {
   /** Unique ID of this session event */
   id: string;
@@ -48,6 +73,10 @@ export interface SessionStoreOptions {
   cwd?: string;
   /** Base directory for session cache; defaults to .pi/cache/sessions/<id> */
   sessionDir?: string;
+  /** Optional workspace or slot label */
+  workspaceLabel?: string;
+  /** Optional native .jsonl transcript file path */
+  sessionFile?: string;
   /** Path to corm binary */
   cormBin?: string;
   /** Path to external axis shared libraries */
@@ -103,6 +132,11 @@ export interface SessionCardHit {
   errorSnippet?: string;
   inspectRef: string;
   lineCount: number;
+  sessionId?: string;
+  sessionShortId?: string;
+  sessionOrigin?: SessionOriginKind;
+  workspaceLabel?: string;
+  sourceMemoryRef?: number;
 }
 
 export interface SessionZoomHit {
@@ -115,6 +149,11 @@ export interface SessionZoomHit {
   endLine: number;
   lines: Array<{ lineNum: number; text: string }>;
   rawContent: string;
+  sessionId?: string;
+  sessionShortId?: string;
+  sessionOrigin?: SessionOriginKind;
+  workspaceLabel?: string;
+  sourceMemoryRef?: number;
 }
 
 export interface SessionQueryResult {

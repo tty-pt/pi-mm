@@ -703,6 +703,11 @@ export async function distillQuestArchiveEvent(
   const lifecycle: LifecycleState = isCompleted ? (hasPassingTest ? "supported" : "tested") : "observed";
 
   const projectContext = extractReliableProjectContext(ctx);
+  const questSessionId = extractSessionId(ctx);
+  const questSessionFile = ctx?.sessionManager?.getSessionFile?.() ||
+    (typeof process !== "undefined" ? process.env?.["PI_SESSION_FILE"] : undefined) ||
+    (typeof Deno !== "undefined" ? Deno.env.get("PI_SESSION_FILE") : undefined);
+  const questLeafId = ctx?.sessionManager?.getLeafId?.();
 
   const episode: EpisodeRecord = {
     problem: objective,
@@ -711,6 +716,10 @@ export async function distillQuestArchiveEvent(
     findings: rawFindings.length > 0 ? rawFindings : undefined,
     diffs: modifiedFiles.length > 0 ? modifiedFiles : undefined,
     outcome: isCompleted ? "success" : "failure",
+    sessionId: questSessionId !== "default-session" ? questSessionId : undefined,
+    sessionFile: questSessionFile ?? undefined,
+    leafId: questLeafId ?? undefined,
+    toolCallId: event.toolCallId ?? undefined,
   };
 
   const summary = `Quest ${qid ? `${qid} ` : ""}(${kind}, ${difficulty}${isFailed ? " failed" : ""}): ${objective}`;
@@ -1813,6 +1822,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
               const firstFinding = response.trim().split("\n\n")[0].trim().slice(0, 300);
               const summary = `${prompt.slice(0, 100).trim()}: ${firstFinding.slice(0, 150)}`;
               const episodeContext = extractReliableProjectContext(ctx);
+              const discSessionFile = ctx?.sessionManager?.getSessionFile?.() ||
+                (typeof process !== "undefined" ? process.env?.["PI_SESSION_FILE"] : undefined) ||
+                (typeof Deno !== "undefined" ? Deno.env.get("PI_SESSION_FILE") : undefined);
+              const discLeafId = ctx?.sessionManager?.getLeafId?.();
               const l1Episode: MemoryEnvelope = {
                 level: "L1",
                 type: "episode",
@@ -1832,6 +1845,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                   ],
                   findings: [firstFinding],
                   outcome: "success",
+                  sessionId: sessionId !== "default-session" ? sessionId : undefined,
+                  sessionFile: discSessionFile ?? undefined,
+                  leafId: discLeafId ?? undefined,
+                  runId: activeConversationTurn.activeRunId,
                 },
               };
               const l1Payload = encodePayload(env.nowProvider().toISOString().slice(0, 10), l1Episode);
@@ -1963,8 +1980,8 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
         "  • Read symbol AST + callers/callees: { symbol: \"<name>\", file?: \"<path>\", neighbors?: \"both\" } (or { symbols: [\"...\"] })",
         "  • Call graph trace: { trace: \"<name>\", direction: \"inbound\" | \"outbound\" | \"both\", depth: 3 }",
         "  • Git diff impact: { diff: true, depth: 2 }",
-        "  • Session transcript recall: { scope: \"session\", query: \"<topic>\" } or { scope: \"session\", zoomTurn: <N> }",
-        "  • Persistent lore recall: { scope: \"persistent\", query: \"<topic>\" } or { zoomRef: <id> }",
+        "  • Session transcript recall: { scope: \"session\", query: \"<topic>\", session?: \"<id|slot|parallel|all>\" } or { scope: \"session\", zoomTurn: <N>, session?: \"<id|slot>\" }",
+        "  • Persistent lore recall: { scope: \"persistent\", query: \"<topic>\" } or { zoomRef: <id>, zoomTurn?: <N>, lineRange?: [s, e] }",
       ].join("\n");
     }
 

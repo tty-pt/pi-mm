@@ -370,6 +370,14 @@ async function autoL0ToL1(
         });
       }
 
+      const mergedEventIds = Array.from(
+        new Set([
+          ...(existingL1.envelope.episode?.eventIds || []),
+          ...group.flatMap((g) => g.envelope.episode?.eventIds || []),
+        ]),
+      );
+      const mergedToolCallId = existingL1.envelope.episode?.toolCallId || group[0].envelope.episode?.toolCallId;
+
       const successorEnvelope: MemoryEnvelope = {
         level: "L1",
         type: "investigation",
@@ -385,6 +393,8 @@ async function autoL0ToL1(
           approaches: mergedApproaches.length > 0 ? mergedApproaches : undefined,
           diffs: mergedDiffs.length > 0 ? mergedDiffs : undefined,
           outcome,
+          eventIds: mergedEventIds.length > 0 ? mergedEventIds : undefined,
+          toolCallId: mergedToolCallId,
           sessionId: existingL1.envelope.episode?.sessionId || group[0].envelope.episode?.sessionId,
           sessionFile: existingL1.envelope.episode?.sessionFile || group[0].envelope.episode?.sessionFile,
           leafId: group[group.length - 1].envelope.episode?.leafId || existingL1.envelope.episode?.leafId,
@@ -465,6 +475,9 @@ async function autoL0ToL1(
         continue;
       }
 
+      const groupEventIds = Array.from(new Set(group.flatMap((g) => g.envelope.episode?.eventIds || [])));
+      const groupToolCallId = group[0].envelope.episode?.toolCallId;
+
       const envl: MemoryEnvelope = {
         level: "L1",
         type: "investigation",
@@ -479,6 +492,8 @@ async function autoL0ToL1(
           approaches: allApproaches.length > 0 ? allApproaches : undefined,
           diffs: allDiffs.length > 0 ? allDiffs : undefined,
           outcome,
+          eventIds: groupEventIds.length > 0 ? groupEventIds : undefined,
+          toolCallId: groupToolCallId,
           sessionId: group[0].envelope.episode?.sessionId,
           sessionFile: group[0].envelope.episode?.sessionFile,
           leafId: group[group.length - 1].envelope.episode?.leafId,
