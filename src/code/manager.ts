@@ -138,8 +138,13 @@ export async function executeCodeRecallWithLore(
     setMmBusy(ctx, false);
   }
 
-  const loreTopic = codeOut.symbols[0]?.name || codeOpts.symbol || codeOpts.trace || codeOpts.query || codeOpts.file || "";
-  const loreLines = await collectLoreLines(env, loreTopic, ctx);
+  const shouldFuseLore =
+    codeOut.mode === "search" ||
+    (codeOut.mode === "symbol" && (!codeOpts.symbols || codeOpts.symbols.length <= 1));
+  const loreTopic = shouldFuseLore
+    ? (codeOut.symbols[0]?.name || codeOpts.symbol || codeOpts.query || codeOpts.file || "")
+    : "";
+  const loreLines = loreTopic ? await collectLoreLines(env, loreTopic, ctx) : [];
 
   let fullText = codeOut.rendered;
   if (loreLines.length > 0) {

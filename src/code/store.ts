@@ -22,7 +22,30 @@ import { debugLog } from "../debug.ts";
 
 const MANIFEST_VERSION = 2;
 const DEFAULT_MAX_FILES = 2500;
-const DEFAULT_SWEEP_THROTTLE_MS = 2000;
+const DEFAULT_SWEEP_THROTTLE_MS = 60000;
+const CORM_QUERY_TIMEOUT_MS = 1500;
+
+function symbolContentFingerprint(s: {
+  kind: string;
+  qualifiedName: string;
+  signature: string;
+  docComment?: string;
+  parentSymbol?: string;
+  routeMethod?: string;
+  routePath?: string;
+  rawCallees: string[];
+}): string {
+  return [
+    s.kind,
+    s.qualifiedName,
+    s.signature,
+    s.docComment ?? "",
+    s.parentSymbol ?? "",
+    s.routeMethod ?? "",
+    s.routePath ?? "",
+    s.rawCallees.join(","),
+  ].join("\x1f");
+}
 
 function langFamily(filePath: string): string {
   const dot = filePath.lastIndexOf(".");
@@ -195,16 +218,21 @@ export class CodeStore {
       this.symbolsByRef.clear();
 
       for (const f of parsed.files) {
+        f.mtimeMs = Math.trunc(f.mtimeMs);
         this.filesByPath.set(f.filePath, f);
         this.filePathById.set(f.fileId, f.filePath);
         if (f.fileId >= this.nextFileId) this.nextFileId = f.fileId + 1;
       }
       for (const s of parsed.symbols) {
+        s.mtimeMs = Math.trunc(s.mtimeMs);
         this.symbolsByRef.set(s.ref, s);
         if (s.ref >= this.nextRef) this.nextRef = s.ref + 1;
       }
       this.rebuildIndexesOnly();
       this.indexedOnce = this.filesByPath.size > 0;
+      if (this.indexedOnce) {
+        this.lastSweepMs = Date.now();
+      }
       return true;
     } catch (err) {
       debugLog("code", "Failed to load code manifest", { error: String(err) });
@@ -244,6 +272,7 @@ export class CodeStore {
   }
 
   async ensureIndexed(maxFiles = DEFAULT_MAX_FILES, forceSweep = false): Promise<{ scannedFiles: number; totalSymbols: number }> {
+    await this.init();
     const now = Date.now();
     if (this.indexedOnce && this.filesByPath.size > 0 && !forceSweep && (now - this.lastSweepMs) < this.sweepThrottleMs) {
       return { scannedFiles: 0, totalSymbols: this.symbolsByRef.size };
@@ -309,8 +338,9 @@ export class CodeStore {
     }
     if (!st.isFile() || st.size > 512 * 1024) return false;
 
+    const mtimeMs = Math.trunc(st.mtimeMs);
     const existing = this.filesByPath.get(relPath);
-    if (existing && existing.mtimeMs === st.mtimeMs && existing.size === st.size) return false;
+    if (existing && Math.trunc(existing.mtimeMs) === mtimeMs && existing.size === st.size) return false;
 
     let content = "";
     try {
@@ -319,7 +349,19 @@ export class CodeStore {
       return false;
     }
 
-    if (existing) this.removeFileSymbols(existing);
+    const oldByFingerprint = new Map<string, CodeSymbolRecord[]>();
+    const oldRefs = new Set<number>(existing?.symbolRefs ?? []);
+    if (existing) {
+      for (const ref of existing.symbolRefs) {
+        const oldSym = this.symbolsByRef.get(ref);
+        if (!oldSym) continue;
+        const fp = symbolContentFingerprint(oldSym);
+        const bucket = oldByFingerprint.get(fp);
+        if (bucket) bucket.push(oldSym);
+        else oldByFingerprint.set(fp, [oldSym]);
+      }
+    }
+
     const fileId = existing ? existing.fileId : this.nextFileId++;
     this.filePathById.set(fileId, relPath);
 
@@ -327,17 +369,40 @@ export class CodeStore {
     const symbolRefs: number[] = [];
 
     for (const s of scanned.symbols) {
-      const ref = this.nextRef++;
-      const record: CodeSymbolRecord = {
-        ...s, ref, fileId, mtimeMs: st.mtimeMs, callees: [], callers: [],
-      };
-      this.symbolsByRef.set(ref, record);
-      symbolRefs.push(ref);
-      if (this.persistToCorm) this.enqueueCormSymbolWrite(record);
+      const fp = symbolContentFingerprint(s);
+      const reusableBucket = oldByFingerprint.get(fp);
+      const reused = reusableBucket && reusableBucket.length > 0 ? reusableBucket.shift()! : undefined;
+
+      if (reused) {
+        oldRefs.delete(reused.ref);
+        const updatedRecord: CodeSymbolRecord = {
+          ...reused,
+          ...s,
+          ref: reused.ref,
+          fileId,
+          mtimeMs,
+          callees: [],
+          callers: [],
+        };
+        this.symbolsByRef.set(reused.ref, updatedRecord);
+        symbolRefs.push(reused.ref);
+      } else {
+        const ref = this.nextRef++;
+        const record: CodeSymbolRecord = {
+          ...s, ref, fileId, mtimeMs, callees: [], callers: [],
+        };
+        this.symbolsByRef.set(ref, record);
+        symbolRefs.push(ref);
+        if (this.persistToCorm) this.enqueueCormSymbolWrite(record);
+      }
+    }
+
+    if (oldRefs.size > 0) {
+      this.removeSymbolRefs(Array.from(oldRefs));
     }
 
     this.filesByPath.set(relPath, {
-      fileId, filePath: relPath, mtimeMs: st.mtimeMs, size: st.size,
+      fileId, filePath: relPath, mtimeMs, size: st.size,
       lineCount: scanned.lineCount, lineOffsets: scanned.lineOffsets,
       imports: scanned.imports, symbolRefs,
     });
@@ -355,8 +420,8 @@ export class CodeStore {
     next.finally(() => this.inFlightWrites.delete(next));
   }
 
-  private removeFileSymbols(entry: CodeFileManifestEntry): void {
-    for (const ref of entry.symbolRefs) {
+  private removeSymbolRefs(refs: number[]): void {
+    for (const ref of refs) {
       this.symbolsByRef.delete(ref);
       if (this.persistToCorm) {
         this.enqueueWriteOp(async () => {
@@ -367,6 +432,10 @@ export class CodeStore {
         });
       }
     }
+  }
+
+  private removeFileSymbols(entry: CodeFileManifestEntry): void {
+    this.removeSymbolRefs(entry.symbolRefs);
   }
 
   private async persistSymbolToCorm(record: CodeSymbolRecord): Promise<void> {
@@ -458,8 +527,11 @@ export class CodeStore {
         this.cormBin, this.filespec, "(lemma)", limit, this.axisPath, this.indexDir, this.extraEnv,
         ["--field=text", "--query=" + query],
       );
-      const res = await this.runner.run(inv);
-      if (res.code === 0 && res.stdout) return parseResultLines(res.stdout);
+      const res = await Promise.race([
+        this.runner.run(inv),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), CORM_QUERY_TIMEOUT_MS)),
+      ]);
+      if (res && res.code === 0 && res.stdout) return parseResultLines(res.stdout);
     } catch { /* fallback to in-memory */ }
     return [];
   }
@@ -472,8 +544,11 @@ export class CodeStore {
         this.cormBin, this.filespec, "(sepal)", limit, this.axisPath, this.indexDir, this.extraEnv,
         ["--field=text", "--query=" + query],
       );
-      const res = await this.runner.run(inv);
-      if (res.code === 0 && res.stdout) return parseResultLines(res.stdout);
+      const res = await Promise.race([
+        this.runner.run(inv),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), CORM_QUERY_TIMEOUT_MS)),
+      ]);
+      if (res && res.code === 0 && res.stdout) return parseResultLines(res.stdout);
     } catch { /* fallback to in-memory */ }
     return [];
   }

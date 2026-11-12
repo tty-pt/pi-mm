@@ -139,6 +139,37 @@ Deno.test("code_store_and_graph: incremental indexing, call graph trace, overvie
     assert.strictEqual(deltaIdx.totalSymbols, 4, "should have 2 symbols in db.ts + 2 in service.ts, and 0 from deleted handler.ts");
     assert.ok(storeReloaded.getSymbolsByName("validateOrder").length === 1);
     assert.strictEqual(storeReloaded.getSymbolsByName("handleOrderRequest").length, 0);
+
+    // 10. Symbol-level diffing: unchanged symbol (loadOrder) keeps its ref when sibling symbol in same file changes
+    const loadOrderRefBefore = storeReloaded.getSymbolsByName("loadOrder")[0].ref;
+    const validateOrderRefBefore = storeReloaded.getSymbolsByName("validateOrder")[0].ref;
+    await new Promise((r) => setTimeout(r, 15));
+    writeFileSync(serviceFile, [
+      'import { fetchStorageRow } from "./db.ts";',
+      "",
+      "export function loadOrder(orderId: number): string {",
+      "  return fetchStorageRow(orderId);",
+      "}",
+      "",
+      "export function validateOrder(orderId: number, strict = true): boolean {",
+      "  return strict ? orderId > 0 : orderId >= 0;",
+      "}",
+    ].join("\n"), "utf-8");
+    await storeReloaded.ensureIndexed(500, true);
+    const loadOrderRefAfter = storeReloaded.getSymbolsByName("loadOrder")[0].ref;
+    const validateOrderRefAfter = storeReloaded.getSymbolsByName("validateOrder")[0].ref;
+    assert.strictEqual(loadOrderRefAfter, loadOrderRefBefore, "unchanged symbol in modified file must reuse its existing ref");
+    assert.notStrictEqual(validateOrderRefAfter, validateOrderRefBefore, "modified symbol signature must receive a new ref");
+
+    // 11. Startup fast-path: fresh CodeStore with default sweepThrottleMs loads manifest in ensureIndexed() without sweeping disk
+    const storeFastStart = new CodeStore({
+      projectRoot: tmpDir,
+      indexDir: join(tmpDir, ".pi", "cache", "code-index"),
+      persistToCorm: false,
+    });
+    const fastIdx = await storeFastStart.ensureIndexed(500, false);
+    assert.strictEqual(fastIdx.scannedFiles, 0, "fresh CodeStore should hydrate manifest in ensureIndexed without re-scanning");
+    assert.strictEqual(fastIdx.totalSymbols, 4);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

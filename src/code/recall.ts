@@ -111,9 +111,11 @@ export class CodeRecallEngine {
       return { mode: "search", rendered: formatCodeSearchCards(cands, query), symbols: cands };
     }
 
-    await this.store.flush();
-    const lexLines = await this.store.queryLexical(query, limit * 2);
-    const semLines = await this.store.querySemantic(query, limit * 2);
+    await this.store.flush(50);
+    const [lexLines, semLines] = await Promise.all([
+      this.store.queryLexical(query, limit * 2),
+      this.store.querySemantic(query, limit * 2),
+    ]);
     const scores = new Map<number, { sym: CodeSymbolRecord; score: number }>();
 
     if (lexLines.length > 0 || semLines.length > 0) {
