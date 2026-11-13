@@ -29,15 +29,20 @@ export interface FilterCriteria {
   limit: number;
   query?: string;
   dedupe?: boolean;
+  includeL0?: boolean;
 }
 
 export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
-  if (envelope.level === "L0") return true;
-  const s = envelope.summary || cand.record || "";
-  if (s.startsWith("# ") || s.startsWith("## ")) return true;
-  if (/^(?:import\s+|export\s+|const\s+|function\s+|class\s+|var\s+|let\s+)/.test(s)) return true;
-  if (/:\d+:\s*(?:const|let|var|function|import|export|#include)/.test(s)) return true;
+  if (envelope.type === "episode" || envelope.episode) {
+    return false;
+  }
+  const s = (envelope.summary || cand.record || "").trim();
+  if (/^(?:import\s+|export\s+|const\s+|function\s+|class\s+|var\s+|let\s+|#include\b|#define\b)/.test(s)) return true;
+  if (/:\d+:\s*(?:const|let|var|function|import|export|#include|#define)/.test(s)) return true;
+  // grep/ripgrep hit lines (`path/to/file.ext:123: ...`) are raw source excerpts, not knowledge.
+  if (/^[\w.~\/-]+\.[A-Za-z0-9]{1,6}:\d+:/.test(s)) return true;
   if (s.includes("isletFspec") || s.includes("mem-islet.db")) return true;
+  if (s.startsWith("# ") && /(?:readme|documentation|license|package|pi-mm:)/i.test(s)) return true;
   return false;
 }
 
@@ -193,7 +198,7 @@ export function filterAndEnrich(
   const technical = isTechnicalInquiry(crit.query);
 
   for (const cand of candidates) {
-    const { envelope } = decodePayload(cand.record);
+    const envelope = cand.envelope ?? decodePayload(cand.record).envelope;
     if (crit.mipmap && envelope.level !== crit.mipmap) continue;
 
     // Strict pruning of code/doc artifacts on conversational queries
@@ -218,8 +223,8 @@ export function filterAndEnrich(
     if (crit.subsystem && envelope.context?.subsystem !== crit.subsystem) continue;
 
     // Normal recall prefers useful higher-level memories (L1+) over raw L0 turns,
-    // unless L0 was explicitly requested.
-    if (crit.mipmap === undefined && envelope.level === "L0") {
+    // unless L0 was explicitly requested or includeL0 is enabled.
+    if (crit.mipmap === undefined && envelope.level === "L0" && !crit.includeL0) {
       continue;
     }
 

@@ -314,7 +314,8 @@ Deno.test("technical_episodes: 3. Unprocessed references survive batch limits an
 
     let journal = await readConsolidationJournal(tmpDir);
     assert.strictEqual(journal.pendingL0Refs?.length, 2, "Remaining 2 references must remain pending in journal");
-    assert.deepStrictEqual(journal.pendingL0Refs, [3, 4]);
+    // Queue is processed newest-first so live captures are never starved by the backlog.
+    assert.deepStrictEqual(journal.pendingL0Refs, [1, 2]);
 
     // Run 2: Processes remaining 2 records
     const res2 = await runAutoConsolidation(toolEnv, ctx);
@@ -887,14 +888,14 @@ Deno.test("technical_episodes: 10. Multi-batch progression: preserves coherent e
     };
     const ctx: PiCtx = { cwd: tmpDir, hasUI: false, mode: "agent", sessionId: "sess-mb" };
 
-    // --- BATCH 1 (Processes refs 1, 2, 3) ---
+    // --- BATCH 1 (newest-first: processes refs 7, 6, 5) ---
     const res1 = await runAutoConsolidation(toolEnv, ctx, { incrementalOnly: true });
     const details1 = res1.details as { createdL1: number[] };
     assert.strictEqual(details1.createdL1.length, 1, "Batch 1 must create 1 initial L1 investigation");
     const l1Ref1 = details1.createdL1[0];
 
     let journal = await readConsolidationJournal(tmpDir);
-    assert.deepStrictEqual(journal.pendingL0Refs, [4, 5, 6, 7], "Batch 1 leaves remaining 4 references pending");
+    assert.deepStrictEqual(journal.pendingL0Refs, [1, 2, 3, 4], "Batch 1 leaves remaining 4 references pending");
     assert.strictEqual(journal.activeL1ByRunId?.[RUN_ID], l1Ref1, "Journal tracks active L1 ref after Batch 1");
 
     // Inspect initial L1
@@ -902,9 +903,9 @@ Deno.test("technical_episodes: 10. Multi-batch progression: preserves coherent e
     const { envelope: l1Env1 } = decodePayload(l1Raw1.stdout.trim());
     assert.strictEqual(l1Env1.level, "L1");
     assert.strictEqual(l1Env1.lifecycle, "tested");
-    assert.deepStrictEqual(l1Env1.evidence, [1, 2, 3]);
+    assert.deepStrictEqual(l1Env1.evidence, [5, 6, 7]);
 
-    // --- BATCH 2 (Processes refs 4, 5, 6) ---
+    // --- BATCH 2 (processes refs 4, 3, 2) ---
     const res2 = await runAutoConsolidation(toolEnv, ctx, { incrementalOnly: true });
     const details2 = res2.details as { createdL1: number[] };
     assert.strictEqual(details2.createdL1.length, 1, "Batch 2 must create 1 successor L1 investigation");
@@ -912,21 +913,21 @@ Deno.test("technical_episodes: 10. Multi-batch progression: preserves coherent e
     assert.notStrictEqual(l1Ref2, l1Ref1, "Successor L1 has new reference");
 
     journal = await readConsolidationJournal(tmpDir);
-    assert.deepStrictEqual(journal.pendingL0Refs, [7], "Batch 2 leaves remaining 1 reference pending");
+    assert.deepStrictEqual(journal.pendingL0Refs, [1], "Batch 2 leaves remaining 1 reference pending");
     assert.strictEqual(journal.activeL1ByRunId?.[RUN_ID], l1Ref2, "Journal updates active L1 to successor after Batch 2");
 
     // Inspect Batch 2 successor L1 and verify reciprocal link with predecessor
     const l1Raw2 = await daemonRunner.run(buildGetInvocation(cormBin, fspec, l1Ref2, axisPath, tmpDir));
     const { envelope: l1Env2 } = decodePayload(l1Raw2.stdout.trim());
     assert.strictEqual(l1Env2.supersedes, l1Ref1, "Batch 2 successor must point back to predecessor");
-    assert.deepStrictEqual(l1Env2.evidence, [1, 2, 3, 4, 5, 6], "Batch 2 evidence must merge refs 1..6");
+    assert.deepStrictEqual(l1Env2.evidence, [2, 3, 4, 5, 6, 7], "Batch 2 evidence must merge refs 2..7");
 
     const pred1Check = await daemonRunner.run(buildGetInvocation(cormBin, fspec, l1Ref1, axisPath, tmpDir));
     const { envelope: pred1Env } = decodePayload(pred1Check.stdout.trim());
     assert.strictEqual(pred1Env.lifecycle, "superseded", "Predecessor 1 must be marked superseded");
     assert.strictEqual(pred1Env.supersededBy, l1Ref2, "Predecessor 1 must record reciprocal supersededBy link");
 
-    // --- BATCH 3 (Processes final ref 7) ---
+    // --- BATCH 3 (processes final ref 1) ---
     const res3 = await runAutoConsolidation(toolEnv, ctx, { incrementalOnly: true });
     const details3 = res3.details as { createdL1: number[] };
     assert.strictEqual(details3.createdL1.length, 1, "Batch 3 must create final successor L1 investigation");

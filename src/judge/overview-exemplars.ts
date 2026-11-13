@@ -2,10 +2,11 @@
 // (axil-auren `POST /v1/classify`). Detects whether a memory question is requesting an
 // all-time high-level retrospective overview vs a specific targeted query.
 
-export type OverviewKind = "overview_query" | "specific_query";
+export type OverviewKind = "overview_query" | "session_recent" | "specific_query";
 
 export const OVERVIEW_KINDS: ReadonlySet<string> = new Set<OverviewKind>([
   "overview_query",
+  "session_recent",
   "specific_query",
 ]);
 
@@ -27,6 +28,24 @@ export const OVERVIEW_EXEMPLARS: Record<string, string[]> = {
     "faça um resumo histórico de todas as investigações passadas",
     "qual é o apanhado geral das decisões arquiteturais tomadas?",
     "sintetize o que você tem guardado na sua memória de longo prazo",
+  ],
+
+  session_recent: [
+    // --- English ---
+    "do you remember what you had just said?",
+    "what did you just say in the previous turn?",
+    "what were we just talking about right before compaction?",
+    "can you repeat or summarize your last response?",
+    "do you remember what we were just discussing?",
+    "what did i just ask you a moment ago?",
+    "what was your last message before the context was compacted?",
+
+    // --- Portuguese ---
+    "você lembra do que acabou de dizer?",
+    "sobre o que estávamos falando agora há pouco?",
+    "o que você tinha acabado de responder no turno anterior?",
+    "pode repetir ou resumir sua última resposta?",
+    "do que estávamos conversando antes da compactação?",
   ],
 
   specific_query: [

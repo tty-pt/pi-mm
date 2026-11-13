@@ -14,28 +14,40 @@ import {
 } from "../src/config.ts";
 import {
   isDirectMemoryQuestion,
+  isSessionRecentQuestion,
   evaluateDirectMemoryQuestion,
+  evaluateMemoryQuestionKind,
+  handleBeforeAgentStart,
 } from "../src/hooks/auto_recall.ts";
+import { getSessionInstances, clearAllSessionInstances } from "../src/session/manager.ts";
+import type { ToolEnv } from "../src/tools/index.ts";
 
 Deno.test("overview_routing: exemplars are bilingual, non-empty, and kinds are defined", () => {
   assert.ok(OVERVIEW_KINDS.has("overview_query"));
+  assert.ok(OVERVIEW_KINDS.has("session_recent"));
   assert.ok(OVERVIEW_KINDS.has("specific_query"));
-  assert.strictEqual(OVERVIEW_KINDS.size, 2);
+  assert.strictEqual(OVERVIEW_KINDS.size, 3);
 
   assert.ok(Array.isArray(OVERVIEW_EXEMPLARS.overview_query));
+  assert.ok(Array.isArray(OVERVIEW_EXEMPLARS.session_recent));
   assert.ok(Array.isArray(OVERVIEW_EXEMPLARS.specific_query));
   assert.ok(OVERVIEW_EXEMPLARS.overview_query.length >= 5);
+  assert.ok(OVERVIEW_EXEMPLARS.session_recent.length >= 5);
   assert.ok(OVERVIEW_EXEMPLARS.specific_query.length >= 5);
 
   const overviewTexts = OVERVIEW_EXEMPLARS.overview_query;
+  const sessionRecentTexts = OVERVIEW_EXEMPLARS.session_recent;
   const specificTexts = OVERVIEW_EXEMPLARS.specific_query;
 
   assert.ok(overviewTexts.length >= 5);
+  assert.ok(sessionRecentTexts.length >= 5);
   assert.ok(specificTexts.length >= 5);
 
   // Check bilingual coverage (EN + PT)
   assert.ok(overviewTexts.some((s) => s.includes("what do you remember")));
   assert.ok(overviewTexts.some((s) => s.includes("panorama geral")));
+  assert.ok(sessionRecentTexts.some((s) => s.includes("what you had just said")));
+  assert.ok(sessionRecentTexts.some((s) => s.includes("acabou de dizer")));
   assert.ok(specificTexts.some((s) => s.includes("sampling rate")));
   assert.ok(specificTexts.some((s) => s.includes("taxa de amostragem")));
 });
@@ -196,3 +208,64 @@ Deno.test("overview_routing: natural open-ended query caught by embeddings vs mi
   const res = await evaluateDirectMemoryQuestion(naturalQuery, testCfg, mockFetch);
   assert.strictEqual(res, true);
 });
+
+Deno.test("overview_routing: session_recent questions inject active session turns instead of all-time overview", async () => {
+  assert.strictEqual(isSessionRecentQuestion("Do you remember what you had just said?"), true);
+  assert.strictEqual(isSessionRecentQuestion("What were we just talking about?"), true);
+  assert.strictEqual(isDirectMemoryQuestion("Do you remember what you had just said?"), false);
+
+  const kind = await evaluateMemoryQuestionKind(
+    "Do you remember what you had just said?",
+    { ...DEFAULT_CONFIG, overviewEmbed: "off" },
+  );
+  assert.strictEqual(kind, "session_recent");
+
+  clearAllSessionInstances();
+  const sessionId = "sess-recent-continuity-test";
+  const inst = getSessionInstances(sessionId);
+  await inst.store.appendEvent({
+    id: "u1",
+    turnIndex: 1,
+    entryId: "e1",
+    timestamp: new Date().toISOString(),
+    role: "user",
+    speaker: "User",
+    summary: "Why was codebase-memory-mcp still active?",
+    text: "Why was codebase-memory-mcp still active?",
+  });
+  await inst.store.appendEvent({
+    id: "a1",
+    turnIndex: 1,
+    entryId: "e2",
+    timestamp: new Date().toISOString(),
+    role: "assistant",
+    speaker: "Assistant",
+    summary: "Because mcp_config.json still registered codebase-memory-mcp.",
+    text: "Because /home/quirinpa/.gemini/config/mcp_config.json still registered codebase-memory-mcp.",
+  });
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner: { run: () => Promise.resolve({ stdout: "", stderr: "", code: 0 }) },
+    nowProvider: () => new Date(),
+    cfg: { ...DEFAULT_CONFIG, cormBin: "/usr/bin/corm", overviewEmbed: "off" },
+  };
+  const event: import("../src/hooks/auto_recall.ts").BeforeAgentStartEvent = {
+    messageType: "user",
+    prompt: "Do you remember what you had just said?",
+    systemPromptOptions: { sections: {} },
+  };
+
+  const res = await handleBeforeAgentStart(
+    event,
+    { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless", sessionId },
+    () => Promise.resolve(env),
+  );
+
+  assert.ok(res);
+  assert.ok(res.message?.content.includes("[Recent Session Continuity Context]"));
+  assert.ok(res.message?.content.includes("Turn 1 (Assistant): \"Because /home/quirinpa/.gemini/config/mcp_config.json still registered codebase-memory-mcp.\""));
+  assert.ok(!res.message?.content.includes("[Persistent Memory Overview Across All Time]"));
+  assert.strictEqual(event.systemPromptOptions?.sections?.["memory_context"], res.message?.content);
+});
+

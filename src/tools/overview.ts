@@ -1,11 +1,19 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ToolEnv } from "./index.ts";
 import { axisPath, memDir, sepalConfigured } from "./index.ts";
 import { filespecFor, buildListInvocation, buildGetInvocation, embedEnv } from "../corm.ts";
-import { decodePayload, isCleanSummaryText } from "../payload.ts";
+import { decodeResult, isCleanSummaryText } from "../payload.ts";
 import { parseBareRefs } from "../resolve.ts";
 import type { MipmapLevel, LifecycleState, MemoryEnvelope } from "../types.ts";
 import { debugLog } from "../debug.ts";
 import { renderOverviewMarkdown } from "./overview_render.ts";
+
+const ROUTINE_TOOL_CRUMB_RE = /^Investigation:\s*(?:edit|read|write|patch|bash|search_code|search_graph|get_code_snippet|Code search results)\b/i;
+
+export function isRoutineToolCrumb(summary: string): boolean {
+  return ROUTINE_TOOL_CRUMB_RE.test((summary || "").trim());
+}
 
 export interface OverviewItem {
   ref: number;
@@ -79,7 +87,7 @@ export async function fetchOverviewItems(
       try {
         const res = await env.runner.run(buildGetInvocation(bin, fspec, ref, axes, cwd, eEnv));
         if (res.code === 0 && res.stdout.trim()) {
-          const decoded = decodePayload(res.stdout.trim());
+          const decoded = decodeResult(res);
           if (isCleanSummaryText(decoded.envelope.summary) && !decoded.envelope.summary.startsWith("[Corrupted payload")) {
             return { ref, date: decoded.date, envelope: decoded.envelope };
           }
@@ -192,7 +200,7 @@ function processDecodedItem(
   }
   epochEntry.count++;
   if (scopeKey !== "unscoped") epochEntry.scopes.add(scopeKey);
-  if (envItem.level !== "L0" && epochEntry.highlights.length < 5) {
+  if (envItem.level !== "L0" && !isRoutineToolCrumb(overviewItem.summary) && epochEntry.highlights.length < 5) {
     epochEntry.highlights.push(overviewItem);
   }
 }
@@ -217,6 +225,11 @@ export function collateOverview(
 
   for (const item of decodedItems) {
     processDecodedItem(item, collateCtx);
+  }
+
+  const curatedMilestones = collateCtx.recentMilestones.filter((m) => !isRoutineToolCrumb(m.summary));
+  if (curatedMilestones.length > 0) {
+    collateCtx.recentMilestones = curatedMilestones;
   }
 
   const timeline: MemoryOverviewEpoch[] = [];
@@ -253,25 +266,48 @@ export function collateOverview(
   };
 }
 
+function emptyOverviewResult(renderedOverview: string): MemoryOverviewResult {
+  return {
+    totalRecords: 0,
+    scannedRecords: 0,
+    activeSpan: {},
+    levelCounts: { L0: 0, L1: 0, L2: 0, L3: 0 },
+    scopeCounts: {},
+    personaTenets: [],
+    principles: [],
+    invariantsAndDecisions: [],
+    recentMilestones: [],
+    timeline: [],
+    renderedOverview,
+  };
+}
+
+function appendStandingDirectiveRefs(cwd: string, allRefs: number[], selectedRefs: number[]): void {
+  try {
+    const directivesFile = join(cwd, "standing_directives.json");
+    if (!existsSync(directivesFile)) return;
+    const rawDir = JSON.parse(readFileSync(directivesFile, "utf-8"));
+    if (!Array.isArray(rawDir)) return;
+    const allSet = new Set(allRefs);
+    const selSet = new Set(selectedRefs);
+    for (const d of rawDir) {
+      if (d && typeof d.ref === "number" && allSet.has(d.ref) && !selSet.has(d.ref)) {
+        selectedRefs.push(d.ref);
+        selSet.add(d.ref);
+      }
+    }
+  } catch {
+    // Best-effort directive inclusion
+  }
+}
+
 export async function buildMemoryOverview(
   env: ToolEnv,
   options?: MemoryOverviewOptions,
 ): Promise<MemoryOverviewResult> {
   const bin = env.cfg.cormBin;
   if (!bin) {
-    return {
-      totalRecords: 0,
-      scannedRecords: 0,
-      activeSpan: {},
-      levelCounts: { L0: 0, L1: 0, L2: 0, L3: 0 },
-      scopeCounts: {},
-      personaTenets: [],
-      principles: [],
-      invariantsAndDecisions: [],
-      recentMilestones: [],
-      timeline: [],
-      renderedOverview: "Memory overview unavailable: corm binary not configured.",
-    };
+    return emptyOverviewResult("Memory overview unavailable: corm binary not configured.");
   }
 
   const embed = sepalConfigured(env.cfg);
@@ -283,28 +319,18 @@ export async function buildMemoryOverview(
   const listRes = await env.runner.run(buildListInvocation(bin, fspec, axes, cwd, eEnv));
   const allRefs = parseBareRefs(listRes.stdout);
   const totalRecords = allRefs.length;
-
   if (totalRecords === 0) {
-    return {
-      totalRecords: 0,
-      scannedRecords: 0,
-      activeSpan: {},
-      levelCounts: { L0: 0, L1: 0, L2: 0, L3: 0 },
-      scopeCounts: {},
-      personaTenets: [],
-      principles: [],
-      invariantsAndDecisions: [],
-      recentMilestones: [],
-      timeline: [],
-      renderedOverview: "No stored memories found in database.",
-    };
+    return emptyOverviewResult("No stored memories found in database.");
   }
 
   const maxScan = Math.min(Math.max(options?.maxScan ?? 250, 20), 1000);
   const targetLimit = Math.min(Math.max(options?.limit ?? 20, 1), 50);
   const selectedRefs = selectOverviewRefs(allRefs, maxScan);
-  const decodedItems = await fetchOverviewItems(env, bin, fspec, axes, cwd, eEnv, selectedRefs);
+  if (totalRecords > maxScan) {
+    appendStandingDirectiveRefs(cwd, allRefs, selectedRefs);
+  }
 
+  const decodedItems = await fetchOverviewItems(env, bin, fspec, axes, cwd, eEnv, selectedRefs);
   debugLog("recall", "buildMemoryOverview generated overview", {
     totalRecords,
     scanned: decodedItems.length,

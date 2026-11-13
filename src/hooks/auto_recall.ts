@@ -3,15 +3,39 @@ import { executeHybridScan } from "../tools/scan.ts";
 import type { FusedCandidate } from "../tools/ranking.ts";
 import { type PiCtx, extractSessionId } from "./events.ts";
 import { debugLog, traceEvent } from "../debug.ts";
-import { memDir, sepalConfigured } from "../tools/index.ts";
-import { filespecFor } from "../corm.ts";
+import { memDir, sepalConfigured, axisPath } from "../tools/index.ts";
+import { filespecFor, embedEnv } from "../corm.ts";
+import { fetchEnvelope } from "../tools/traverse.ts";
 import { resolveSessionFilePath, extractSessionExcerpts, type SessionExcerpt } from "../session_history.ts";
+import type { MemoryEnvelope } from "../types.ts";
+import type { SessionCardHit, SessionTurnEvent } from "../session/types.ts";
 
 import { isCleanSummaryText } from "../payload.ts";
 import { isQuestionMemory } from "../tools/ranking.ts";
 import { buildMemoryOverview } from "../tools/overview.ts";
 import { classifyOverviewByEmbedding, classifyRecallByEmbedding } from "../judge/adapter.ts";
 import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, recallAction, type MmConfig } from "../config.ts";
+import { getSessionInstances, ensureSessionIndexed, type SessionContextInstances } from "../session/manager.ts";
+
+export interface EpisodeSessionProvenance {
+  sessionId?: string;
+  sessionFile?: string;
+  leafId?: string;
+  eventIds: string[];
+  toolCallIds: string[];
+  summaries: string[];
+  problem?: string;
+}
+
+export interface IndexedSessionSummary {
+  sessionId: string;
+  shortId: string;
+  workspaceLabel?: string;
+  totalTurns: number;
+  totalEvents: number;
+  matchedCards: SessionCardHit[];
+  instances: SessionContextInstances;
+}
 
 export const DEFAULT_AUTO_RECALL_BUDGET = 1500;
 export const DEFAULT_AUTO_RECALL_TIMEOUT_MS = 1500;
@@ -111,8 +135,18 @@ export function isMemoryRecallPrompt(prompt?: string): boolean {
   return false;
 }
 
+export function isSessionRecentQuestion(prompt?: string): boolean {
+  if (!prompt) return false;
+  const p = prompt.trim().toLowerCase();
+  if (/^(?:do\s+you\s+(?:remember|recall)\s+what\s+(?:you|we|i)\s+(?:had\s+)?(?:just\s+)?(?:said|discussed|talked\s+about|asked)|what\s+did\s+(?:you|we|i)\s+just\s+(?:say|discuss|talk\s+about|ask)|what\s+were\s+we\s+(?:just\s+)?(?:talking|discussing)\s+about(?:\s+right\s+before\s+compaction|\s+before\s+compaction)?|can\s+you\s+(?:repeat|summarize)\s+your\s+last\s+(?:response|message|reply)|what\s+was\s+your\s+last\s+(?:response|message|reply)|voc[eê]\s+lembra\s+do\s+que\s+(?:acabou|tinha\s+acabado)\s+de\s+(?:dizer|falar|responder)|sobre\s+o\s+que\s+est[aá]vamos\s+(?:falando|conversando)\s+agora\s+h[aá]\s+pouco|o\s+que\s+voc[eê]\s+(?:acabou|tinha\s+acabado)\s+de\s+(?:dizer|responder)|do\s+que\s+est[aá]vamos\s+conversando\s+antes\s+da\s+compacta[cç][aã]o)[?.!\s]*$/i.test(p)) {
+    return true;
+  }
+  return false;
+}
+
 export function isDirectMemoryQuestion(prompt?: string): boolean {
   if (!prompt) return false;
+  if (isSessionRecentQuestion(prompt)) return false;
   const p = prompt.trim().toLowerCase();
   // Open-ended introspection: user asking agent what it remembers/recalls in general across time
   if (/^(?:what\s+do\s+you\s+(?:remember|recall)|tell\s+me\s+what\s+you\s+(?:remember|recall)|what\s+did\s+i\s+say(?:\s+earlier|\s+before)?|what\s+were\s+we\s+talking\s+about|do\s+you\s+remember\s+anything|do\s+you\s+recall\s+anything|what\s+do\s+you\s+(?:remember|recall)\s+(?:across\s+all\s+time|from\s+all\s+time|from\s+past\s+sessions)?|give\s+me\s+(?:an?\s+)?(?:overview|summary)\s+of\s+(?:all\s+)?(?:your\s+)?memories|what\s+memories\s+do\s+you\s+have|what\s+have\s+we\s+worked\s+on(?:\s+across\s+all\s+time)?)[?.!\s]*$/i.test(p)) {
@@ -124,24 +158,39 @@ export function isDirectMemoryQuestion(prompt?: string): boolean {
   return false;
 }
 
+export async function evaluateMemoryQuestionKind(
+  prompt: string,
+  cfg: MmConfig,
+  fetchFn?: typeof fetch,
+): Promise<"overview_query" | "session_recent" | "specific_query"> {
+  if (isSessionRecentQuestion(prompt)) {
+    return "session_recent";
+  }
+  if (overviewEmbed(cfg) !== "off") {
+    try {
+      const verdict = await classifyOverviewByEmbedding(prompt, cfg, fetchFn);
+      if (verdict === "overview_query" || verdict === "session_recent" || verdict === "specific_query") {
+        return verdict;
+      }
+    } catch {
+      // Endpoint error or timeout
+    }
+    const fb = overviewFallback(cfg);
+    if (fb === "skip") return "specific_query";
+    if (isDirectMemoryQuestion(prompt)) return "overview_query";
+    return "specific_query";
+  }
+  if (isDirectMemoryQuestion(prompt)) return "overview_query";
+  return "specific_query";
+}
+
 export async function evaluateDirectMemoryQuestion(
   prompt: string,
   cfg: MmConfig,
   fetchFn?: typeof fetch,
 ): Promise<boolean> {
-  if (overviewEmbed(cfg) !== "off") {
-    try {
-      const verdict = await classifyOverviewByEmbedding(prompt, cfg, fetchFn);
-      if (verdict === "overview_query") return true;
-      if (verdict === "specific_query") return false;
-    } catch {
-      // Endpoint error or timeout
-    }
-    const fb = overviewFallback(cfg);
-    if (fb === "skip") return false;
-    return isDirectMemoryQuestion(prompt);
-  }
-  return isDirectMemoryQuestion(prompt);
+  const kind = await evaluateMemoryQuestionKind(prompt, cfg, fetchFn);
+  return kind === "overview_query";
 }
 
 export async function evaluateRecallIntent(
@@ -205,6 +254,274 @@ export function formatMemoryEntryWithExcerpts(
   return line;
 }
 
+export async function collectEpisodeSessionProvenance(
+  env: ToolEnv | undefined,
+  ref: number,
+  envelope: MemoryEnvelope | undefined,
+): Promise<EpisodeSessionProvenance> {
+  const ep = envelope?.episode;
+  let sessionId = ep?.sessionId;
+  let sessionFile = ep?.sessionFile;
+  let leafId = ep?.leafId;
+  const eventIds = new Set<string>(ep?.eventIds || []);
+  const toolCallIds = new Set<string>();
+  if (ep?.toolCallId) toolCallIds.add(ep.toolCallId);
+
+  const summaries: string[] = [];
+  const addSummary = (s?: string) => {
+    if (s && s.trim().length >= 4 && !summaries.includes(s.trim())) {
+      summaries.push(s.trim());
+    }
+  };
+  if (ep?.approaches) {
+    for (const a of ep.approaches) addSummary(a.approach);
+  }
+  if (ep?.findings) {
+    for (const f of ep.findings) addSummary(f);
+  }
+  addSummary(ep?.problem);
+  addSummary(envelope?.summary);
+
+  if (
+    env &&
+    envelope?.evidence &&
+    envelope.evidence.length > 0 &&
+    (!sessionId || !sessionFile || eventIds.size === 0)
+  ) {
+    try {
+      const embed = sepalConfigured(env.cfg);
+      const cwd = memDir(env);
+      const fspec = filespecFor(cwd, embed);
+      const axes = axisPath(env);
+      const eEnv = embedEnv(env.cfg);
+      const visited = new Set<number>([ref]);
+      const queue: Array<{ childRef: number; depth: number }> = envelope.evidence
+        .slice(0, 6)
+        .map((r) => ({ childRef: r, depth: 1 }));
+
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        if (visited.has(next.childRef)) continue;
+        visited.add(next.childRef);
+
+        const item = await fetchEnvelope(env, fspec, axes, cwd, eEnv, next.childRef);
+        if (!item?.envelope) continue;
+        const childEp = item.envelope.episode;
+        if (childEp) {
+          if (!sessionId && childEp.sessionId) sessionId = childEp.sessionId;
+          if (!sessionFile && childEp.sessionFile) sessionFile = childEp.sessionFile;
+          if (!leafId && childEp.leafId) leafId = childEp.leafId;
+          if (childEp.eventIds) {
+            for (const id of childEp.eventIds) eventIds.add(id);
+          }
+          if (childEp.toolCallId) toolCallIds.add(childEp.toolCallId);
+          if (childEp.approaches) {
+            for (const a of childEp.approaches) addSummary(a.approach);
+          }
+        }
+        addSummary(item.envelope.summary);
+
+        if (next.depth < 2 && item.envelope.evidence && item.envelope.evidence.length > 0) {
+          for (const grandChild of item.envelope.evidence.slice(0, 4)) {
+            if (!visited.has(grandChild)) {
+              queue.push({ childRef: grandChild, depth: next.depth + 1 });
+            }
+          }
+        }
+      }
+    } catch {
+      // Degrade gracefully if evidence traversal fails
+    }
+  }
+
+  return {
+    sessionId,
+    sessionFile,
+    leafId,
+    eventIds: Array.from(eventIds),
+    toolCallIds: Array.from(toolCallIds),
+    summaries,
+    problem: ep?.problem || envelope?.summary,
+  };
+}
+
+export async function resolveEpisodeSessionCoordinates(
+  instances: SessionContextInstances,
+  provenance: EpisodeSessionProvenance,
+  ref: number,
+  query?: string,
+): Promise<SessionCardHit[]> {
+  const allEvents = instances.store.getAllEvents();
+  if (allEvents.length === 0) return [];
+
+  const meta = instances.store.getMetadata();
+
+  const resolveToolIndex = (ev: SessionTurnEvent): number | undefined => {
+    const turnEvents = instances.store.getEventsByTurn(ev.turnIndex);
+    if (turnEvents.length <= 1) return undefined;
+    const defaultTarget = turnEvents.find((e) => e.event.role === "tool") ?? turnEvents[0];
+    if (defaultTarget.event.id === ev.id) return undefined;
+    const idx = turnEvents.findIndex((e) => e.event.id === ev.id);
+    return idx >= 0 ? idx : undefined;
+  };
+
+  const toCard = (ev: SessionTurnEvent, idx: number, score: number): SessionCardHit => ({
+    ref: idx + 1,
+    turnIndex: ev.turnIndex,
+    toolIndex: resolveToolIndex(ev),
+    entryId: ev.entryId,
+    parentId: ev.parentId,
+    timestamp: ev.timestamp,
+    role: ev.role,
+    speaker: ev.speaker,
+    summary: ev.summary,
+    score,
+    toolName: ev.toolName,
+    exitCode: ev.exitCode,
+    filesTouched: ev.filesTouched,
+    errorSnippet: ev.errorSnippet,
+    inspectRef: `turn-${ev.turnIndex}`,
+    lineCount: ev.lineCount ?? 0,
+    sessionId: instances.store.sessionId,
+    sessionShortId: meta.shortId,
+    sessionOrigin: "persistent-ref",
+    workspaceLabel: meta.workspaceLabel,
+    sourceMemoryRef: ref,
+  });
+
+  const prioritizeEvents = (evs: SessionTurnEvent[]): SessionTurnEvent[] => {
+    const expanded = new Map<string, SessionTurnEvent>();
+    for (const ev of evs) {
+      expanded.set(ev.id, ev);
+      // Include tool executions from the same turn so exact tool coordinates are surfaced
+      for (const sibling of instances.store.getEventsByTurn(ev.turnIndex)) {
+        if (sibling.event.role === "tool") {
+          expanded.set(sibling.event.id, sibling.event);
+        }
+      }
+    }
+    const list = Array.from(expanded.values());
+    list.sort((a, b) => {
+      const roleRank = (r: string) => (r === "tool" ? 0 : r === "assistant" ? 1 : 2);
+      const diff = roleRank(a.role) - roleRank(b.role);
+      if (diff !== 0) return diff;
+      return a.turnIndex - b.turnIndex;
+    });
+    return list.slice(0, 3);
+  };
+
+  // Tier 1: Exact ID match (eventIds, toolCallId, leafId)
+  const tier1Matches: SessionTurnEvent[] = [];
+  for (const ev of allEvents) {
+    if (
+      provenance.eventIds.includes(ev.id) ||
+      provenance.eventIds.includes(ev.entryId) ||
+      provenance.toolCallIds.includes(ev.id) ||
+      (provenance.leafId && (ev.entryId === provenance.leafId || ev.parentId === provenance.leafId))
+    ) {
+      tier1Matches.push(ev);
+    }
+  }
+  if (tier1Matches.length > 0) {
+    return prioritizeEvents(tier1Matches).map((ev, idx) => toCard(ev, idx, 10.0));
+  }
+
+  // Tier 2: L0 Evidence / Summary / Approach substring match
+  const tier2Matches: SessionTurnEvent[] = [];
+  const candidateProbes = provenance.summaries
+    .map((s) => s.toLowerCase().trim())
+    .filter((s) => s.length >= 8);
+  if (candidateProbes.length > 0) {
+    for (const ev of allEvents) {
+      const evSum = (ev.summary || "").toLowerCase();
+      const evTxt = (ev.text || "").toLowerCase();
+      for (const probe of candidateProbes) {
+        const probeSlice = probe.slice(0, 60);
+        if (
+          (probeSlice.length >= 8 && (evSum.includes(probeSlice) || evTxt.includes(probeSlice))) ||
+          (evSum.length >= 10 && probe.includes(evSum.slice(0, 60)))
+        ) {
+          tier2Matches.push(ev);
+          break;
+        }
+      }
+    }
+  }
+  if (tier2Matches.length > 0) {
+    return prioritizeEvents(tier2Matches).map((ev, idx) => toCard(ev, idx, 8.0));
+  }
+
+  // Tier 3: Query-ranked session search
+  const searchQuery = [query, provenance.problem, provenance.summaries[0]]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  const searchRes = await instances.engine.search({
+    query: searchQuery,
+    limit: 3,
+    lineage: "all",
+  });
+  return searchRes.cards.map((c) => ({
+    ...c,
+    sessionId: instances.store.sessionId,
+    sessionShortId: meta.shortId,
+    sessionOrigin: "persistent-ref",
+    workspaceLabel: meta.workspaceLabel,
+    sourceMemoryRef: ref,
+  }));
+}
+
+export async function indexSingleMemorySession(
+  env: ToolEnv | undefined,
+  ref: number,
+  envelope: MemoryEnvelope | undefined,
+  query?: string,
+  cwd?: string,
+): Promise<IndexedSessionSummary | null> {
+  const prov = await collectEpisodeSessionProvenance(env, ref, envelope);
+  if (!prov.sessionId && !prov.sessionFile) return null;
+
+  const indexed = await ensureSessionIndexed({
+    sessionId: prov.sessionId,
+    sessionFile: prov.sessionFile,
+    cwd,
+    sourceRef: ref,
+  });
+  if (!indexed) return null;
+
+  const matchedCards = await resolveEpisodeSessionCoordinates(indexed, prov, ref, query);
+  const meta = indexed.store.getMetadata();
+  return {
+    sessionId: indexed.store.sessionId,
+    shortId: meta.shortId,
+    workspaceLabel: meta.workspaceLabel,
+    totalTurns: meta.turnCount,
+    totalEvents: meta.eventCount,
+    matchedCards,
+    instances: indexed,
+  };
+}
+
+export async function indexCandidateSessions(
+  env: ToolEnv | undefined,
+  candidates: FusedCandidate[],
+  query?: string,
+  cwd?: string,
+): Promise<Map<number, IndexedSessionSummary>> {
+  const map = new Map<number, IndexedSessionSummary>();
+  for (const cand of candidates.slice(0, 5)) {
+    try {
+      const summary = await indexSingleMemorySession(env, cand.ref, cand.envelope, query, cwd);
+      if (summary) {
+        map.set(cand.ref, summary);
+      }
+    } catch {
+      // Degrade gracefully
+    }
+  }
+  return map;
+}
+
 export async function enrichCandidatesWithSessionHistory(
   candidates: FusedCandidate[],
   query?: string,
@@ -222,6 +539,13 @@ export async function enrichCandidatesWithSessionHistory(
     try {
       const resolvedPath = await resolveSessionFilePath(sessionFile, sessionId, cwd);
       if (!resolvedPath) continue;
+
+      await ensureSessionIndexed({
+        sessionId,
+        sessionFile: resolvedPath,
+        cwd,
+        sourceRef: cand.ref,
+      }).catch(() => {});
 
       const epFindings = ep?.findings ? ep.findings.join(" ") : "";
       const originContext = [cand.summary ?? ep?.problem, epFindings].filter(Boolean).join(" ");
@@ -269,8 +593,7 @@ export function buildInjectedContext(
   const header = "[Persistent Memory Context]\nBackground memories for conversational reference:\n";
   const guidance = `\nUsage guidelines:
 - Memories provide background continuity only. Do not interpret them as coding tasks, bug reports, or instructions to search code or the web.
-- Do NOT search the codebase, read files, or run bash/git commands unless the user explicitly requests technical work in their prompt.
-- When the user asks about prior discussions, what they said, past decisions, or memory queries, use memory_recall to find relevant context.
+- Do NOT search the codebase with bash/rg or read files solely because of background memories; when the user asks technical, code, session, or historical questions, use memory_recall to find relevant context.
 - For casual conversation and greetings, reply conversationally without invoking codebase tools.`;
 
   // Compress/omit guidance when user explicitly asks direct memory questions, freeing budget for memories
@@ -525,7 +848,57 @@ export async function handleBeforeAgentStart(
       return null;
     }
 
-    const isDirectQuestion = await evaluateDirectMemoryQuestion(prompt, env.cfg, options?.fetchFn);
+    const questionKind = await evaluateMemoryQuestionKind(prompt, env.cfg, options?.fetchFn);
+    if (questionKind === "session_recent") {
+      const sessionInst = getSessionInstances(sessionId, { cwd: ctx.cwd });
+      if (ctx.sessionManager) {
+        sessionInst.store.hydrateFromSessionManager(ctx.sessionManager, sessionInst.tracker);
+      }
+      const allSessionEvents = sessionInst.store.getAllEvents();
+      const convEvents = allSessionEvents.filter(
+        (ev) => (ev.role === "user" || ev.role === "assistant") && (ev.text || "").trim().length > 0,
+      );
+      // Exclude the current incoming prompt if it was already recorded at the tail
+      const priorConv = convEvents.length > 0 &&
+          convEvents[convEvents.length - 1].role === "user" &&
+          (convEvents[convEvents.length - 1].text || "").trim() === prompt.trim()
+        ? convEvents.slice(0, -1)
+        : convEvents;
+
+      if (priorConv.length > 0) {
+        const recentSlice = priorConv.slice(-6);
+        const turnLines = recentSlice.map((ev) => {
+          const roleLabel = ev.role === "user" ? "User" : "Assistant";
+          const raw = (ev.text || ev.summary || "").trim();
+          const clipped = raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
+          return `- Turn ${ev.turnIndex} (${roleLabel}): "${clipped}"`;
+        });
+        const contextContent =
+          `[Recent Session Continuity Context]\nRecent turns from the current session transcript:\n${turnLines.join("\n")}\n\n` +
+          `Guidance for the Assistant:\n` +
+          `- The user is asking about what was just said or discussed in the current session. Answer directly using the recent session turns above (or call memory_recall({ scope: "session", zoomTurn: <turn> }) for full verbatim lines). Do NOT summarize all-time persistent memory unless asked.`;
+
+        if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+          if (!event.systemPromptOptions.sections) {
+            event.systemPromptOptions.sections = {};
+          }
+          event.systemPromptOptions.sections["memory_context"] = contextContent;
+        }
+
+        return {
+          message: {
+            role: "custom",
+            customType: "memory_context",
+            content: contextContent,
+            display: true,
+            details: { sessionRecent: true, turnCount: recentSlice.length },
+            timestamp: Date.now(),
+          },
+        };
+      }
+    }
+
+    const isDirectQuestion = questionKind === "overview_query";
     if (isDirectQuestion) {
       const overview = await buildMemoryOverview(env, { limit: 8, maxScan: 200 });
       if (overview.totalRecords > 0) {
