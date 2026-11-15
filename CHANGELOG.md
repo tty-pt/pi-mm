@@ -39,6 +39,11 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
   - When `memory_review` / `memory_lifecycle` transitions a memory to `contradicted` or `superseded`, automatically syncs `lore-bindings.json`, unregisters invalidated standing directives from `reinforcementScheduler` and `standing_directives.json`, and cascades down the evidence DAG (`propagateTruthMaintenanceCascade`) to auto-downgrade dependent `supported`/`tested` conclusions to `hypothesized` with full audit history.
 
 ### Fixed
+- **Re-Entrant Lock Safety, Quiet Axis Probing & Mid-Session `axil-auren` Bring-Up (`src/lock.ts`, `src/runner.ts`, `src/napi_runner.ts`, `src/cli_runner.ts`, `src/auren-bootstrap.ts`, `src/hooks/events.ts`, `src/tools/store.ts`, `src/versions.ts`)**:
+  - Made `withLock` re-entrant within the same process (`activeLockDepth` counter in `src/lock.ts`), eliminating self-deadlock timeouts when nested memory operations acquire `.mm.lock`.
+  - Set `CORM_QUIET=1` across `NativeAddonCormRunner` and `CliCormRunner` invocations to suppress noisy axis stderr diagnostics during cold-start store initialization, and preferred `cormd` when a daemon lease is active.
+  - Added `-d` when spawning `axil` with `detached: true` in `src/auren-bootstrap.ts` so `axil` stays in the foreground of the detached session and keeps port `:4242` bound, and added `ensureAurenPoweredUp()` on turn/store paths so records embed immediately if `axil-auren` starts mid-session.
+  - Cached git component version lookups and resolved standalone `node_modules/@tty-pt/*` prebuild versions in `src/versions.ts`.
 - **Scanner & Graph Precision Hardening (`src/code/scanner.ts`, `src/code/store.ts`, `src/code/graph.ts`, `src/code/payload_codec.ts`)**:
   - Fixed C `#define` macro scanning (`tryParseRouteOrMacro`) so parenthesized object-like macros immediately preceding multi-line C functions advance past the macro identifier token and never swallow the following function definition.
   - Fixed TypeScript/JavaScript parameter and return-type skipping (`skipBalancedParens`, `findBodyOpenBrace`) to handle inline object type annotations (`params: { a: number }`, `Promise<{ ok: boolean }>`) without mistaking type-literal braces for function bodies.
