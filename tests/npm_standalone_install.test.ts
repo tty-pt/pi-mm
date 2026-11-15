@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -56,6 +57,9 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
         copyFileSync(srcAddon, join(prebuildDir, `${pkg.short}.node`));
       }
       const srcLib = join(repoRoot, "external", pkg.repo, "lib", pkg.libFile);
+      if (!existsSync(srcLib) && existsSync(join(repoRoot, "external", pkg.repo, "Makefile"))) {
+        execFileSync("make", ["-C", join(repoRoot, "external", pkg.repo)], { stdio: "ignore" });
+      }
       if (existsSync(srcLib)) {
         copyFileSync(srcLib, join(prebuildDir, pkg.libFile));
       }

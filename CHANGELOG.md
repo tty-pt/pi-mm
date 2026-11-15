@@ -2,11 +2,11 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
-## [Unreleased]
+## [0.8.0] - 2026-11-15
 
 ### Added
 - **Prebuilt `@tty-pt/axil` & `@tty-pt/auren` Daemon Discovery (`package.json`, `src/auren-bootstrap.ts`, `tests/auren_bootstrap.test.ts`)**:
-  - Added `@tty-pt/axil` (`^1.8.0`) and `@tty-pt/auren` (`^1.5.1`) to `package.json` dependencies.
+  - Added `@tty-pt/axil` (`^1.8.1`) and `@tty-pt/auren` (`^1.5.1`) to `package.json` dependencies alongside updated `@tty-pt/{corm,sepal,lemma,islet}` prebuild floors.
   - Added `findAxilBins()` and `findAurenLibDirs()` in `src/auren-bootstrap.ts` so `findAurenLaunchers()` automatically discovers `@tty-pt/axil/bin/axil.js` and prebuilt `libaxil-auren.{so,dylib}` in `@tty-pt/auren/prebuilds/<os>-<cpu>[-musl]` (as well as local repository checkouts), allowing `pi-mm` to launch and share a background `axil-auren` daemon without requiring system-installed `/usr/bin/axil` or `/usr/lib/libaxil-auren.so`.
 - **Live Epistemic Invalidation via Code-to-Lore Causal Binding (`src/code/lore_binding.ts`, `src/code/manager.ts`, `src/tools/record.ts`, `src/tools/store.ts`)**:
   - Automatically binds `supported` and `tested` architectural invariants, decisions, and episodes to AST symbol anchors (`symbolName`, `qualifiedName`, `filePath`, `startLine`, `endLine`, `signature`, and a deterministic `fingerprint` over `kind + qualifiedName + signature + sorted(rawCallees)`), persisted atomically in `.pi/mm/code/lore-bindings.json` (shared across `.pi/scratch/slot-*` worktrees).
