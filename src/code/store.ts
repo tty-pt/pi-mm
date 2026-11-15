@@ -187,7 +187,7 @@ export class CodeStore {
       }
       this.loadManifestFromDisk();
       if (this.persistToCorm && !this.hasCustomRunner && !this.projectRoot.includes("fake")) {
-        if (!this.cormdBin && (await loadCormAddonModule()) === null) {
+        if (!this.cormdBin) {
           const envMap = runtimeEnv();
           const pathDirs = (envMap["PATH"] || "").split(":");
           this.cormdBin = resolveCormdBin({ cormBin: this.cormBin } as unknown as MmConfig, this.projectRoot, pathDirs, existsSync).path;

@@ -148,3 +148,34 @@ Deno.test("NativeAddonCormRunner: falls back to ShellCormRunner when addon is un
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+Deno.test("NativeAddonCormRunner: re-entrant withLock inside executeStore completes without self-deadlock", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-mm-napi-reentrant-"));
+  const fspec = `${dir}/mem.db@joint,lemma:a:b`;
+  const addon = await loadCormAddonModule();
+  try {
+    const runner = new NativeAddonCormRunner({
+      async run() {
+        return { code: 99, stdout: "", stderr: "unexpected fallback" };
+      },
+    });
+    const axisPath = resolveAxisPath(
+      { cormBin: "corm", axisLibs: null, memDir: dir, scanLimit: 10 } as any,
+      Deno.cwd(),
+    );
+    const { withLock } = await import("../src/lock.ts");
+    const res = await withLock(
+      dir,
+      async () => {
+        return await runner.run(
+          buildStoreInvocation("corm", fspec, 1, "2026-11-15:reentrant lock test", axisPath, dir),
+        );
+      },
+      { timeoutMs: 500 },
+    );
+    assert.equal(res.code, 0, `Nested mutation inside withLock failed: ${res.stderr}`);
+  } finally {
+    addon?.closeCormEngine?.(fspec);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

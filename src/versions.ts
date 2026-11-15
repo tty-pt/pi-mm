@@ -188,6 +188,8 @@ function findRepoRoot(startDir: string): string | null {
   return null;
 }
 
+const gitVersionCache = new Map<string, { path: string; version: string } | null>();
+
 function findGitVersion(comp: EngineName, cwd: string, home: string): { path: string; version: string } | null {
   const repoRoot = findRepoRoot(cwd);
   const short = comp.replace(/^lib/, "");
@@ -200,6 +202,12 @@ function findGitVersion(comp: EngineName, cwd: string, home: string): { path: st
   ];
   for (const dir of candidateDirs) {
     if (!existsSync(join(dir, ".git"))) continue;
+    const resolvedDir = resolve(dir);
+    if (gitVersionCache.has(resolvedDir)) {
+      const cached = gitVersionCache.get(resolvedDir) ?? null;
+      if (cached) return cached;
+      continue;
+    }
     try {
       const out = execSync("git describe --tags --always", {
         cwd: dir,
@@ -208,8 +216,12 @@ function findGitVersion(comp: EngineName, cwd: string, home: string): { path: st
         timeout: 1000,
       });
       const ver = parseGitDescribeTag(out);
-      if (ver) return { path: dir, version: ver };
-    } catch { /* best effort */ }
+      const result = ver ? { path: dir, version: ver } : null;
+      gitVersionCache.set(resolvedDir, result);
+      if (result) return result;
+    } catch {
+      gitVersionCache.set(resolvedDir, null);
+    }
   }
   return null;
 }

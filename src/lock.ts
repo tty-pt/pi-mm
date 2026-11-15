@@ -1,8 +1,10 @@
 import { open, unlink, stat, readFile, mkdir, writeFile, link } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 
 const inProcessLocks = new Map<string, Promise<void>>();
+const heldLockDirs = new AsyncLocalStorage<ReadonlySet<string>>();
 
 export interface LockOptions {
   timeoutMs?: number;
@@ -303,35 +305,74 @@ async function acquireFileLock(
   }
 }
 
+export function isLockHeldInCurrentContext(dir: string): boolean {
+  const normalized = resolvePath(dir);
+  const currentHeld = heldLockDirs.getStore();
+  return Boolean(currentHeld && currentHeld.has(normalized));
+}
+
 export async function withLock<T>(
   dir: string,
   fn: () => Promise<T>,
   opts: LockOptions = {},
 ): Promise<T> {
+  const normalizedDir = resolvePath(dir);
+  const currentHeld = heldLockDirs.getStore();
+  if (currentHeld && currentHeld.has(normalizedDir)) {
+    return await fn();
+  }
+
   const timeoutMs = opts.timeoutMs ?? 3000;
   const staleThresholdMs = opts.staleThresholdMs ?? 5000;
+  const start = Date.now();
 
   // 1. In-process queue: ensures serialized execution within the same process
   let releaseInProcess: () => void = () => {};
-  const currentLock = inProcessLocks.get(dir) ?? Promise.resolve();
+  const currentLock = inProcessLocks.get(normalizedDir) ?? Promise.resolve();
   const lockAcquiredPromise = new Promise<void>((resolve) => {
     releaseInProcess = resolve;
   });
-  inProcessLocks.set(dir, currentLock.then(() => lockAcquiredPromise, () => lockAcquiredPromise));
-  await currentLock;
+  const chained = currentLock.then(() => lockAcquiredPromise, () => lockAcquiredPromise);
+  inProcessLocks.set(normalizedDir, chained);
+
+  const lockFile = join(dir, ".mm.lock");
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      currentLock,
+      new Promise<never>((_, reject) => {
+        waitTimer = setTimeout(() => {
+          reject(new Error(`Failed to acquire memory lock on ${lockFile} after ${timeoutMs}ms (lock contention)`));
+        }, timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    releaseInProcess();
+    if (inProcessLocks.get(normalizedDir) === chained) {
+      inProcessLocks.delete(normalizedDir);
+    }
+    throw err;
+  } finally {
+    if (waitTimer !== undefined) clearTimeout(waitTimer);
+  }
 
   // 2. Cross-process filesystem lock: unconditionally enforced inside try/finally
-  const lockFile = join(dir, ".mm.lock");
   let acquiredToken: string | null = null;
+  const nextHeld = new Set(currentHeld);
+  nextHeld.add(normalizedDir);
 
   try {
     await mkdir(dir, { recursive: true });
-    acquiredToken = await acquireFileLock(lockFile, Date.now(), timeoutMs, staleThresholdMs, opts);
-    return await fn();
+    const remainingMs = Math.max(20, timeoutMs - (Date.now() - start));
+    acquiredToken = await acquireFileLock(lockFile, start, remainingMs, staleThresholdMs, opts);
+    return await heldLockDirs.run(nextHeld, fn);
   } finally {
     if (acquiredToken) {
       await safeReleaseFileLock(lockFile, acquiredToken);
     }
     releaseInProcess();
+    if (inProcessLocks.get(normalizedDir) === chained) {
+      inProcessLocks.delete(normalizedDir);
+    }
   }
 }

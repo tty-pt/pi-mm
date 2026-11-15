@@ -120,12 +120,6 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const hasNativeAddon = !isTestMock && (await loadCormAddonModule()) !== null;
     const lockHeld = await isDaemonLockHeld(join(mDir, ".cormd.lock"));
 
-    // Primary path: in-process N-API addon (`@tty-pt/corm`), unless an external cormd lock is held
-    // or the operator explicitly configured `cormdBin`.
-    if (hasNativeAddon && !cfg.cormdBin && !lockHeld) {
-      return readToolEnv(ctx.cwd, localRunner);
-    }
-
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
     const cormdRes = cfg.cormdBin
@@ -133,7 +127,9 @@ export function defaultEnvSource(pi: Pi): EnvSource {
       : resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
 
     let runner: CormRunner;
-    if (cormdRes.path !== "" && (Boolean(cfg.cormdBin) || lockHeld || (!hasNativeAddon && isProject))) {
+    // Prefer resident cormd for project stores when cormd is installed so the in-memory
+    // lemma/sepal indices stay warm across turns/processes and queries remain non-blocking.
+    if (cormdRes.path !== "" && (Boolean(cfg.cormdBin) || lockHeld || isProject)) {
       let runnerPromise = runnerCache.get(socketPath);
       if (!runnerPromise) {
         runnerPromise = (async () => {
@@ -158,8 +154,10 @@ export function defaultEnvSource(pi: Pi): EnvSource {
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
       ]);
       runner = fastReady ?? new DaemonCormRunner(socketPath, fallbackRunner);
+    } else if (hasNativeAddon) {
+      runner = localRunner;
     } else {
-      runner = hasNativeAddon ? localRunner : new DaemonCormRunner(socketPath, fallbackRunner);
+      runner = new DaemonCormRunner(socketPath, fallbackRunner);
     }
     return readToolEnv(ctx.cwd, runner);
   };
