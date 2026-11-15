@@ -85,7 +85,14 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const socketPath = resolveSocketPath(cfg, mDir);
 
     const isTestMock = ctx.cwd.includes("fake");
-    const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+    const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(mDir) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+    if (!isTestMock) {
+      try {
+        await mkdir(mDir, { recursive: true });
+      } catch {
+        // Best-effort directory creation
+      }
+    }
     const fallbackRunner = isTestMock ? shellRunner : localRunner;
 
     // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),

@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@tty-pt/axil": "^1.8.0",
-    "@tty-pt/auren": "^1.5.1",
+    "@tty-pt/auren": "^1.5.0",
     "@tty-pt/stele": "^1.7.1",
     "@tty-pt/corm": "^2.4.1",
     "@tty-pt/joint": "^1.8.1",

@@ -119,23 +119,13 @@ export function parseGitDescribeTag(tag: string): string | null {
   return match ? match[1] : null;
 }
 
-interface ParsedSemver {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease?: string;
-}
+interface ParsedSemver { major: number; minor: number; patch: number; prerelease?: string; }
 
 function parseSemver(v: string): ParsedSemver | null {
   const trimmed = v.trim().replace(/^v/i, "");
-  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/.exec(trimmed);
-  if (!match) return null;
-  return {
-    major: Number(match[1]),
-    minor: match[2] !== undefined ? Number(match[2]) : 0,
-    patch: match[3] !== undefined ? Number(match[3]) : 0,
-    prerelease: match[4],
-  };
+  const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/.exec(trimmed);
+  if (!m) return null;
+  return { major: Number(m[1]), minor: m[2] !== undefined ? Number(m[2]) : 0, patch: m[3] !== undefined ? Number(m[3]) : 0, prerelease: m[4] };
 }
 
 export function compareSemver(a: string, b: string): number {
@@ -156,12 +146,8 @@ export function satisfiesMinVersion(actual: string, minRequired: string): boolea
 }
 
 const DEFAULT_PC_DIRS = [
-  "/usr/lib/pkgconfig",
-  "/usr/local/lib/pkgconfig",
-  "/usr/share/pkgconfig",
-  "/usr/lib/x86_64-linux-gnu/pkgconfig",
-  "/usr/lib/aarch64-linux-gnu/pkgconfig",
-  "/opt/homebrew/lib/pkgconfig",
+  "/usr/lib/pkgconfig", "/usr/local/lib/pkgconfig", "/usr/share/pkgconfig",
+  "/usr/lib/x86_64-linux-gnu/pkgconfig", "/usr/lib/aarch64-linux-gnu/pkgconfig", "/opt/homebrew/lib/pkgconfig",
 ];
 
 function findPcFile(aliases: string[], searchDirs: string[]): { path: string; version: string } | null {
@@ -180,8 +166,7 @@ function findPcFile(aliases: string[], searchDirs: string[]): { path: string; ve
 }
 
 function findRepoRoot(startDir: string): string | null {
-  let curr = startDir;
-  for (let i = 0; i < 6; i++) {
+  for (let curr = startDir, i = 0; i < 6; i++) {
     if (existsSync(join(curr, "external"))) return curr;
     const parent = dirname(curr);
     if (parent === curr) break;
@@ -196,11 +181,9 @@ function findGitVersion(comp: EngineName, cwd: string, home: string): { path: st
   const repoRoot = findRepoRoot(cwd);
   const short = comp.replace(/^lib/, "");
   const candidateDirs = [
-    join(cwd, "external", comp),
-    join(cwd, "external", short),
+    join(cwd, "external", comp), join(cwd, "external", short),
     ...(repoRoot ? [join(repoRoot, "external", comp), join(repoRoot, "external", short)] : []),
-    join(cwd, "..", comp),
-    join(home, comp),
+    join(cwd, "..", comp), join(home, comp),
   ];
   for (const dir of candidateDirs) {
     if (!existsSync(join(dir, ".git"))) continue;
@@ -211,12 +194,7 @@ function findGitVersion(comp: EngineName, cwd: string, home: string): { path: st
       continue;
     }
     try {
-      const out = execSync("git describe --tags --always", {
-        cwd: dir,
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf8",
-        timeout: 1000,
-      });
+      const out = execSync("git describe --tags --always", { cwd: dir, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 1000 });
       const ver = parseGitDescribeTag(out);
       const result = ver ? { path: dir, version: ver } : null;
       gitVersionCache.set(resolvedDir, result);
@@ -228,15 +206,12 @@ function findGitVersion(comp: EngineName, cwd: string, home: string): { path: st
   return null;
 }
 
-function findNpmPackageDirs(comp: EngineName, cwd: string, includeModuleRelative = true): string[] {
+function findNpmPackageDirs(comp: EngineName, cwd: string, includeModuleRelative = true, home = homedir()): string[] {
   const short = NPM_SHORT_NAMES[comp];
   if (!short) return [];
   const dirs: string[] = [];
-  const add = (d: string) => {
-    if (d && !dirs.includes(d) && existsSync(d)) dirs.push(d);
-  };
-  let curr = cwd;
-  for (let i = 0; i < 4; i++) {
+  const add = (d: string) => { if (d && !dirs.includes(d) && existsSync(d)) dirs.push(d); };
+  for (let curr = cwd, i = 0; i < 4; i++) {
     add(join(curr, "node_modules", "@tty-pt", short));
     add(join(curr, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
     add(join(curr, ".pi", "npm", "node_modules", "@tty-pt", short));
@@ -246,15 +221,19 @@ function findNpmPackageDirs(comp: EngineName, cwd: string, includeModuleRelative
     if (!parent || parent === curr) break;
     curr = parent;
   }
+  for (const base of [cwd, home]) {
+    add(join(base, "node_modules", "@tty-pt", short));
+    add(join(base, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
+    add(join(base, ".pi", "npm", "node_modules", "@tty-pt", short));
+  }
   if (includeModuleRelative) {
     try {
-      const home = homedir();
-      add(join(home, "node_modules", "@tty-pt", short));
-      add(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
-      add(join(home, ".pi", "npm", "node_modules", "@tty-pt", short));
-    } catch { /* ignore */ }
-    try {
-      add(dirname(createRequire(import.meta.url).resolve(`@tty-pt/${short}/package.json`)));
+      const req = createRequire(import.meta.url);
+      try { add(dirname(req.resolve(`@tty-pt/${short}/package.json`))); } catch {
+        for (let d = dirname(req.resolve(`@tty-pt/${short}`)), i = 0; i < 4; i++, d = dirname(d)) {
+          if (existsSync(join(d, "package.json"))) { add(d); break; }
+        }
+      }
     } catch { /* ignore */ }
     try {
       const here = dirname(fileURLToPath(import.meta.url));
@@ -281,40 +260,26 @@ function findNpmPackageJsonVersion(dirs: string[]): { path: string; version: str
   return null;
 }
 
-function buildReport(
-  name: EngineName,
-  minRequired: string,
-  found: { path: string; version: string } | null,
-  source: VersionSource | null,
-): ComponentVersionReport {
-  if (!found || !source) {
-    return { name, installed: false, version: null, minRequired, status: "missing", source: null };
-  }
+function buildReport(name: EngineName, minRequired: string, found: { path: string; version: string } | null, source: VersionSource | null): ComponentVersionReport {
+  if (!found || !source) return { name, installed: false, version: null, minRequired, status: "missing", source: null };
   const status = satisfiesMinVersion(found.version, minRequired) ? "satisfied" : "outdated";
   return { name, installed: true, version: found.version, minRequired, status, source, path: found.path };
 }
 
-export function detectComponentVersion(
-  name: EngineName,
-  opts: VersionDetectOptions = {},
-): ComponentVersionReport | null {
+export function detectComponentVersion(name: EngineName, opts: VersionDetectOptions = {}): ComponentVersionReport | null {
   const cwd = opts.cwd ?? (typeof process !== "undefined" ? process.cwd() : ".");
   const home = opts.home ?? homedir();
   const includeDefaults = opts.includeDefaultDirs !== false;
   const repoRoot = includeDefaults ? findRepoRoot(cwd) : null;
-  const npmDirs = findNpmPackageDirs(name, cwd, includeDefaults);
+  const npmDirs = findNpmPackageDirs(name, cwd, includeDefaults, home);
   const short = name.replace(/^lib/, "");
   const searchDirs = [
-    ...(opts.searchDirs ?? []),
-    ...npmDirs,
+    ...(opts.searchDirs ?? []), ...npmDirs,
     ...(includeDefaults
       ? [
-          join(home, ".local", "lib", "pkgconfig"),
-          join(cwd, "external", name),
-          join(cwd, "external", short),
+          join(home, ".local", "lib", "pkgconfig"), join(cwd, "external", name), join(cwd, "external", short),
           ...(repoRoot ? [join(repoRoot, "external", name), join(repoRoot, "external", short)] : []),
-          join(home, name),
-          ...DEFAULT_PC_DIRS,
+          join(home, name), ...DEFAULT_PC_DIRS,
         ]
       : []),
   ];

@@ -969,16 +969,23 @@ export function resolveNodeModulesAxisDirs(
     if (probe === existsSync) {
       try {
         const home = homedir();
-        addRoot(join(home, "node_modules", "@tty-pt", axis));
-        addRoot(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
-        addRoot(join(home, ".pi", "npm", "node_modules", "@tty-pt", axis));
+        if (home) {
+          addRoot(join(home, "node_modules", "@tty-pt", axis));
+          addRoot(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
+          addRoot(join(home, ".pi", "npm", "node_modules", "@tty-pt", axis));
+        }
       } catch {
         // ignore
       }
       try {
         const req = createRequire(import.meta.url);
-        const pkgJson = req.resolve(`@tty-pt/${axis}/package.json`);
-        addRoot(dirname(pkgJson));
+        try {
+          addRoot(dirname(req.resolve(`@tty-pt/${axis}/package.json`)));
+        } catch {
+          for (let d = dirname(req.resolve(`@tty-pt/${axis}`)), i = 0; i < 4; i++, d = dirname(d)) {
+            if (existsSync(join(d, "package.json"))) { addRoot(d); break; }
+          }
+        }
       } catch {
         // ignore
       }

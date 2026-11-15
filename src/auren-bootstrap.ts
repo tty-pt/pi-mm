@@ -422,6 +422,19 @@ function platformPrebuildKeys(): string[] {
     : [`${process.platform}-${process.arch}`];
 }
 
+export function resolveInstalledPkgRoot(name: string, searchPaths?: string[]): string | null {
+  try {
+    const req = createRequire(import.meta.url);
+    const opts = searchPaths ? { paths: searchPaths } : undefined;
+    try { return dirname(req.resolve(`@tty-pt/${name}/package.json`, opts)); } catch {
+      for (let d = dirname(req.resolve(`@tty-pt/${name}`, opts)), i = 0; i < 4; i++, d = dirname(d)) {
+        if (existsSync(join(d, "package.json"))) return d;
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function resolvePkgRoots(name: string, bases: string[], includeDefaultDirs: boolean): string[] {
   const roots: string[] = [];
   const add = (r: string | null | undefined) => { if (r && !roots.includes(r)) roots.push(r); };
@@ -433,7 +446,7 @@ function resolvePkgRoots(name: string, bases: string[], includeDefaultDirs: bool
     add(join(b, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", name));
   }
   if (includeDefaultDirs) {
-    try { add(dirname(createRequire(import.meta.url).resolve(`@tty-pt/${name}/package.json`))); } catch { /* ignore */ }
+    add(resolveInstalledPkgRoot(name));
     try {
       const here = dirname(fileURLToPath(import.meta.url));
       for (const rel of ["..", "../..", "../../..", "../../../..", "../../../../.."]) {
@@ -537,15 +550,14 @@ export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = t
   const exts = [".so", ".dylib", ".dll"];
   const keys = platformPrebuildKeys();
   const bases: string[] = [];
-  let curr = cwd;
-  for (let i = 0; i < 4; i++) {
+  for (let curr = cwd, i = 0; i < 4; i++) {
     bases.push(curr);
     const parent = dirname(curr);
     if (!parent || parent === curr) break;
     curr = parent;
   }
   const home = homedir();
-  if (!bases.includes(home)) bases.push(home);
+  if (includeDefaultDirs && !bases.includes(home)) bases.push(home);
   const pkgRoots = resolvePkgRoots("sepal", bases, includeDefaultDirs);
   const candidates: string[] = [];
   for (const ext of exts) candidates.push(join(cwd, "external", "libsepal", "lib", `libsepal${ext}`));
@@ -565,11 +577,7 @@ export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = t
 // ───────────────────────────── server probe / lifecycle ─────────────────────────────
 
 export async function isAurenRunning(url: string = DEFAULT_AUREN_URL, timeoutMs = 250): Promise<boolean> {
-  const base = url
-    .replace(/\/+$/, "")
-    .replace(/\/api\/v1\/systemone$/, "")
-    .replace(/\/api\/v1\/systemzero\/?$/, "")
-    .replace(/\/v1$/, "");
+  const base = url.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/api\/v1\/systemzero\/?$/, "").replace(/\/v1$/, "");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -609,28 +617,13 @@ export function diagnoseAuren(d: DiagnoseInput): Notice[] {
   const notices: Notice[] = [];
   for (const dl of d.downloads) {
     const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-    notices.push({
-      code: "downloading",
-      severity: "info",
-      message: `Downloading local model "${dl.id}" (${pct}%)…`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "downloading", severity: "info", message: `Downloading local model "${dl.id}" (${pct}%)…`, link: DOCS_PIMM_PREREQUISITES });
   }
   for (const f of d.failures ?? []) {
-    notices.push({
-      code: "download-failed",
-      severity: "warning",
-      message: `Could not download model "${f.id}": ${f.error}. It will be retried next session.`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "download-failed", severity: "warning", message: `Could not download model "${f.id}": ${f.error}. It will be retried next session.`, link: DOCS_PIMM_PREREQUISITES });
   }
   for (const m of d.pendingConsent ?? []) {
-    notices.push({
-      code: "needs-consent",
-      severity: "info",
-      message: `Optional model "${m.id}" (${(m.bytes / 1073741824).toFixed(1)} GB) was not downloaded. Set autoDownloadModels to "auto" to fetch it.`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "needs-consent", severity: "info", message: `Optional model "${m.id}" (${(m.bytes / 1073741824).toFixed(1)} GB) was not downloaded. Set autoDownloadModels to "auto" to fetch it.`, link: DOCS_PIMM_PREREQUISITES });
   }
   if (d.running) return notices;
 

@@ -98,6 +98,7 @@ export class CodeStore {
   readonly socketPath: string;
   cormBin: string;
   cormdBin: string;
+  private readonly explicitCormdBin?: string;
   axisPath: string;
   runner: CormRunner;
   private readonly shellRunner: CormRunner;
@@ -136,6 +137,7 @@ export class CodeStore {
     const pathDirs = (envMap["PATH"] || "").split(":");
     const resolvedBin = options.cormBin || resolveCormBin({ cormBin: "" } as unknown as MmConfig, this.projectRoot, pathDirs, existsSync).path;
     this.cormBin = resolvedBin || "corm";
+    this.explicitCormdBin = options.cormdBin;
     this.cormdBin = options.cormdBin ?? "";
     this.embedUrl = options.embedUrl || envMap["CORM_SEPAL_EMBED_URL"];
 
@@ -201,7 +203,7 @@ export class CodeStore {
       }
       this.loadManifestFromDisk();
       if (this.persistToCorm && !this.hasCustomRunner && !this.projectRoot.includes("fake")) {
-        if (!this.cormdBin) {
+        if (!this.cormdBin && this.explicitCormdBin === undefined) {
           const envMap = runtimeEnv();
           const pathDirs = (envMap["PATH"] || "").split(":");
           this.cormdBin = resolveCormdBin({ cormBin: this.cormBin } as unknown as MmConfig, this.projectRoot, pathDirs, existsSync).path;
@@ -298,14 +300,9 @@ export class CodeStore {
   async flush(timeoutMs = 250): Promise<void> {
     if (this.inFlightWrites.size === 0) return;
     const all = Promise.allSettled(Array.from(this.inFlightWrites));
-    if (timeoutMs <= 0) {
-      await all;
-      return;
-    }
-    await Promise.race([
-      all,
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    if (timeoutMs <= 0) { await all; return; }
+    let t: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([all, new Promise<void>((r) => { t = setTimeout(r, timeoutMs); })]); } finally { if (t !== undefined) clearTimeout(t); }
   }
 
   async ensureIndexed(maxFiles = DEFAULT_MAX_FILES, forceSweep = false): Promise<{ scannedFiles: number; totalSymbols: number }> {
@@ -669,35 +666,25 @@ export class CodeStore {
   }
 
   async queryLexical(query: string, limit = 10): Promise<ResultLine[]> {
+    let t: ReturnType<typeof setTimeout> | undefined;
     try {
       if (this.daemonReadyPromise) await this.daemonReadyPromise;
-      const inv = buildScanInvocation(
-        this.cormBin, this.filespec, "(lemma)", limit, this.axisPath, this.indexDir, this.extraEnv,
-        ["--field=text", "--query=" + query],
-      );
-      const res = await Promise.race([
-        this.runner.run(inv),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), CORM_QUERY_TIMEOUT_MS)),
-      ]);
+      const inv = buildScanInvocation(this.cormBin, this.filespec, "(lemma)", limit, this.axisPath, this.indexDir, this.extraEnv, ["--field=text", "--query=" + query]);
+      const res = await Promise.race([this.runner.run(inv), new Promise<null>((r) => { t = setTimeout(() => r(null), CORM_QUERY_TIMEOUT_MS); })]);
       if (res && res.code === 0 && res.stdout) return parseResultLines(res.stdout);
-    } catch { /* fallback to in-memory */ }
+    } catch { /* fallback to in-memory */ } finally { if (t !== undefined) clearTimeout(t); }
     return [];
   }
 
   async querySemantic(query: string, limit = 10): Promise<ResultLine[]> {
     if (!this.embedUrl) return [];
+    let t: ReturnType<typeof setTimeout> | undefined;
     try {
       if (this.daemonReadyPromise) await this.daemonReadyPromise;
-      const inv = buildScanInvocation(
-        this.cormBin, this.filespec, "(sepal)", limit, this.axisPath, this.indexDir, this.extraEnv,
-        ["--query=" + query, "--min-sim=0.2"],
-      );
-      const res = await Promise.race([
-        this.runner.run(inv),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), CORM_QUERY_TIMEOUT_MS)),
-      ]);
+      const inv = buildScanInvocation(this.cormBin, this.filespec, "(sepal)", limit, this.axisPath, this.indexDir, this.extraEnv, ["--query=" + query, "--min-sim=0.2"]);
+      const res = await Promise.race([this.runner.run(inv), new Promise<null>((r) => { t = setTimeout(() => r(null), CORM_QUERY_TIMEOUT_MS); })]);
       if (res && res.code === 0 && res.stdout) return parseResultLines(res.stdout);
-    } catch { /* fallback to in-memory */ }
+    } catch { /* fallback to in-memory */ } finally { if (t !== undefined) clearTimeout(t); }
     return [];
   }
 

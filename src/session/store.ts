@@ -267,10 +267,17 @@ export class SessionStore {
       await all;
       return;
     }
-    await Promise.race([
-      all,
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        all,
+        new Promise<void>((resolve) => {
+          timerId = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timerId !== undefined) clearTimeout(timerId);
+    }
   }
 
   constructor(

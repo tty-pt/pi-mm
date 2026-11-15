@@ -93,7 +93,10 @@ export async function primeSubsystemInvariants(
 ): Promise<FusedCandidate[]> {
   if (subsystems.length === 0) return [];
   const results: FusedCandidate[] = [];
-  const timer = new Promise<FusedCandidate[]>((resolve) => setTimeout(() => resolve([]), timeoutMs));
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<FusedCandidate[]>((resolve) => {
+    timerId = setTimeout(() => resolve([]), timeoutMs);
+  });
   const work = (async () => {
     for (const sub of subsystems.slice(0, 3)) {
       try {
@@ -118,7 +121,11 @@ export async function primeSubsystemInvariants(
     }
     return results;
   })();
-  return await Promise.race([work, timer]);
+  try {
+    return await Promise.race([work, timer]);
+  } finally {
+    if (timerId !== undefined) clearTimeout(timerId);
+  }
 }
 
 export function isMemoryRecallPrompt(prompt?: string): boolean {

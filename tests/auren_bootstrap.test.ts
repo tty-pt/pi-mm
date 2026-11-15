@@ -17,6 +17,7 @@ import {
   describeModelStatus,
   ensureAuren,
   resetBootstrapForTests,
+  resolveInstalledPkgRoot,
 } from "../src/auren-bootstrap.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -348,6 +349,27 @@ Deno.test("findAurenLauncher: repo script, system axil + module, or null; no har
     check(l?.kind === "axil", "npm @tty-pt/axil launcher found");
     check(l?.command === nmAxilBin, `expected ${nmAxilBin}, got ${l?.command}`);
     check(l!.args.includes(join(nmAurenDir, "libaxil-auren")), "prebuilt libaxil-auren resolved");
+
+    // Verify discovery from user's ~/.pi/agent/npm/node_modules/@tty-pt/* in an empty project cwd
+    rmSync(join(cwd, "node_modules"), { recursive: true, force: true });
+    const piGlobalAxil = join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", "axil");
+    const piGlobalAxilBin = join(piGlobalAxil, "bin", "axil.js");
+    const piGlobalAurenDir = join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", "auren", "prebuilds", prebuildKey);
+    touch(piGlobalAxilBin, "#!/usr/bin/env node\n");
+    touch(
+      join(piGlobalAxil, "package.json"),
+      JSON.stringify({ name: "@tty-pt/axil", version: "1.8.0", main: "dist/index.js", exports: { ".": "./dist/index.js" } }),
+    );
+    touch(join(piGlobalAxil, "dist", "index.js"), "export default {};\n");
+    touch(join(piGlobalAurenDir, "libaxil-auren.so"), "elf");
+    l = findAurenLauncher({ home, cwd, env: { PATH: "" }, libDirs: [] });
+    check(l?.kind === "axil", "global ~/.pi/agent/npm @tty-pt/axil launcher found");
+    check(l?.command === piGlobalAxilBin, `expected ${piGlobalAxilBin}, got ${l?.command}`);
+    check(l!.args.includes(join(piGlobalAurenDir, "libaxil-auren")), "global ~/.pi/agent/npm libaxil-auren resolved");
+
+    // Verify resolveInstalledPkgRoot handles restrictive package.json exports without ./package.json
+    const resolvedRoot = resolveInstalledPkgRoot("axil", [join(home, ".pi", "agent", "npm")]);
+    check(resolvedRoot === piGlobalAxil, `expected resolveInstalledPkgRoot to return ${piGlobalAxil}, got ${resolvedRoot}`);
   } finally {
     for (const d of [home, cwd, bin, lib]) rmSync(d, { recursive: true, force: true });
   }

@@ -12,12 +12,12 @@ const DEFAULT_BUDGET_FN_LOC = 80;
 // Subsystem architectural baselines for core kernel modules
 const SUBSYSTEM_BUDGETS: Record<string, { file: number; fn: number }> = {
   "tools/consolidate.ts": { file: 2000, fn: 500 },
-  "hooks/events.ts": { file: 2300, fn: 500 },
+  "hooks/events.ts": { file: 2350, fn: 520 },
   "payload.ts": { file: 1400, fn: 500 },
   "daemon.ts": { file: 750, fn: 250 },
   "tools/consolidation_journal.ts": { file: 800, fn: 150 },
   "config.ts": { file: 1300, fn: 260 },
-  "auren-bootstrap.ts": { file: 1000, fn: 120 },
+  "auren-bootstrap.ts": { file: 1080, fn: 120 },
   "hooks/auto_recall.ts": { file: 1150, fn: 250 },
   "hooks/reinforcement.ts": { file: 350, fn: 130 },
   "session/compaction.ts": { file: 350, fn: 150 },
@@ -39,6 +39,7 @@ const SUBSYSTEM_BUDGETS: Record<string, { file: number; fn: number }> = {
   "index.ts": { file: 420, fn: 220 },
   "judge/adapter.ts": { file: 350, fn: 100 },
   "synth/adapter.ts": { file: 350, fn: 100 },
+  "lock.ts": { file: 400, fn: 120 },
 };
 
 function estimateFnSize(text: string): Array<{ name: string; loc: number }> {

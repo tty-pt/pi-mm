@@ -116,7 +116,13 @@ async function acquireRecoveryCoordinationLock(
   // 1. OS-enforced advisory lock (flock) via Deno.open and tryLock(true)
   if (typeof Deno !== "undefined" && typeof Deno.open === "function") {
     try {
-      const f = await Deno.open(recoveryLockFile, { create: true, write: true, read: true });
+      const f = (await Deno.open(recoveryLockFile, { create: true, write: true, read: true })) as unknown as {
+        tryLock(exclusive?: boolean): Promise<boolean>;
+        unlock(): Promise<void>;
+        truncate(len?: number): Promise<void>;
+        write(p: Uint8Array): Promise<number>;
+        close(): void;
+      };
       const acquired = await f.tryLock(true);
       if (acquired) {
         try {

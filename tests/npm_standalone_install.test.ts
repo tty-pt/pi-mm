@@ -61,6 +61,15 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
       }
     }
 
+    for (const extra of [
+      { short: "axil", version: "1.8.0" },
+      { short: "auren", version: "1.5.0" },
+    ]) {
+      const pkgDir = join(tmp, "node_modules", "@tty-pt", extra.short);
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: `@tty-pt/${extra.short}`, version: extra.version }));
+    }
+
     // 1. Verify resolveAxisPath prefers node_modules/@tty-pt/<axis>/prebuilds/<key> over /usr/lib
     const resolvedAxes = resolveAxisPath(DEFAULT_CONFIG, tmp);
     const expectedAxes = [
@@ -90,9 +99,9 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
       `Expected findSepalLib to resolve node_modules libsepal.so, got ${sepalLib}`,
     );
 
-    // 3. Verify checkAllEngineVersions satisfies all 5 C libraries strictly from node_modules/@tty-pt/*
+    // 3. Verify checkAllEngineVersions satisfies all 7 engines strictly from node_modules/@tty-pt/*
     const reports = checkAllEngineVersions({ cwd: tmp, home: tmp, includeDefaultDirs: false });
-    for (const eng of ["libcorm", "libjoint", "liblemma", "libsepal", "libislet"] as const) {
+    for (const eng of ["axil", "axil-auren", "libcorm", "libjoint", "liblemma", "libsepal", "libislet"] as const) {
       const rep = reports.find((r) => r.name === eng)!;
       check(
         rep.installed && rep.status === "satisfied",

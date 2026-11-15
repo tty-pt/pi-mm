@@ -27,6 +27,18 @@ export interface CormAddonModule {
 
 let cachedModulePromise: Promise<CormAddonModule | null> | null = null;
 
+function resolveCormPkgRootFromRequire(): string | null {
+  try {
+    const req = createRequire(import.meta.url);
+    try { return dirname(req.resolve("@tty-pt/corm/package.json")); } catch {
+      for (let d = dirname(req.resolve("@tty-pt/corm")), i = 0; i < 4; i++, d = dirname(d)) {
+        if (existsSync(join(d, "package.json"))) return d;
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function resolveLocalCormEntry(): string | null {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
@@ -48,13 +60,8 @@ function resolveLocalCormEntry(): string | null {
       resolve(home, ".pi/npm/node_modules/@tty-pt/corm/dist/index.js"),
       resolve(home, "node_modules/@tty-pt/corm/dist/index.js"),
     ];
-    try {
-      const req = createRequire(import.meta.url);
-      const pkgJson = req.resolve("@tty-pt/corm/package.json");
-      candidates.push(join(dirname(pkgJson), "dist", "index.js"));
-    } catch {
-      // ignore
-    }
+    const reqRoot = resolveCormPkgRootFromRequire();
+    if (reqRoot) candidates.push(join(reqRoot, "dist", "index.js"));
     for (const candidate of candidates) {
       if (existsSync(candidate)) {
         return pathToFileURL(candidate).href;
@@ -91,13 +98,8 @@ function tryDlopenCormAddon(): CormAddonModule | null {
       resolve(home, ".pi/npm/node_modules/@tty-pt/corm"),
       resolve(home, "node_modules/@tty-pt/corm"),
     ];
-    try {
-      const req = createRequire(import.meta.url);
-      const pkgJson = req.resolve("@tty-pt/corm/package.json");
-      pkgRoots.push(dirname(pkgJson));
-    } catch {
-      // ignore
-    }
+    const reqRoot = resolveCormPkgRootFromRequire();
+    if (reqRoot) pkgRoots.push(reqRoot);
     const candidates: string[] = [];
     for (const root of pkgRoots) {
       candidates.push(join(root, "build", "Release", "corm_node.node"));
@@ -175,6 +177,9 @@ function tryDlopenCormAddon(): CormAddonModule | null {
 export async function loadCormAddonModule(): Promise<CormAddonModule | null> {
   if (cachedModulePromise) return cachedModulePromise;
   cachedModulePromise = (async () => {
+    const dlopened = tryDlopenCormAddon();
+    if (dlopened) return dlopened;
+
     const specifiers: string[] = [];
     const localUrl = resolveLocalCormEntry();
     if (localUrl) specifiers.push(localUrl);
@@ -194,7 +199,7 @@ export async function loadCormAddonModule(): Promise<CormAddonModule | null> {
       }
     }
 
-    return tryDlopenCormAddon();
+    return null;
   })();
   return cachedModulePromise;
 }
