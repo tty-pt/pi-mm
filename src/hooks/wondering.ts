@@ -45,6 +45,10 @@ export async function classifyWonderingByEmbedding(
   }) as "wondering" | "routine_action";
 }
 
+export function isStandbyOrYieldMessage(text: string): boolean {
+  return /\b(?:standing by|awaiting (?:review|verdict|validation)|waiting for (?:the )?(?:review|verdict|validator)|yield(?:ing)? (?:immediately|cleanly))\b/i.test(text);
+}
+
 export async function evaluateAssistantWondering(
   text: string,
   cfg: MmConfig,
@@ -53,6 +57,7 @@ export async function evaluateAssistantWondering(
   if (cfg.wonderingEmbed === "off") return false;
   const trimmed = text.trim();
   if (trimmed.length < 10) return false;
+  if (isStandbyOrYieldMessage(trimmed)) return false;
 
   try {
     const verdict = await classifyWonderingByEmbedding(trimmed, cfg, fetchFn);

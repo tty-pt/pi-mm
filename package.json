@@ -1,6 +1,6 @@
 {
   "name": "@tty-pt/pi-mm",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "description": "Memory Mipmaps extension for Pi Coding Agent — persistent, hierarchical recall with automatic bounded context injection and streamlined memory_recall, memory_record, memory_review tools.",
   "keywords": [
     "pi-package",
@@ -43,6 +43,16 @@
     "demo": "deno run --allow-all scripts/demo-bootstrap.ts",
     "test:playbook": "bash scripts/test-bootstrap-playbook.sh",
     "zip": "deno run --allow-all scripts/zip_bundle.ts"
+  },
+  "dependencies": {
+    "@tty-pt/axil": "^1.8.0",
+    "@tty-pt/auren": "^1.5.1",
+    "@tty-pt/stele": "^1.7.1",
+    "@tty-pt/corm": "^2.4.1",
+    "@tty-pt/joint": "^1.8.1",
+    "@tty-pt/lemma": "^1.4.1",
+    "@tty-pt/sepal": "^1.5.1",
+    "@tty-pt/islet": "^1.6.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

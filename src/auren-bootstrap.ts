@@ -13,10 +13,12 @@
  */
 import * as fs from "node:fs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, openSync, closeSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { createRequire } from "node:module";
+import { join, dirname, delimiter, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 export const DEFAULT_AUREN_PORT = 4242;
 export const DEFAULT_AUREN_URL = `http://127.0.0.1:${DEFAULT_AUREN_PORT}`;
@@ -413,6 +415,70 @@ function onPath(name: string, env: Record<string, string | undefined>): string |
 
 const DEFAULT_LIB_DIRS = ["/usr/lib", "/usr/local/lib", "/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/opt/homebrew/lib"];
 
+function platformPrebuildKeys(): string[] {
+  if (typeof process === "undefined") return ["linux-x64"];
+  return process.platform === "linux"
+    ? [`${process.platform}-${process.arch}-musl`, `${process.platform}-${process.arch}`]
+    : [`${process.platform}-${process.arch}`];
+}
+
+function resolvePkgRoots(name: string, bases: string[], includeDefaultDirs: boolean): string[] {
+  const roots: string[] = [];
+  const add = (r: string | null | undefined) => { if (r && !roots.includes(r)) roots.push(r); };
+  for (const b of bases) add(join(b, "node_modules", "@tty-pt", name));
+  if (includeDefaultDirs) {
+    try { add(dirname(createRequire(import.meta.url).resolve(`@tty-pt/${name}/package.json`))); } catch { /* ignore */ }
+    try {
+      const here = dirname(fileURLToPath(import.meta.url));
+      for (const rel of ["..", "../..", "../../..", "../../../.."]) add(resolve(here, rel, "node_modules", "@tty-pt", name));
+      add(resolve(here, "..", "..", name));
+    } catch { /* ignore */ }
+  }
+  return roots;
+}
+
+function findAxilBins(cwd: string, home: string, env: Record<string, string | undefined>, includeDefaultDirs: boolean): string[] {
+  const bins: string[] = [];
+  const add = (b: string | null | undefined, allowJs = false) => {
+    if (b && !bins.includes(b) && (isExecutableFile(b) || (allowJs && b.endsWith(".js") && existsSync(b)))) bins.push(b);
+  };
+  add(onPath("axil", env));
+  for (const r of resolvePkgRoots("axil", [cwd, home], includeDefaultDirs)) add(join(r, "bin", "axil.js"), true);
+  for (const b of [cwd, home]) {
+    add(join(b, "node_modules", ".bin", "axil"));
+    add(join(b, "external", "axil", "npm", "bin", "axil.js"), true);
+  }
+  if (includeDefaultDirs) {
+    try { add(resolve(dirname(fileURLToPath(import.meta.url)), "../../../..", "external", "axil", "npm", "bin", "axil.js"), true); } catch { /* ignore */ }
+    add(join(home, ".local", "bin", "axil"));
+  }
+  return bins;
+}
+
+function findAurenLibDirs(cwd: string, home: string, explicitLibDirs?: string[]): string[] {
+  const includeDefaultDirs = explicitLibDirs === undefined;
+  const keys = platformPrebuildKeys();
+  const dirs: string[] = [];
+  const add = (d: string | null | undefined) => { if (d && !dirs.includes(d)) dirs.push(d); };
+  if (explicitLibDirs !== undefined) for (const d of explicitLibDirs) add(d);
+  for (const r of resolvePkgRoots("auren", [cwd, home], includeDefaultDirs)) {
+    for (const k of keys) add(join(r, "prebuilds", k));
+    add(join(r, "build", "Release"));
+    add(join(r, "lib"));
+  }
+  for (const b of [cwd, home]) {
+    for (const sub of [join(b, "external", "axil-auren"), join(b, "axil-auren")]) {
+      for (const k of keys) add(join(sub, "npm", "prebuilds", k));
+      add(join(sub, "lib"));
+    }
+  }
+  if (includeDefaultDirs) {
+    add(join(home, ".local", "lib"));
+    for (const d of DEFAULT_LIB_DIRS) add(d);
+  }
+  return dirs;
+}
+
 export function findAurenLaunchers(p: AurenPaths & { port?: number }): Launcher[] {
   const env = envOf(p);
   const home = homeOf(p);
@@ -431,14 +497,11 @@ export function findAurenLaunchers(p: AurenPaths & { port?: number }): Launcher[
     if (existsSync(script)) out.push({ kind: "script", command: script, args: [], workdir: root });
   }
 
-  const axil = onPath("axil", env);
-  if (axil) {
-    const libDirs = p.libDirs ?? [join(home, ".local", "lib"), ...DEFAULT_LIB_DIRS];
-    for (const dir of libDirs) {
-      for (const ext of [".so", ".dylib"]) {
-        if (existsSync(join(dir, `libaxil-auren${ext}`))) {
-          out.push({ kind: "axil", command: axil, args: ["-A", "-p", port, "-m", join(dir, "libaxil-auren")] });
-        }
+  for (const axil of findAxilBins(cwd, home, env, p.libDirs === undefined)) {
+    for (const dir of findAurenLibDirs(cwd, home, p.libDirs)) {
+      if (existsSync(join(dir, "libaxil-auren.so")) || existsSync(join(dir, "libaxil-auren.dylib"))) {
+        out.push({ kind: "axil", command: axil, args: ["-A", "-p", port, "-m", join(dir, "libaxil-auren")] });
+        break;
       }
     }
   }
@@ -455,17 +518,32 @@ export function findAurenServer(cwd: string = process.cwd()): string | null {
   return l ? l.command : null;
 }
 
-export function findSepalLib(cwd: string = process.cwd()): string | null {
+export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = true): string | null {
   const envLib = typeof process !== "undefined" ? process.env?.["SEPAL_LIB"] : undefined;
   if (envLib && existsSync(envLib)) return envLib;
-  const candidates = [
-    join(cwd, "external", "libsepal", "lib", "libsepal.so"),
-    join(homedir(), ".local", "lib", "libsepal.so"),
-    "/usr/local/lib/libsepal.so",
-    "/usr/lib/libsepal.so",
-    "/lib/libsepal.so",
-    "/usr/lib/x86_64-linux-gnu/libsepal.so",
-  ];
+
+  const exts = [".so", ".dylib", ".dll"];
+  const keys = platformPrebuildKeys();
+  const bases: string[] = [];
+  let curr = cwd;
+  for (let i = 0; i < 4; i++) {
+    bases.push(curr);
+    const parent = dirname(curr);
+    if (!parent || parent === curr) break;
+    curr = parent;
+  }
+  const pkgRoots = resolvePkgRoots("sepal", bases, includeDefaultDirs);
+  const candidates: string[] = [];
+  for (const ext of exts) candidates.push(join(cwd, "external", "libsepal", "lib", `libsepal${ext}`));
+  for (const root of pkgRoots) {
+    for (const key of keys) for (const ext of exts) candidates.push(join(root, "prebuilds", key, `libsepal${ext}`));
+    for (const ext of exts) candidates.push(join(root, "build", "Release", `libsepal${ext}`), join(root, "lib", `libsepal${ext}`));
+  }
+  if (includeDefaultDirs) {
+    for (const ext of exts) {
+      candidates.push(join(homedir(), ".local", "lib", `libsepal${ext}`), `/usr/local/lib/libsepal${ext}`, `/usr/lib/libsepal${ext}`, `/lib/libsepal${ext}`, `/usr/lib/x86_64-linux-gnu/libsepal${ext}`);
+    }
+  }
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
 }
@@ -638,7 +716,12 @@ export async function startAurenServer(
       for (const [k, v] of Object.entries(envOf(p))) if (typeof v === "string") env[k] = v;
       env["AUREN_PORT"] = String(port);
       if (p.configPath) env["AUREN_CONFIG_PATH"] = p.configPath;
-      const child = spawn(launcher.command, launcher.args, {
+      const cmd =
+        launcher.command.endsWith(".js") && !isExecutableFile(launcher.command)
+          ? process.execPath
+          : launcher.command;
+      const cmdArgs = cmd === process.execPath ? [launcher.command, ...launcher.args] : launcher.args;
+      const child = spawn(cmd, cmdArgs, {
         detached: true,
         stdio: ["ignore", out, out],
         cwd: launcher.workdir ?? cwdOf(p),
@@ -710,12 +793,12 @@ export function getBootstrapState(): BootstrapState {
   return { ...liveState, downloads: [...liveState.downloads], failures: [...liveState.failures], notices: [...liveState.notices] };
 }
 
-/** Compact progress text for a status bar, e.g. "⬇ bge-base (42%)"; undefined when nothing is downloading. */
+/** Compact progress text for a status bar, e.g. "⬇️ bge-base (42%)"; undefined when nothing is downloading. */
 export function describeProgress(state: BootstrapState = liveState): string | undefined {
   if (state.downloads.length === 0) return undefined;
   const dl = state.downloads[0];
   const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-  return `⬇ ${dl.id} (${pct}%)`;
+  return `⬇️ ${dl.id} (${pct}%)`;
 }
 
 export const AUREN_STATUS_SLOT = "auren-model";

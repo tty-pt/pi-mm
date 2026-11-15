@@ -5,7 +5,7 @@ import type { Pi, PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { MmConfig } from "../config.ts";
 import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config.ts";
 import type { CormRunner } from "../corm.ts";
-import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm.ts";
+import { NativeAddonCormRunner, ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv, loadCormAddonModule, isDaemonLockHeld } from "../corm.ts";
 import { ensureDaemon } from "../daemon.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";
@@ -64,7 +64,7 @@ export async function readToolEnv(cwd: string, runner: CormRunner): Promise<Tool
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
     const resolved = resolveCormBin(cfg, cwd, pathDirs, existsSync).path;
-    cfg.cormBin = resolved;
+    cfg.cormBin = resolved || ((await loadCormAddonModule()) !== null ? "corm" : "");
   }
   try {
     await mkdir(resolveMemDir(cwd, cfg.memDir), { recursive: true });
@@ -76,7 +76,7 @@ export async function readToolEnv(cwd: string, runner: CormRunner): Promise<Tool
 
 export function defaultEnvSource(pi: Pi): EnvSource {
   const shellRunner = new ShellCormRunner((command, args, options) => pi.exec(command, args, options));
-  // Memoize active runner per socketPath to avoid repeat probe/ensureDaemon on every single turn/hook
+  const localRunner = new NativeAddonCormRunner(shellRunner);
   const runnerCache = new Map<string, Promise<CormRunner>>();
 
   return async (ctx) => {
@@ -88,12 +88,9 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const fspec = filespecFor(mDir, embed);
     const eEnv = embedEnv(cfg);
 
-    const env = runtimeEnv();
-    const pathDirs = (env["PATH"] ?? "").split(":");
-    const cormdRes = resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
-
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+    const fallbackRunner = isTestMock ? shellRunner : localRunner;
 
     // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
     // and adopt the local server for judge/embeddings as soon as it answers.
@@ -120,12 +117,23 @@ export function defaultEnvSource(pi: Pi): EnvSource {
       }
     }
 
+    const hasNativeAddon = !isTestMock && (await loadCormAddonModule()) !== null;
+    const lockHeld = await isDaemonLockHeld(join(mDir, ".cormd.lock"));
+
+    // Primary path: in-process N-API addon (`@tty-pt/corm`), unless an external cormd lock is held
+    // or the operator explicitly configured `cormdBin`.
+    if (hasNativeAddon && !cfg.cormdBin && !lockHeld) {
+      return readToolEnv(ctx.cwd, localRunner);
+    }
+
+    const env = runtimeEnv();
+    const pathDirs = (env["PATH"] ?? "").split(":");
+    const cormdRes = cfg.cormdBin
+      ? { path: cfg.cormdBin }
+      : resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
+
     let runner: CormRunner;
-    if (cormdRes.path !== "" && isProject) {
-      // Fast non-blocking socket check:
-      // If the daemon socket is already alive and serving the correct database, use DaemonCormRunner immediately (0ms).
-      // If socket is absent or not responding within 50ms, kick off ensureDaemon() in the background and return
-      // DaemonCormRunner (which immediately falls back to ShellCormRunner for any urgent foreground operation without stalling).
+    if (cormdRes.path !== "" && (Boolean(cfg.cormdBin) || lockHeld || (!hasNativeAddon && isProject))) {
       let runnerPromise = runnerCache.get(socketPath);
       if (!runnerPromise) {
         runnerPromise = (async () => {
@@ -138,23 +146,20 @@ export function defaultEnvSource(pi: Pi): EnvSource {
               embedEnv: eEnv,
               cwd: mDir,
             });
-            return new DaemonCormRunner(socketPath, shellRunner);
+            return new DaemonCormRunner(socketPath, fallbackRunner);
           } catch {
-            return new DaemonCormRunner(socketPath, shellRunner);
+            return new DaemonCormRunner(socketPath, fallbackRunner);
           }
         })();
         runnerCache.set(socketPath, runnerPromise);
       }
-
-      // If socket is already established and responding, wait on runnerPromise with a tight 50ms budget;
-      // otherwise, decouple and return DaemonCormRunner immediately so pi startup is never delayed.
       const fastReady = await Promise.race([
         runnerPromise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
       ]);
-      runner = fastReady ?? new DaemonCormRunner(socketPath, shellRunner);
+      runner = fastReady ?? new DaemonCormRunner(socketPath, fallbackRunner);
     } else {
-      runner = new DaemonCormRunner(socketPath, shellRunner);
+      runner = hasNativeAddon ? localRunner : new DaemonCormRunner(socketPath, fallbackRunner);
     }
     return readToolEnv(ctx.cwd, runner);
   };

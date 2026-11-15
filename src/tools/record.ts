@@ -1,7 +1,8 @@
-import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
+import { extractSessionId, type PiCtx, type PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource } from "./index.ts";
 import { executeStore } from "./store.ts";
 import { validateEvidenceRef } from "./lifecycle.ts";
+import { hasAttestedPassingVerification } from "../hooks/verification_ledger.ts";
 import type { EpisodeApproach, EpisodeRecord } from "../types.ts";
 
 const RECORD_PARAMS = {
@@ -37,6 +38,7 @@ const RECORD_PARAMS = {
     evidence: { type: "array", items: { type: "number" }, description: "Refs of supporting memories or investigations." },
     supersedes: { type: "number", description: "Ref of an older memory that this record supersedes." },
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
+    constraints: { type: "array", items: { type: "string" }, description: "Explicit constraints or prohibitions established during this episode." },
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
   },
   required: ["problem", "approaches"],
@@ -60,7 +62,10 @@ async function resolveRecordLifecycle(
     return { lifecycle: "supported", summary: `Episode: ${problem} — verified: ${worked.approach}` };
   }
   if (worked) {
-    const note = reportedTests && reportedTests.length > 0 ? ` (model-reported tests: ${reportedTests.join(", ")})` : "";
+    const sessionId = extractSessionId(ctx);
+    const attested = hasAttestedPassingVerification(sessionId, reportedTests);
+    const label = attested ? "execution-attested ✓" : "model-reported tests";
+    const note = reportedTests && reportedTests.length > 0 ? ` (${label}: ${reportedTests.join(", ")})` : "";
     return { lifecycle: "tested", summary: `Episode: ${problem} — tested: ${worked.approach}${note}` };
   }
   return { lifecycle: "observed", summary: `Episode: ${problem}` };
@@ -101,6 +106,7 @@ async function executeRecord(
     approaches: rawApproaches,
     findings: Array.isArray(params["findings"]) ? (params["findings"] as string[]) : undefined,
     diffs: Array.isArray(params["diffs"]) ? (params["diffs"] as string[]) : undefined,
+    constraints: Array.isArray(params["constraints"]) ? (params["constraints"] as string[]) : undefined,
     outcome: overallOutcome,
   };
 
@@ -120,6 +126,7 @@ async function executeRecord(
     evidence: params["evidence"],
     supersedes: params["supersedes"],
     tags: params["tags"],
+    constraints: params["constraints"],
     standing: isStanding,
   }, ctx);
 

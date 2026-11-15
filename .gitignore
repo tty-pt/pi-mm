@@ -12,3 +12,5 @@ IMPLEMENTATION_STATUS.md
 SYNTHESIS_REPORT.md
 deno.lock
 patches/
+
+.pi/

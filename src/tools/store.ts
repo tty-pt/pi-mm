@@ -5,7 +5,7 @@ import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildStoreInvocation, buildGetInvocation, embedEnv, payloadDate } from "../corm.ts";
 import { allocateNextRef } from "./ref_allocator.ts";
-import { encodePayload, decodePayload, encodeHtokPayload } from "../payload.ts";
+import { encodePayload, decodeResult, encodeHtokPayload } from "../payload.ts";
 import { withLock } from "../lock.ts";
 import { recordAssociations } from "../associative.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord, MemoryContext } from "../types.ts";
@@ -63,6 +63,7 @@ const STORE_PARAMS = {
     evidence: { type: "array", items: { type: "number" }, description: "Underlying evidence refs supporting this memory." },
     supersedes: { type: "number", description: "Ref of an older memory this conclusion replaces." },
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
+    constraints: { type: "array", items: { type: "string" }, description: "Standing restrictions or rules enforced by this memory." },
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
     timestamp: { type: "string", description: "ISO timestamp (used as DATE prefix); default now." },
   },
@@ -82,7 +83,7 @@ async function applySupersedes(
   const bin = env.cfg.cormBin || env.cfg.qmapBin || "";
   const getOld = await env.runner.run(buildGetInvocation(bin, fspec, oldRef, axes, cwd, eEnv));
   if (getOld.code === 0 && getOld.stdout.trim()) {
-    const { date: oldDate, envelope: oldEnv } = decodePayload(getOld.stdout.trim());
+    const { date: oldDate, envelope: oldEnv } = decodeResult(getOld);
     const prev = oldEnv.lifecycle;
     oldEnv.lifecycle = "superseded";
     oldEnv.supersededBy = newRef;
@@ -117,6 +118,57 @@ async function storeSpatialGrid(
   }
 }
 
+async function performPostStoreSideEffects(
+  env: ToolEnv,
+  ctx: PiCtx,
+  cwd: string,
+  ref: number,
+  date: string,
+  envelope: MemoryEnvelope,
+): Promise<void> {
+  if (
+    (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") &&
+    (envelope.context?.path || envelope.episode?.diffs || envelope.type === "invariant" || envelope.level === "L2")
+  ) {
+    try {
+      const { hasCodeInstances, getCodeInstances } = await import("../code/manager.ts");
+      const { bindMemoryToCode, getLoreBindings, updateLoreBindingLifecycle } = await import("../code/lore_binding.ts");
+      const root = ctx?.cwd || env.cwd;
+      if (hasCodeInstances(root)) {
+        const codeInst = getCodeInstances({ projectRoot: root });
+        if (codeInst.store.getStats().symbols > 0) {
+          if (typeof envelope.supersedes === "number") {
+            updateLoreBindingLifecycle(codeInst.store.indexDir, envelope.supersedes, "superseded");
+          }
+          const created = bindMemoryToCode(codeInst.store, ref, envelope, { timestampIso: date });
+          if (created && (envelope.type === "invariant" || envelope.standing)) {
+            const newSyms = new Set(created.anchors.map((a) => a.qualifiedName));
+            for (const oldB of getLoreBindings(codeInst.store.indexDir)) {
+              if (oldB.memoryRef === ref || oldB.lifecycle === "superseded" || oldB.lifecycle === "contradicted") continue;
+              if (oldB.anchors.some((a) => newSyms.has(a.qualifiedName)) && oldB.summary === envelope.summary) {
+                updateLoreBindingLifecycle(codeInst.store.indexDir, oldB.memoryRef, "superseded");
+              }
+            }
+          }
+        }
+      }
+    } catch { /* best effort */ }
+  }
+  if (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant")) {
+    try {
+      const { reinforcementScheduler } = await import("../hooks/events.ts");
+      reinforcementScheduler.registerDirective({
+        ref,
+        summary: envelope.summary,
+        subsystem: envelope.context?.subsystem,
+        project: envelope.context?.project,
+      });
+      const dirs = reinforcementScheduler.getDirectives();
+      await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+    } catch { /* best effort */ }
+  }
+}
+
 function defaultLifecycle(level: MipmapLevel, type: string | undefined): LifecycleState {
   if (level === "L0" || type === "episode") return "observed";
   return "supported";
@@ -136,12 +188,13 @@ function buildEnvelope(params: Record<string, unknown>, summary: string, ep?: Ep
     evidence: Array.isArray(params["evidence"]) ? (params["evidence"] as number[]) : undefined,
     supersedes: typeof params["supersedes"] === "number" ? params["supersedes"] : undefined,
     tags: Array.isArray(params["tags"]) ? (params["tags"] as string[]) : undefined,
+    constraints: Array.isArray(params["constraints"]) ? (params["constraints"] as string[]) : undefined,
     isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
     standing: typeof params["standing"] === "boolean" ? params["standing"] : (type === "invariant" ? true : undefined),
   };
   const isStructured = Boolean(
     ep || params["level"] || params["context"] || params["evidence"] ||
-    params["supersedes"] || params["tags"] || params["lifecycle"] || params["standing"]
+    params["supersedes"] || params["tags"] || params["constraints"] || params["lifecycle"] || params["standing"]
   );
   return { envelope, isStructured };
 }
@@ -199,19 +252,11 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
       }
       if (envelope.context?.grid) await storeSpatialGrid(env, axes, cwd, ref, envelope.context.grid);
       void recordAssociations(cwd, summary).catch(() => {});
-      if (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant")) {
-        try {
-          const { reinforcementScheduler } = await import("../hooks/events.ts");
-          reinforcementScheduler.registerDirective({
-            ref,
-            summary: envelope.summary,
-            subsystem: envelope.context?.subsystem,
-            project: envelope.context?.project,
-          });
-          const dirs = reinforcementScheduler.getDirectives();
-          await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
-        } catch { /* best effort */ }
-      }
+      await performPostStoreSideEffects(env, ctx, cwd, ref, date, envelope);
+      try {
+        const { notifyMmEvent } = await import("../hooks/events.ts");
+        notifyMmEvent(ctx, "saved");
+      } catch { /* best effort */ }
       return exportDetail({ ref, key: `@${date}`, level: envelope.level, lifecycle: envelope.lifecycle, summary });
     });
   } catch (err) {

@@ -72,3 +72,27 @@ Deno.test("pi_lifecycle: before_agent_start hook executes and injects context", 
   assert.strictEqual(msgResult.message?.customType, "memory_context");
   assert.ok(msgResult.message?.content.includes("Always check corm_open handle aliasing"));
 });
+
+Deno.test("pi_lifecycle: before_agent_start populates systemPromptOptions.sections without returning duplicate message", async () => {
+  const fakeHit = "1 0.5 2026-03-30:" + JSON.stringify({
+    level: "L2",
+    type: "invariant",
+    lifecycle: "supported",
+    summary: "Always check corm_open handle aliasing",
+  }) + "\n";
+
+  const { pi, handlers } = fakePiRuntime([{ stdout: fakeHit, stderr: "", code: 0 }]);
+  install(pi);
+
+  const beforeStartHandlers = handlers.get("before_agent_start") ?? [];
+  const ctx = { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" };
+  const sysEvent = {
+    messageType: "user",
+    prompt: "Fix the corm_open leak",
+    systemPromptOptions: { sections: {} as Record<string, string> },
+  };
+  const sysResult = await (beforeStartHandlers[0](sysEvent, ctx) as Promise<unknown>);
+  assert.strictEqual(sysResult, undefined);
+  assert.ok(sysEvent.systemPromptOptions.sections["mm_tool_priming"]?.includes("pi_memory_recall"));
+  assert.ok(sysEvent.systemPromptOptions.sections["memory_context"]?.includes("Always check corm_open handle aliasing"));
+});

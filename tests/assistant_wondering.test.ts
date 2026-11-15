@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
 import { WONDERING_EXEMPLARS, WONDERING_KINDS } from "../src/judge/wondering-exemplars.ts";
-import { evaluateAssistantWondering, extractAssistantThoughtsAndText } from "../src/hooks/wondering.ts";
+import { evaluateAssistantWondering, extractAssistantThoughtsAndText, isStandbyOrYieldMessage } from "../src/hooks/wondering.ts";
 import { registerHooks, type Pi, type PiCtx } from "../src/hooks/events.ts";
 import type { ToolEnv } from "../src/tools/index.ts";
 import type { CormRunner } from "../src/corm.ts";
@@ -159,7 +159,7 @@ Deno.test("wondering: message_end steers agent with epistemic hint on wondering 
   const steerOptions = steer?.options as Record<string, unknown> | undefined;
   const steerMessage = steer?.message as Record<string, unknown> | undefined;
   const steerContent = typeof steerMessage?.content === "string" ? steerMessage.content : "";
-  assert.strictEqual(steerOptions?.deliverAs, "steer");
+  assert.strictEqual(steerOptions?.deliverAs, "nextTurn");
   assert.ok(steerContent.includes("memory_recall"));
   assert.ok(steerContent.includes("Memory Hint"));
 
@@ -219,4 +219,64 @@ Deno.test("wondering: message_end does not steer on routine action", async () =>
 
   // Assert no steering message sent
   assert.strictEqual(sentMessages.length, 0, "Routine action must not trigger steering message");
+});
+
+Deno.test("wondering: isStandbyOrYieldMessage detects waiting phrases", () => {
+  assert.strictEqual(isStandbyOrYieldMessage("Standing by for the review verdict on quest 1xQCCa."), true);
+  assert.strictEqual(isStandbyOrYieldMessage("Awaiting verdict on root integration."), true);
+  assert.strictEqual(isStandbyOrYieldMessage("Yielding immediately and waiting for review."), true);
+  assert.strictEqual(isStandbyOrYieldMessage("How does the caching subsystem work?"), false);
+});
+
+Deno.test("wondering: message_end does not steer on standby or yield messages", async () => {
+  const sentMessages: Array<{ message: unknown; options?: unknown }> = [];
+  const handlers = new Map<string, (event: unknown, ctx?: unknown) => void>();
+
+  const fakePi: Pi = {
+    on: (event: string, handler: (event: unknown, ctx?: unknown) => void) => {
+      handlers.set(event, handler);
+    },
+    registerTool: () => {},
+    exec: () => Promise.resolve({ stdout: "", stderr: "", code: 0 }),
+    sendMessage: (msg: unknown, opts?: unknown) => {
+      sentMessages.push({ message: msg, options: opts });
+    },
+  };
+
+  const mockFetch: typeof fetch = (_input) => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choice: "wondering",
+      similarity: 0.95,
+      margin: 0.35,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+
+  const env: ToolEnv = {
+    cwd: "/tmp/fake-cwd",
+    runner: { run: () => Promise.resolve({ stdout: "", stderr: "", code: 0 }) },
+    nowProvider: () => new Date("2026-10-16"),
+    cfg: {
+      ...DEFAULT_CONFIG,
+      memDir: ".pi/mm",
+      cormBin: "/usr/bin/corm",
+      wonderingEmbed: "auto",
+      captureEmbedUrl: "http://127.0.0.1:4242",
+    },
+  };
+
+  registerHooks(fakePi, () => Promise.resolve(env), { fetchFn: mockFetch });
+
+  const messageEndHandler = handlers.get("message_end");
+  assert.ok(messageEndHandler);
+
+  const standbyEvent = {
+    message: {
+      role: "assistant",
+      content: "Standing by for the review verdict on quest 1xQCCa.",
+    },
+  };
+
+  await messageEndHandler(standbyEvent, { cwd: "/tmp/fake-cwd", hasUI: false, mode: "headless" });
+
+  assert.strictEqual(sentMessages.length, 0, "Standby message must not trigger steering message");
 });

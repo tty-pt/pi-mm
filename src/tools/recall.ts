@@ -6,10 +6,72 @@ import { executeHybridScan } from "./scan.ts";
 import { fetchEnvelope, traverseDown, renderTree } from "./traverse.ts";
 import { buildMemoryOverview } from "./overview.ts";
 import type { FusedCandidate } from "./ranking.ts";
-import { enrichCandidatesWithSessionHistory } from "../hooks/auto_recall.ts";
+import {
+  enrichCandidatesWithSessionHistory,
+  indexCandidateSessions,
+  indexSingleMemorySession,
+  type IndexedSessionSummary,
+} from "../hooks/auto_recall.ts";
 import type { SessionExcerpt } from "../session_history.ts";
-import { canonicalSortByRef } from "../blocks.ts";
 import type { MipmapLevel } from "../types.ts";
+import {
+  getSessionInstances,
+  discoverPeerSessions,
+  resolveTargetSessions,
+} from "../session/manager.ts";
+import {
+  formatUnifiedRecallOutput,
+  searchAcrossSessions,
+} from "../session/recall.ts";
+import { extractSessionId, setMmBusy } from "../hooks/events.ts";
+import { executeCodeRecallWithLore, getCodeInstances, hasExplicitCodeParams } from "../code/manager.ts";
+
+function parseInlineZoomRef(rawQuery: string): number | null {
+  const lower = rawQuery.trim().toLowerCase();
+  let rest = "";
+  if (lower.startsWith("ref:")) {
+    rest = lower.slice(4).trim();
+  } else if (lower.startsWith("zoom:")) {
+    rest = lower.slice(5).trim();
+  } else if (lower.startsWith("ref ")) {
+    rest = lower.slice(4).trim();
+  } else if (lower.startsWith("zoom ")) {
+    rest = lower.slice(5).trim();
+  } else {
+    return null;
+  }
+  if (!rest) return null;
+  for (let i = 0; i < rest.length; i++) {
+    const code = rest.charCodeAt(i);
+    if (code < 48 || code > 57) return null;
+  }
+  const num = Number(rest);
+  return Number.isInteger(num) && num > 0 ? num : null;
+}
+
+function formatIndexedSessionBlock(ref: number, indexed?: IndexedSessionSummary): string {
+  if (!indexed || indexed.totalEvents === 0) return "";
+  const slotPart = indexed.workspaceLabel ? ` (${indexed.workspaceLabel})` : "";
+  const lines: string[] = [
+    `  Indexed Source Session: ${indexed.shortId}${slotPart} (Turns 1-${Math.max(1, indexed.totalTurns)}, ${indexed.totalEvents} events)`,
+  ];
+  for (const card of indexed.matchedCards.slice(0, 3)) {
+    const status = card.exitCode !== undefined
+      ? (card.exitCode === 0 ? " · SUCCESS (0)" : ` · FAILED (Exit ${card.exitCode})`)
+      : "";
+    lines.push(
+      `    • [Turn ${card.turnIndex} · ${card.speaker}${status}] ${card.summary} (${card.lineCount} lines)`,
+    );
+  }
+  const primaryCard = indexed.matchedCards[0];
+  const targetTurn = primaryCard ? primaryCard.turnIndex : 1;
+  const toolIdxPart = primaryCard?.toolIndex !== undefined ? `, toolIndex: ${primaryCard.toolIndex}` : "";
+  const maxLines = primaryCard ? Math.min(Math.max(1, primaryCard.lineCount), 60) : 60;
+  lines.push(
+    `    • Zoom Session Turn: memory_recall({ zoomRef: ${ref}, zoomTurn: ${targetTurn}${toolIdxPart}, lineRange: [1, ${maxLines}] })`,
+  );
+  return lines.join("\n");
+}
 
 const RECALL_PARAMS = {
   type: "object",
@@ -24,18 +86,44 @@ const RECALL_PARAMS = {
     },
     overview: {
       type: "boolean",
-      description: "If true, returns a structured timeline and hierarchical overview across all operational time.",
+      description: "If true, returns a structured timeline and hierarchical overview (or L3/L2 codebase architecture overview when scope='code').",
     },
     project: { type: "string", description: "Filter or boost memories matching a specific project scope." },
     subsystem: { type: "string", description: "Filter or boost memories matching a specific subsystem." },
     level: { type: "string", enum: ["L0", "L1", "L2", "L3"], description: "Optional resolution level filter ('L0'|'L1'|'L2'|'L3')." },
     includeEvidence: { type: "boolean", description: "If true, automatically fetches and includes the supporting evidence tree for each memory." },
     limit: { type: "number", description: "Maximum number of memories to return (default 5 for search, 15 for overview, max 30)." },
+    scope: { type: "string", enum: ["session", "persistent", "code", "all"], description: "Memory scope: 'session' (current active session), 'persistent' (cross-session project memory), 'code' (live codebase symbols, call graph, and source), or 'all' (unified)." },
+    session: { type: "string", description: "Target session selector: 'current', 'parallel', 'all', session UUID/prefix (e.g. '01a1c8f7'), or workspace/slot label (e.g. 'slot-6')." },
+    zoomTurn: { type: "number", description: "Specific turn number to inspect in session history (or within a persistent memory's session when combined with zoomRef)." },
+    toolIndex: { type: "number", description: "Specific tool execution index within zoomTurn." },
+    lineRange: { type: "array", items: { type: "number" }, description: "Specific [startLine, endLine] slice for zoomTurn or code symbol inspection." },
+    lineage: { type: "string", enum: ["active", "all"], description: "Lineage scope for session recall ('active' branch vs 'all' branches)." },
+    symbol: { type: "string", description: "Concrete code symbol name or qualified_name to resolve and read (fails closed with candidates if ambiguous)." },
+    symbols: { type: "array", items: { type: "string" }, description: "Batch array of concrete code symbol names or qualified_names to resolve and read in one call." },
+    file: { type: "string", description: "File path substring or suffix filter/disambiguator for code recall." },
+    kind: { type: "string", description: "Code symbol kind filter ('Function'|'Method'|'Class'|'Struct'|'Interface'|'Type'|'Enum'|'Macro'|'Route')." },
+    parentSymbol: { type: "string", description: "Enclosing class/struct/interface name disambiguator for code methods." },
+    neighbors: { type: "string", enum: ["none", "callers", "callees", "both"], description: "Direct call graph neighbors to include when reading a symbol (default 'both')." },
+    trace: { type: "string", description: "Function or method name to trace multi-hop callers and/or callees across the code graph." },
+    direction: { type: "string", enum: ["inbound", "outbound", "both"], description: "Call graph trace direction ('inbound' callers, 'outbound' callees, or 'both')." },
+    depth: { type: "number", description: "Maximum call graph trace depth (default 3) or diff blast-radius depth (default 2)." },
+    diff: { type: "boolean", description: "If true, analyzes git worktree diff hunks, maps modified line intervals to symbols, and traces inbound caller blast radius." },
+    diagnose: { type: "string", description: "Stack trace, compiler diagnostic, or test failure output to localize faults by intersecting stack frames with git diff blast radius and past bug lore." },
+    guardrail: { type: "string", description: "Planned edit, command, or approach to pre-flight against contradicted memories, failed approaches, standing restrictions, and stale-bound invariants." },
+    maxLines: { type: "number", description: "Maximum source lines returned per code symbol before compacting (default 120)." },
+    fullOutput: { type: "boolean", description: "If true, returns complete uncompacted code symbol source blocks." },
   },
   additionalProperties: false,
 };
 
-function formatResult(cand: FusedCandidate, evidenceText?: string, excerpts?: SessionExcerpt[]): string {
+function formatResult(
+  cand: FusedCandidate,
+  evidenceText?: string,
+  excerpts?: SessionExcerpt[],
+  indexedSession?: IndexedSessionSummary,
+  currentSessionId?: string,
+): string {
   const ref = cand.ref;
   const env = cand.envelope;
   const level = env?.level ?? cand.level ?? "L2";
@@ -46,9 +134,16 @@ function formatResult(cand: FusedCandidate, evidenceText?: string, excerpts?: Se
   if (env?.context?.subsystem) scopeParts.push(env.context.subsystem);
   const scopeStr = scopeParts.length > 0 ? ` [${scopeParts.join("/")}]` : "";
   const lifecycleLabel = isHypothesis ? "[HYPOTHESIS]" : lifecycle;
+  const epSessionId = env?.episode?.sessionId || indexedSession?.sessionId;
+  let sessionBadge = "";
+  if (epSessionId && epSessionId !== "unknown-session" && epSessionId !== "default-session") {
+    sessionBadge = currentSessionId && epSessionId === currentSessionId
+      ? " [Current Session]"
+      : ` [Past Session ${epSessionId.slice(0, 8)}]`;
+  }
 
   const summary = env?.summary ?? cand.summary ?? cand.record.slice(0, 120);
-  let text = `[Ref ${ref}] (${level}, ${lifecycleLabel}${scopeStr}): ${summary}\n  Origin: ${cand.origin} (score: ${cand.score ?? "1.0"})`;
+  let text = `[Ref ${ref}] (${level}, ${lifecycleLabel}${scopeStr})${sessionBadge}: ${summary}\n  Origin: ${cand.origin} (score: ${cand.score ?? "1.0"})`;
 
   if (evidenceText) {
     text += `\n  Supporting Evidence:\n${evidenceText.split("\n").map((l) => "    " + l).join("\n")}`;
@@ -57,7 +152,15 @@ function formatResult(cand: FusedCandidate, evidenceText?: string, excerpts?: Se
   }
 
   if (excerpts && excerpts.length > 0) {
-    text += `\n  Source Session Excerpts:\n` + excerpts.map((e) => `    ${e.role === "user" ? "User" : "Assistant"}: "${e.text}"`).join("\n");
+    const pastNote = epSessionId && (!currentSessionId || epSessionId !== currentSessionId)
+      ? ` (from Past Session ${epSessionId.slice(0, 8)} — historical dialogue, not current session)`
+      : "";
+    text += `\n  Source Session Excerpts:${pastNote}\n` + excerpts.map((e) => `    ${e.role === "user" ? "User" : "Assistant"}: "${e.text}"`).join("\n");
+  }
+
+  const sessionBlock = formatIndexedSessionBlock(ref, indexedSession);
+  if (sessionBlock) {
+    text += `\n${sessionBlock}`;
   }
 
   return text;
@@ -94,14 +197,15 @@ async function attachEvidence(
 async function zoomInMemory(
   env: ToolEnv,
   ref: number,
+  cwd?: string,
 ) {
   const embed = sepalConfigured(env.cfg);
-  const cwd = memDir(env);
-  const fspec = filespecFor(cwd, embed);
+  const memCwd = memDir(env);
+  const fspec = filespecFor(memCwd, embed);
   const axes = axisPath(env);
   const eEnv = embedEnv(env.cfg);
 
-  const item = await fetchEnvelope(env, fspec, axes, cwd, eEnv, ref);
+  const item = await fetchEnvelope(env, fspec, axes, memCwd, eEnv, ref);
   if (!item) {
     return {
       content: [{ type: "text", text: `Memory Ref ${ref} not found in database.` }],
@@ -110,8 +214,9 @@ async function zoomInMemory(
   }
 
   const { envelope, date } = item;
-  const tree = await traverseDown(env, fspec, axes, cwd, eEnv, ref, 0, 3, new Set());
+  const tree = await traverseDown(env, fspec, axes, memCwd, eEnv, ref, 0, 3, new Set());
   const treeText = tree ? renderTree(tree).trim() : `[${envelope.level}] Ref ${ref}: ${envelope.summary}`;
+  const indexedSession = await indexSingleMemorySession(env, ref, envelope, undefined, cwd || env.cwd);
 
   const scopeParts: string[] = [];
   if (envelope.context?.project) scopeParts.push(envelope.context.project);
@@ -155,15 +260,30 @@ async function zoomInMemory(
     }
   }
 
+  if (indexedSession) {
+    lines.push(`\n${formatIndexedSessionBlock(ref, indexedSession).trimStart()}`);
+  }
+
   lines.push(`\nEvidence Hierarchy (Mipmap Lineage):`);
   lines.push(treeText);
 
   lines.push(`\n---`);
   lines.push(`💡 To inspect supporting evidence in further detail, run: memory_recall({ zoomRef: <childRef> })`);
 
+  const serializableSession = indexedSession
+    ? {
+        sessionId: indexedSession.sessionId,
+        shortId: indexedSession.shortId,
+        workspaceLabel: indexedSession.workspaceLabel,
+        totalTurns: indexedSession.totalTurns,
+        totalEvents: indexedSession.totalEvents,
+        matchedCards: indexedSession.matchedCards,
+      }
+    : undefined;
+
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    details: { ref, envelope, date, tree },
+    details: { ref, envelope, date, tree, indexedSession: serializableSession },
   };
 }
 
@@ -190,15 +310,21 @@ async function executeTargetedHybridRecall(
   query: string,
   params: Record<string, unknown>,
   cwd: string,
+  currentSessionId?: string,
 ) {
   const limit = Math.min(Math.max(Number(params["limit"]) || 5, 1), 20);
+  const filterLevel = params["level"];
+  const includeL0 = filterLevel === undefined || filterLevel === "L0";
   const { records, details } = await executeHybridScan(env, {
     topic: query,
     project: typeof params["project"] === "string" ? params["project"].trim() : undefined,
     subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
-    level: params["level"],
+    level: filterLevel,
+    includeL0,
     limit,
     embed: true,
+    overfetch: true,
+    dedupe: true,
   });
 
   if (records.length === 0) {
@@ -214,18 +340,126 @@ async function executeTargetedHybridRecall(
   }
 
   const excerptsMap = await enrichCandidatesWithSessionHistory(records, query, cwd);
-  const sortedRecords = canonicalSortByRef(records);
+  const indexedSessionsMap = await indexCandidateSessions(env, records, query, cwd);
 
-  const lines = [`Found ${sortedRecords.length} relevant memory record(s) for "${query}":\n`];
-  for (const rec of sortedRecords) {
-    lines.push(formatResult(rec, evidenceMap?.get(rec.ref), excerptsMap.get(rec.ref)));
+  const lines = [`Found ${records.length} relevant memory record(s) for "${query}":\n`];
+  for (const rec of records) {
+    lines.push(
+      formatResult(
+        rec,
+        evidenceMap?.get(rec.ref),
+        excerptsMap.get(rec.ref),
+        indexedSessionsMap.get(rec.ref),
+        currentSessionId,
+      ),
+    );
   }
 
   lines.push(`\nTip: To zoom into any of these memories, call memory_recall({ zoomRef: <ref> }).`);
 
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    details: { query, count: sortedRecords.length, results: sortedRecords, scanDetails: details },
+    details: { query, count: records.length, results: records, scanDetails: details },
+  };
+}
+
+async function executeZoomRefTurnRecall(
+  env: ToolEnv,
+  targetRef: number,
+  zoomTurn: number,
+  params: Record<string, unknown>,
+  ctx: PiCtx,
+) {
+  const embed = sepalConfigured(env.cfg);
+  const memCwd = memDir(env);
+  const fspec = filespecFor(memCwd, embed);
+  const axes = axisPath(env);
+  const eEnv = embedEnv(env.cfg);
+  const item = await fetchEnvelope(env, fspec, axes, memCwd, eEnv, targetRef);
+  if (!item) {
+    return {
+      content: [{ type: "text", text: `Memory Ref ${targetRef} not found in database.` }],
+      details: { error: "not-found", ref: targetRef },
+    };
+  }
+  const indexed = await indexSingleMemorySession(env, targetRef, item.envelope, undefined, ctx?.cwd || env.cwd);
+  if (!indexed) {
+    return {
+      content: [{ type: "text", text: `Memory Ref ${targetRef} does not have an indexed source session transcript.` }],
+      details: { error: "no-session", ref: targetRef },
+    };
+  }
+  const toolIndex = typeof params["toolIndex"] === "number" ? params["toolIndex"] : undefined;
+  const rawLineRange = Array.isArray(params["lineRange"]) && params["lineRange"].length === 2
+    ? [Number(params["lineRange"][0]), Number(params["lineRange"][1])] as [number, number]
+    : undefined;
+  const zoomResult = await indexed.instances.engine.search({
+    query: "",
+    zoomTurn,
+    toolIndex,
+    lineRange: rawLineRange,
+  });
+  if (zoomResult.zoom) {
+    zoomResult.zoom.sessionId = indexed.sessionId;
+    zoomResult.zoom.sessionShortId = indexed.shortId;
+    zoomResult.zoom.sessionOrigin = "persistent-ref";
+    zoomResult.zoom.workspaceLabel = indexed.workspaceLabel;
+    zoomResult.zoom.sourceMemoryRef = targetRef;
+  }
+  const rendered = formatUnifiedRecallOutput(zoomResult);
+  return {
+    content: [{ type: "text", text: rendered }],
+    details: { ref: targetRef, sessionId: indexed.sessionId, sessionResult: zoomResult, totalMatches: zoomResult.totalMatches },
+  };
+}
+
+async function executeExplicitSessionRecall(
+  params: Record<string, unknown>,
+  rawQuery: string,
+  sessionParam: string | undefined,
+  sessionOpts: Parameters<typeof getSessionInstances>[1],
+  ctx: PiCtx,
+) {
+  const sessionId = extractSessionId(ctx);
+  const instances = getSessionInstances(sessionId, sessionOpts);
+  const zoomTurn = typeof params["zoomTurn"] === "number" ? params["zoomTurn"] : undefined;
+  const toolIndex = typeof params["toolIndex"] === "number" ? params["toolIndex"] : undefined;
+  const rawLineRange = Array.isArray(params["lineRange"]) && params["lineRange"].length === 2
+    ? [Number(params["lineRange"][0]), Number(params["lineRange"][1])] as [number, number]
+    : undefined;
+  const lineage = params["lineage"] === "all" ? "all" : "active";
+  const sessionQuery = params["overview"] === true ? "" : rawQuery;
+  const limit = typeof params["limit"] === "number" ? params["limit"] : (params["overview"] === true ? 10 : 5);
+  const leafId = ctx?.sessionManager?.getLeafId?.();
+
+  if (sessionParam) {
+    const targetEntries = resolveTargetSessions(sessionParam, { cwd: ctx?.cwd, currentSessionId: sessionId, sessionOpts });
+    const sessionResult = await searchAcrossSessions(
+      targetEntries,
+      { query: sessionQuery, zoomTurn, toolIndex, lineRange: rawLineRange, lineage, limit, leafId },
+      ctx?.sessionManager,
+    );
+    return {
+      content: [{ type: "text", text: formatUnifiedRecallOutput(sessionResult, sessionQuery) }],
+      details: { sessionResult, totalMatches: sessionResult.totalMatches },
+    };
+  }
+
+  const peerEntries = discoverPeerSessions({ cwd: ctx?.cwd, currentSessionId: sessionId, sessionOpts });
+  const sessionResult = peerEntries.length > 1 && zoomTurn === undefined
+    ? await searchAcrossSessions(
+      peerEntries,
+      { query: sessionQuery, zoomTurn, toolIndex, lineRange: rawLineRange, lineage, limit, leafId },
+      ctx?.sessionManager,
+    )
+    : await instances.engine.search(
+      { query: sessionQuery, zoomTurn, toolIndex, lineRange: rawLineRange, lineage, limit, leafId },
+      ctx?.sessionManager,
+    );
+
+  return {
+    content: [{ type: "text", text: formatUnifiedRecallOutput(sessionResult, sessionQuery) }],
+    details: { sessionResult, totalMatches: sessionResult.totalMatches },
   };
 }
 
@@ -241,27 +475,82 @@ async function executeRecall(
       return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm", results: [] } };
     }
 
-    // 1. Direct Zoom-In by Reference ID
     if (typeof params["zoomRef"] === "number" && Number.isInteger(params["zoomRef"])) {
-      return await zoomInMemory(env, params["zoomRef"]);
+      const targetRef = params["zoomRef"];
+      if (typeof params["zoomTurn"] === "number" && Number.isInteger(params["zoomTurn"])) {
+        return await executeZoomRefTurnRecall(env, targetRef, params["zoomTurn"], params, ctx);
+      }
+      return await zoomInMemory(env, targetRef, ctx?.cwd);
     }
 
     const rawQuery = typeof params["query"] === "string" ? params["query"].trim() : "";
+    const inlineRef = parseInlineZoomRef(rawQuery);
+    if (inlineRef !== null) return await zoomInMemory(env, inlineRef, ctx?.cwd);
 
-    // Check if query is an inline zoom command (e.g. "ref:42" or "zoom:42")
-    const zoomMatch = /^(?:ref|zoom):?\s*(\d+)$/i.exec(rawQuery);
-    if (zoomMatch) {
-      return await zoomInMemory(env, Number(zoomMatch[1]));
+    const scope = typeof params["scope"] === "string" ? params["scope"] : undefined;
+    if (scope === "code" || hasExplicitCodeParams(params)) {
+      return await executeCodeRecallWithLore(env, params, ctx);
     }
 
-    // 2. High-Level Memory Overview Mode
+    const sessionParam = typeof params["session"] === "string" ? params["session"].trim() : undefined;
+    const isSessionExplicit = scope === "session" || typeof params["zoomTurn"] === "number" || Boolean(sessionParam);
+    const embed = sepalConfigured(env.cfg);
+    const sessionOpts = {
+      cwd: ctx?.cwd,
+      cormBin: env.cfg.cormBin,
+      axisLibs: env.cfg.axisLibs,
+      embedUrl: embed ? env.cfg.embedUrl : undefined,
+      embedModel: env.cfg.embedModel,
+      embedKey: env.cfg.embedKey,
+      ephemeralSepal: env.cfg.ephemeralSepal,
+    };
+
+    if (isSessionExplicit) {
+      return await executeExplicitSessionRecall(params, rawQuery, sessionParam, sessionOpts, ctx);
+    }
+
     const isOverview = params["overview"] === true || rawQuery === "" || rawQuery.toLowerCase() === "overview" || rawQuery === "*";
-    if (isOverview) {
-      return await executeOverviewRecall(env, params);
+    if (isOverview) return await executeOverviewRecall(env, params);
+
+    const currentSessionId = extractSessionId(ctx);
+    if (scope !== "persistent") {
+      const instances = getSessionInstances(currentSessionId, sessionOpts);
+      const peerEntries = discoverPeerSessions({ cwd: ctx?.cwd, currentSessionId, sessionOpts });
+      if (scope === "all" || instances.store.getEventCount() > 0 || peerEntries.length > 1) {
+        const leafId = ctx?.sessionManager?.getLeafId?.();
+        const sessionResult = peerEntries.length > 1
+          ? await searchAcrossSessions(peerEntries, { query: rawQuery, limit: 3, leafId }, ctx?.sessionManager)
+          : await instances.engine.search({ query: rawQuery, limit: 3, leafId }, ctx?.sessionManager);
+
+        let codeText = "";
+        if (scope === "all" && rawQuery) {
+          const codeInst = getCodeInstances({ projectRoot: ctx?.cwd || env.cwd, ...sessionOpts });
+          setMmBusy(ctx, true);
+          try {
+            const codeOut = await codeInst.engine.execute({ query: rawQuery, limit: 3 });
+            if (codeOut.symbols.length > 0) codeText = codeOut.rendered;
+          } finally {
+            setMmBusy(ctx, false);
+          }
+        }
+
+        if (scope === "all" || sessionResult.cards.length > 0) {
+          const persistentResult = await executeTargetedHybridRecall(env, rawQuery, params, ctx.cwd, currentSessionId);
+          const sessionText = sessionResult.cards.length > 0 ? formatUnifiedRecallOutput(sessionResult, rawQuery) : "";
+          const rawPersistentText = persistentResult.content[0]?.text || "";
+          const persistentText = rawPersistentText
+            ? `=== Persistent Memory Results (Cross-Session Project Lore — Past Sessions Unless Labeled [Current Session]) ===\n${rawPersistentText}`
+            : "";
+          const combinedText = [sessionText, codeText, persistentText].filter(Boolean).join("\n\n---\n\n");
+          return {
+            content: [{ type: "text", text: combinedText }],
+            details: { sessionResult, persistentDetails: persistentResult.details },
+          };
+        }
+      }
     }
 
-    // 3. Targeted Hybrid Semantic & Lexical Recall
-    return await executeTargetedHybridRecall(env, rawQuery, params, ctx.cwd);
+    return await executeTargetedHybridRecall(env, rawQuery, params, ctx.cwd, currentSessionId);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: [{ type: "text", text: `mm recall error: ${msg}` }], details: { error: msg, results: [] } };
@@ -271,8 +560,9 @@ async function executeRecall(
 export function makeRecallTool(envSource: EnvSource): PiToolSpec {
   return {
     name: "memory_recall",
-    label: "Recall Relevant Memories",
-    description: "Multi-resolution memory retrieval: search semantically across topics, generate all-time high-level overviews, or zoom in to inspect specific memory investigations, approaches, diffs, and evidence trees.",
+    label: "Codebase Symbol Graph, Session Transcript & Persistent Memory Recall",
+    description:
+      "Primary codebase symbol search, AST source reader, call-graph tracer, git diff blast-radius analyzer, failure trace fault localizer, and counterfactual guardrail checker (scope: 'code', symbol, symbols, trace, diff, diagnose, guardrail), plus active session transcript search/zoom (scope: 'session', zoomTurn) and persistent engineering lore (scope: 'persistent', zoomRef). Prefer this tool over grep/rg for finding functions, structs, callers, callees, and prior decisions.",
     parameters: RECALL_PARAMS,
     execute: (_id, params, _sig, _upd, ctx) => executeRecall(envSource, params, ctx as PiCtx),
   };

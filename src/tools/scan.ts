@@ -1,12 +1,15 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildScanInvocation, buildGetInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
 import type { MipmapLevel } from "../types.ts";
 import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria } from "./ranking.ts";
-import { decodePayload, isCleanSummaryText } from "../payload.ts";
+import { decodePayload, isCleanSummaryText, isHtokPayload } from "../payload.ts";
 import { debugLog } from "../debug.ts";
 import { getAssociatedTokens } from "../associative.ts";
+import { splitIdentifierWords } from "../code/lexer.ts";
 
 export type EnrichedRecord = FusedCandidate;
 
@@ -22,11 +25,7 @@ const SCAN_PARAMS = {
     bbox: {
       type: "object",
       description: "Spatial bounding box for islet axis (dim, s=min_corner, l=extent).",
-      properties: {
-        dim: { type: "number" },
-        s: { type: "string" },
-        l: { type: "string" },
-      },
+      properties: { dim: { type: "number" }, s: { type: "string" }, l: { type: "string" } },
       required: ["s", "l"],
     },
     until: { type: "string", description: "ISO date upper bound (YYYY-MM-DD)." },
@@ -46,45 +45,61 @@ function resolveTimeLevel(lvl: unknown, timeWin: unknown): number {
 }
 
 function resolveMipmapFilter(lvl: unknown): MipmapLevel | undefined {
-  if (typeof lvl === "string" && ["L0", "L1", "L2", "L3"].includes(lvl)) {
-    return lvl as MipmapLevel;
-  }
-  return undefined;
+  return (typeof lvl === "string" && ["L0", "L1", "L2", "L3"].includes(lvl)) ? (lvl as MipmapLevel) : undefined;
 }
 
 function defaultLimit(n: unknown): number {
-  if (typeof n === "number" && Number.isInteger(n) && n > 0) return n;
-  return 10;
+  return (typeof n === "number" && Number.isInteger(n) && n > 0) ? n : 10;
 }
 
 async function querySpatialFilter(
   env: ToolEnv, cwd: string, axes: string, limit: number, bbox: { dim?: number; s: string; l: string },
 ): Promise<Set<number>> {
   const isletFspec = `${cwd}/mem-islet.db@islet:a:s`;
-  const bin = env.cfg.cormBin;
   const res = await env.runner.run(buildScanInvocation(
-    bin, isletFspec, "islet", limit * 2, axes, cwd, undefined,
+    env.cfg.cormBin, isletFspec, "islet", limit * 2, axes, cwd, undefined,
     [`--dim=${bbox.dim ?? 2}`, `--s=${bbox.s}`, `--l=${bbox.l}`],
   ));
   return res.code === 0 ? new Set(parseResultLines(res.stdout).map((l) => l.ref)) : new Set();
 }
 
+function mergeStandingDirectivesIntoFused(cwd: string, topic: string, fused: FusedCandidate[]): FusedCandidate[] {
+  try {
+    const dirFile = join(cwd, "standing_directives.json");
+    if (!existsSync(dirFile)) return fused;
+    const raw = JSON.parse(readFileSync(dirFile, "utf-8"));
+    if (!Array.isArray(raw) || raw.length === 0) return fused;
+    const qWords = splitIdentifierWords(topic).filter((w) => !STOP_WORDS.has(w) && w.length >= 3);
+    if (qWords.length === 0) return fused;
+    const existingRefs = new Set(fused.map((c) => c.ref));
+    const injected: FusedCandidate[] = [];
+    for (const d of raw) {
+      if (!d || typeof d.ref !== "number" || typeof d.summary !== "string" || existingRefs.has(d.ref)) continue;
+      const dWords = new Set(splitIdentifierWords(d.summary));
+      const hits = qWords.filter((qw) => dWords.has(qw)).length;
+      if (hits > 0 && (hits >= 2 || qWords.length <= 2)) {
+        injected.push({
+          ref: d.ref, record: d.summary, origin: "both", rrfScore: 0.03 + hits * 0.005,
+          envelope: {
+            level: "L2", type: "invariant", lifecycle: "supported", summary: d.summary, standing: true, isAnchor: true,
+            context: (d.project || d.subsystem) ? { project: d.project, subsystem: d.subsystem } : undefined,
+          },
+        });
+      }
+    }
+    return injected.length === 0 ? fused : [...injected, ...fused].sort((a, b) => b.rrfScore - a.rrfScore || a.ref - b.ref);
+  } catch { return fused; }
+}
+
 export const STOP_WORDS = new Set([
-  "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "with",
-  "by", "from", "of", "about", "into", "through", "after", "before", "is",
-  "are", "was", "were", "be", "been", "being", "have", "has", "had", "do",
-  "does", "did", "can", "could", "will", "would", "shall", "should", "what",
-  "which", "who", "whom", "this", "that", "these", "those", "my", "your",
-  "our", "their", "its", "there", "here", "when", "where", "why", "how",
-  "i", "me", "you", "we", "us", "he", "him", "she", "her", "they", "them",
-  "remember", "remembers", "remembered", "remembering",
-  "recall", "recalls", "recalled", "recalling",
-  "mention", "mentions", "mentioned", "mentioning",
-  "tell", "tells", "told", "telling",
-  "say", "says", "said", "saying",
-  "talk", "talks", "talked", "talking",
-  "speak", "speaks", "spoke", "spoken", "speaking",
-  "discuss", "discusses", "discussed", "discussing",
+  "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "with", "by", "from", "of", "about", "into",
+  "through", "after", "before", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does",
+  "did", "can", "could", "will", "would", "shall", "should", "what", "which", "who", "whom", "this", "that", "these",
+  "those", "my", "your", "our", "their", "its", "there", "here", "when", "where", "why", "how", "i", "me", "you", "we",
+  "us", "he", "him", "she", "her", "they", "them", "remember", "remembers", "remembered", "remembering", "recall",
+  "recalls", "recalled", "recalling", "mention", "mentions", "mentioned", "mentioning", "tell", "tells", "told",
+  "telling", "say", "says", "said", "saying", "talk", "talks", "talked", "talking", "speak", "speaks", "spoke",
+  "spoken", "speaking", "discuss", "discusses", "discussed", "discussing",
 ]);
 
 export async function scanTokenFallback(
@@ -112,15 +127,16 @@ export async function scanTokenFallback(
 
   const settled = await Promise.allSettled(subPromises);
 
-  const seen = new Set<number>();
-  const lines: ResultLine[] = [];
-  // Preserve deterministic first-seen ordering according to targetWords token order
+  const byRef = new Map<number, { line: ResultLine; hitCount: number; firstOrder: number }>();
+  let order = 0;
   for (const res of settled) {
     if (res.status === "fulfilled" && res.value.code === 0) {
       for (const line of parseResultLines(res.value.stdout)) {
-        if (!seen.has(line.ref)) {
-          seen.add(line.ref);
-          lines.push(line);
+        const existing = byRef.get(line.ref);
+        if (existing) {
+          existing.hitCount++;
+        } else {
+          byRef.set(line.ref, { line, hitCount: 1, firstOrder: order++ });
         }
       }
     } else if (res.status === "rejected") {
@@ -129,7 +145,9 @@ export async function scanTokenFallback(
       });
     }
   }
-  return lines;
+  return Array.from(byRef.values())
+    .sort((a, b) => (b.hitCount - a.hitCount) || (a.firstOrder - b.firstOrder))
+    .map((x) => x.line);
 }
 
 export async function queryLexicalPath(
@@ -160,34 +178,17 @@ export async function querySemanticPath(
   until: string | undefined, topic: string, limit: number,
 ): Promise<{ lines: ResultLine[]; error?: string }> {
   const semExpr = scanSemanticExpr(timeLevel, now, until);
-  const semArgs = [
-    ...scanWindowArgs(timeLevel, now, until),
-    "--query=" + topic,
-    "--min-sim=" + String(SEPAL_MIN_SIM),
-  ];
-  const bin = env.cfg.cormBin;
+  const semArgs = [...scanWindowArgs(timeLevel, now, until), "--query=" + topic, "--min-sim=" + String(SEPAL_MIN_SIM)];
   const res = await env.runner.run(buildScanInvocation(
-    bin, filespecFor(cwd, true), semExpr, limit, axes, cwd, embedEnv(env.cfg), semArgs,
+    env.cfg.cormBin, filespecFor(cwd, true), semExpr, limit, axes, cwd, embedEnv(env.cfg), semArgs,
   ));
-  if (res.code === 0) {
-    return { lines: parseResultLines(res.stdout) };
-  }
-  return { lines: [], error: res.stderr || res.stdout };
+  return res.code === 0 ? { lines: parseResultLines(res.stdout) } : { lines: [], error: res.stderr || res.stdout };
 }
 
 export interface HybridScanOptions {
-  topic: string;
-  level?: unknown;
-  timeWindow?: unknown;
-  lifecycle?: string;
-  project?: string;
-  subsystem?: string;
-  bbox?: { dim?: number; s: string; l: string };
-  until?: string;
-  embed?: boolean;
-  limit?: number;
-  dedupe?: boolean;
-  overfetch?: boolean;
+  topic: string; level?: unknown; timeWindow?: unknown; lifecycle?: string; project?: string;
+  subsystem?: string; bbox?: { dim?: number; s: string; l: string }; until?: string;
+  embed?: boolean; limit?: number; dedupe?: boolean; overfetch?: boolean; includeL0?: boolean;
 }
 
 export async function executeHybridScan(
@@ -202,9 +203,11 @@ export async function executeHybridScan(
 
   const timeLevel = resolveTimeLevel(opts.level, opts.timeWindow);
   const limit = defaultLimit(opts.limit) || env.cfg.scanLimit;
-  // Overfetch raw candidates from storage when requested (e.g. auto_recall)
-  // to prevent downstream filters from starving valid memories.
-  const rawFetchLimit = opts.overfetch ? Math.max(limit * 4, 25) : limit;
+  const mipmapFilter = resolveMipmapFilter(opts.level);
+  const needsDeepFetch = opts.overfetch || opts.includeL0 === false || (mipmapFilter && mipmapFilter !== "L0");
+  // Overfetch raw candidates from storage when requested (e.g. auto_recall or L1+ recall)
+  // to prevent high-volume L0 telemetry from starving L1/L2/L3 memories.
+  const rawFetchLimit = needsDeepFetch ? Math.max(limit * 12, 80) : limit;
   const untilRaw = opts.until;
   const until = typeof untilRaw === "string" && /^\d{4}-\d{2}-\d{2}/.test(untilRaw) ? untilRaw.slice(0, 10) : undefined;
   const wantEmbed = opts.embed === true;
@@ -244,6 +247,10 @@ export async function executeHybridScan(
 
   let fused = fuseRankingsRRF(lexResult.lines, semLines, 60);
 
+  if (mipmapFilter !== "L0") {
+    fused = mergeStandingDirectivesIntoFused(cwd, topic, fused);
+  }
+
   if (opts.bbox) {
     const isletRefs = await querySpatialFilter(env, cwd, axes, limit, opts.bbox);
     fused = fused.filter((c) => isletRefs.has(c.ref));
@@ -253,7 +260,7 @@ export async function executeHybridScan(
   const eEnv = embedEnv(env.cfg);
   for (const cand of fused.slice(0, Math.min(rawFetchLimit, 15))) {
     const decoded = decodePayload(cand.record);
-    if (!isCleanSummaryText(decoded.envelope.summary) || decoded.envelope.summary.startsWith("[Corrupted payload")) {
+    if (isHtokPayload(cand.record) || !isCleanSummaryText(decoded.envelope.summary) || decoded.envelope.summary.startsWith("[Corrupted payload")) {
       try {
         const getRes = await env.runner.run(buildGetInvocation(bin, filespecFor(cwd, wantEmbed), cand.ref, axes, cwd, eEnv));
         if (getRes.code === 0 && (getRes.stdoutBytes || getRes.stdout.trim())) {
@@ -270,15 +277,19 @@ export async function executeHybridScan(
   }
 
   const filterCrit: FilterCriteria = {
-    mipmap: resolveMipmapFilter(opts.level),
+    mipmap: mipmapFilter,
     lifecycle: typeof opts.lifecycle === "string" ? opts.lifecycle : undefined,
     project: typeof opts.project === "string" ? opts.project.trim() : undefined,
     subsystem: typeof opts.subsystem === "string" ? opts.subsystem.trim() : undefined,
     limit,
     query: topic,
     dedupe: opts.dedupe,
+    includeL0: opts.includeL0,
   };
-  const records = filterAndEnrich(fused, filterCrit);
+  let records = filterAndEnrich(fused, filterCrit);
+  if (records.length === 0 && mipmapFilter === undefined && opts.includeL0 === false) {
+    records = filterAndEnrich(fused, { ...filterCrit, includeL0: true });
+  }
   details["records"] = records;
   debugLog("recall", "Hybrid scan fused and filtered records", {
     topic: topic.slice(0, 80),

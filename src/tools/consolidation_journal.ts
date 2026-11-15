@@ -4,7 +4,7 @@ import type { MmConfig } from "../config.ts";
 import type { CormRunner } from "../corm.ts";
 import { buildListInvocation, buildGetInvocation } from "../corm.ts";
 import { parseBareRefs } from "../resolve.ts";
-import { decodePayload } from "../payload.ts";
+import { decodeResult } from "../payload.ts";
 import { debugLog } from "../debug.ts";
 import type { MemoryEnvelope } from "../types.ts";
 
@@ -132,7 +132,7 @@ async function handleCorruptedJournal(
     for (const r of refs) {
       const getRes = await recoveryCtx.runner.run(buildGetInvocation(bin, recoveryCtx.fspec, r, recoveryCtx.axes, memDir, recoveryCtx.eEnv));
       if (getRes.code === 0 && getRes.stdout.trim()) {
-        const { envelope } = decodePayload(getRes.stdout.trim());
+        const { envelope } = decodeResult(getRes);
         items.push({ ref: r, envelope });
       } else {
         hadPartialReadError = true;

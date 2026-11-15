@@ -29,15 +29,20 @@ export interface FilterCriteria {
   limit: number;
   query?: string;
   dedupe?: boolean;
+  includeL0?: boolean;
 }
 
 export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
-  if (envelope.level === "L0") return true;
-  const s = envelope.summary || cand.record || "";
-  if (s.startsWith("# ") || s.startsWith("## ")) return true;
-  if (/^(?:import\s+|export\s+|const\s+|function\s+|class\s+|var\s+|let\s+)/.test(s)) return true;
-  if (/:\d+:\s*(?:const|let|var|function|import|export|#include)/.test(s)) return true;
+  if (envelope.type === "episode" || envelope.episode) {
+    return false;
+  }
+  const s = (envelope.summary || cand.record || "").trim();
+  if (/^(?:import\s+|export\s+|const\s+|function\s+|class\s+|var\s+|let\s+|#include\b|#define\b)/.test(s)) return true;
+  if (/:\d+:\s*(?:const|let|var|function|import|export|#include|#define)/.test(s)) return true;
+  // grep/ripgrep hit lines (`path/to/file.ext:123: ...`) are raw source excerpts, not knowledge.
+  if (/^[\w.~\/-]+\.[A-Za-z0-9]{1,6}:\d+:/.test(s)) return true;
   if (s.includes("isletFspec") || s.includes("mem-islet.db")) return true;
+  if (s.startsWith("# ") && /(?:readme|documentation|license|package|pi-mm:)/i.test(s)) return true;
   return false;
 }
 
@@ -148,6 +153,13 @@ const LIFECYCLE_WEIGHTS: Record<LifecycleState, number> = {
   superseded: 0.05,
 };
 
+const MIPMAP_WEIGHTS: Record<MipmapLevel, number> = {
+  L3: 1.15,
+  L2: 1.10,
+  L1: 1.05,
+  L0: 0.90,
+};
+
 export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria): number {
   let score = cand.rrfScore > 0 ? cand.rrfScore : (cand.score ? parseFloat(cand.score) : 1.0);
   if (isNaN(score) || score <= 0) score = 1.0;
@@ -156,6 +168,11 @@ export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria):
   if (!env) return score;
 
   score *= (LIFECYCLE_WEIGHTS[env.lifecycle] ?? 0.8);
+
+  // Hierarchical Mipmap Level Selection (L3/L2/L1 preferred over raw L0)
+  if (env.level) {
+    score *= (MIPMAP_WEIGHTS[env.level] ?? 1.0);
+  }
 
   // Provenance bonus for evidence-backed conclusions (multiplicative to preserve RRF scale)
   if (env.evidence && env.evidence.length > 0) {
@@ -193,7 +210,7 @@ export function filterAndEnrich(
   const technical = isTechnicalInquiry(crit.query);
 
   for (const cand of candidates) {
-    const { envelope } = decodePayload(cand.record);
+    const envelope = cand.envelope ?? decodePayload(cand.record).envelope;
     if (crit.mipmap && envelope.level !== crit.mipmap) continue;
 
     // Strict pruning of code/doc artifacts on conversational queries
@@ -218,8 +235,8 @@ export function filterAndEnrich(
     if (crit.subsystem && envelope.context?.subsystem !== crit.subsystem) continue;
 
     // Normal recall prefers useful higher-level memories (L1+) over raw L0 turns,
-    // unless L0 was explicitly requested.
-    if (crit.mipmap === undefined && envelope.level === "L0") {
+    // unless L0 was explicitly requested or includeL0 is enabled.
+    if (crit.mipmap === undefined && envelope.level === "L0" && !crit.includeL0) {
       continue;
     }
 
@@ -246,13 +263,31 @@ export function filterAndEnrich(
 
   filtered.sort((a, b) => (b.rankingScore ?? 0) - (a.rankingScore ?? 0) || a.ref - b.ref);
 
-  // Deduplicate candidates with identical normalized summaries only when requested (e.g. auto-recall)
+  // Deduplicate candidates with identical normalized summaries only when requested (e.g. auto-recall or targeted recall)
   if (crit.dedupe) {
+    const citedByHigherMap = new Map<number, string>();
+    for (const cand of filtered) {
+      const lvl = cand.envelope?.level ?? cand.level;
+      if (lvl && lvl !== "L0" && cand.envelope?.evidence && cand.envelope.evidence.length > 0) {
+        const parentNorm = (cand.summary || "").toLowerCase().replace(/[^\w\s]/g, "").trim();
+        for (const evRef of cand.envelope.evidence) {
+          citedByHigherMap.set(evRef, parentNorm);
+        }
+      }
+    }
+
     const deduped: FusedCandidate[] = [];
     const seenSummaries = new Set<string>();
     for (const cand of filtered) {
       const norm = (cand.summary || "").toLowerCase().replace(/[^\w\s]/g, "").trim();
       if (seenSummaries.has(norm)) continue;
+      const lvl = cand.envelope?.level ?? cand.level;
+      if (lvl === "L0" && citedByHigherMap.has(cand.ref)) {
+        const parentNorm = citedByHigherMap.get(cand.ref) || "";
+        if (parentNorm === norm || parentNorm.includes(norm) || norm.includes(parentNorm)) {
+          continue;
+        }
+      }
       seenSummaries.add(norm);
       deduped.push(cand);
     }

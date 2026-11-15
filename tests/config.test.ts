@@ -91,7 +91,7 @@ Deno.test("resolveCormBin: precedence settings → env → PATH → in-site → 
   check(none.source === "none" && none.path === "", "none when nothing resolves");
 });
 
-Deno.test("resolveAxisPath: explicit list, local monorepo, and system-wide fallback", () => {
+Deno.test("resolveAxisPath: explicit list, local monorepo, node_modules prebuilds, and system-wide fallback", () => {
   check(resolveAxisPath(loadConfig({ axisLibs: "/x:/y" }), "/repo") === "/x:/y", "explicit axisLibs");
 
   // In-site monorepo check when local directory exists
@@ -102,7 +102,35 @@ Deno.test("resolveAxisPath: explicit list, local monorepo, and system-wide fallb
     "in-site joint:lemma:islet when local monorepo exists",
   );
 
-  // System-wide library fallback when local monorepo does not exist
+  // Installed node_modules/@tty-pt/<axis>/prebuilds/<key> check when external/ does not exist
+  const key = `${process.platform}-${process.arch}`;
+  const nmJoint = join("/repo", "node_modules", "@tty-pt", "joint", "prebuilds", key);
+  const nmLemma = join("/repo", "node_modules", "@tty-pt", "lemma", "prebuilds", key);
+  const nmIslet = join("/repo", "node_modules", "@tty-pt", "islet", "prebuilds", key);
+  const nmSepal = join("/repo", "node_modules", "@tty-pt", "sepal", "prebuilds", key);
+  const nmSet = new Set([
+    join(nmJoint, "libjoint.so"),
+    join(nmLemma, "liblemma.so"),
+    join(nmIslet, "libislet.so"),
+    join(nmSepal, "libsepal.so"),
+    "/usr/lib/libjoint.so",
+  ]);
+  check(
+    resolveAxisPath(DEFAULT_CONFIG, "/repo", (p) => nmSet.has(p)) ===
+      `${nmJoint}:${nmLemma}:${nmIslet}`,
+    "node_modules prebuilds preferred over /usr/lib when external/ is absent",
+  );
+  const withSepalCfg = applyEnv(DEFAULT_CONFIG, {
+    CORM_SEPAL_EMBED_URL: "http://127.0.0.1:4242",
+    CORM_SEPAL_EMBED_MODEL: "bge-base",
+  });
+  check(
+    resolveAxisPath(withSepalCfg, "/repo", (p) => nmSet.has(p)) ===
+      `${nmJoint}:${nmLemma}:${nmIslet}:${nmSepal}`,
+    "node_modules prebuilds includes sepal when sepalConfigured is true",
+  );
+
+  // System-wide library fallback when local monorepo and node_modules do not exist
   check(
     resolveAxisPath(DEFAULT_CONFIG, "/repo", (p) => p === "/usr/lib/libjoint.so") === "/usr/lib",
     "system-wide /usr/lib fallback when local does not exist",

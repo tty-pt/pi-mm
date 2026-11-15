@@ -404,3 +404,57 @@ Deno.test("auto_recall: stalled fallback does not exceed overall deadline", asyn
   // Total elapsed time must be bounded near the 80ms timeout, well under the 500ms stall
   assert.ok(elapsed < 200, `Elapsed ${elapsed}ms must be bounded near deadline`);
 });
+
+Deno.test("auto_recall: distinguishes [Past Session <id>] vs [Current Session] in entries and excerpts", () => {
+  const pastCand: FusedCandidate = {
+    ref: 21,
+    record: "2026-11-12:{}",
+    origin: "lemma",
+    rrfScore: 0.04,
+    envelope: {
+      level: "L1",
+      type: "episode",
+      lifecycle: "tested",
+      summary: "Investigated gig accent sensitivity in slot-2",
+      episode: {
+        problem: "Accent sensitivity check",
+        sessionId: "01a1c7df-8888-4444-aaaa-bbbbccccdddd",
+        outcome: "success",
+      },
+    },
+  };
+  const currentCand: FusedCandidate = {
+    ref: 22,
+    record: "2026-11-14:{}",
+    origin: "lemma",
+    rrfScore: 0.05,
+    envelope: {
+      level: "L1",
+      type: "episode",
+      lifecycle: "tested",
+      summary: "Refactored compaction continuity in current session",
+      episode: {
+        problem: "Compaction continuity",
+        sessionId: "curr9999-1111-2222-3333-444444444444",
+        outcome: "success",
+      },
+    },
+  };
+
+  const excerptsMap = new Map([
+    [21, [{ role: "user" as const, text: "Check why mods/gig filter is rejecting accent queries." }]],
+  ]);
+
+  const context = buildInjectedContext(
+    [pastCand, currentCand],
+    1500,
+    excerptsMap,
+    "Do you remember what we did with gig and compaction?",
+    true,
+    "curr9999-1111-2222-3333-444444444444",
+  );
+
+  assert.ok(context.includes("[Ref 21] (L1, tested) [Past Session 01a1c7df]: Investigated gig accent sensitivity"));
+  assert.ok(context.includes("Session Excerpts: [Past Session 01a1c7df]"));
+  assert.ok(context.includes("[Ref 22] (L1, tested) [Current Session]: Refactored compaction continuity"));
+});
