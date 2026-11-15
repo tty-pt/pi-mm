@@ -76,7 +76,7 @@ export class ShellCormRunner implements CormRunner {
     }
     return this.exec(invocation.command, execArgs, {
       cwd: invocation.cwd,
-      env: invocation.env,
+      env: { CORM_QUIET: "1", ...invocation.env },
       stdin: invocation.payloadBytes,
     });
   }

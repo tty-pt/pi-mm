@@ -58,8 +58,8 @@ export function cormBin(env: ToolEnv): string {
   return env.cfg.cormBin || env.cfg.qmapBin || "";
 }
 
-export async function readToolEnv(cwd: string, runner: CormRunner): Promise<ToolEnv> {
-  const cfg = await readMmConfig(cwd);
+export async function readToolEnv(cwd: string, runner: CormRunner, preloadedCfg?: MmConfig): Promise<ToolEnv> {
+  const cfg = preloadedCfg ?? (await readMmConfig(cwd));
   if (!cfg.cormBin) {
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
@@ -83,10 +83,6 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
     const socketPath = resolveSocketPath(cfg, mDir);
-    const axes = resolveAxisPath(cfg, ctx.cwd);
-    const embed = sepalConfigured(cfg);
-    const fspec = filespecFor(mDir, embed);
-    const eEnv = embedEnv(cfg);
 
     const isTestMock = ctx.cwd.includes("fake");
     const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
@@ -94,7 +90,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
 
     // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
     // and adopt the local server for judge/embeddings as soon as it answers.
-    if (isProject && (!cfg.captureEmbedUrl || !cfg.judgeUrl || !cfg.embedUrl)) {
+    if (isProject) {
       try {
         const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
         void ensureAuren({
@@ -108,7 +104,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
             if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
           }
           if (!cfg.embedUrl && cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
-            cfg.embedUrl = DEFAULT_AUREN_URL;
+            cfg.embedUrl = `${DEFAULT_AUREN_URL}/v1/embeddings`;
             if (!cfg.embedModel) cfg.embedModel = DEFAULT_AUREN_EMBED_MODEL;
           }
         }
@@ -116,6 +112,11 @@ export function defaultEnvSource(pi: Pi): EnvSource {
         // Best-effort auto-discovery
       }
     }
+
+    const axes = resolveAxisPath(cfg, ctx.cwd);
+    const embed = sepalConfigured(cfg);
+    const fspec = filespecFor(mDir, embed);
+    const eEnv = embedEnv(cfg);
 
     const hasNativeAddon = !isTestMock && (await loadCormAddonModule()) !== null;
     const lockHeld = await isDaemonLockHeld(join(mDir, ".cormd.lock"));
@@ -159,7 +160,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
     } else {
       runner = new DaemonCormRunner(socketPath, fallbackRunner);
     }
-    return readToolEnv(ctx.cwd, runner);
+    return readToolEnv(ctx.cwd, runner, cfg);
   };
 }
 

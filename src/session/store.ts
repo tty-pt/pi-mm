@@ -293,12 +293,14 @@ export class SessionStore {
     this.cormBin = resolvedBin || "corm";
     this.embedUrl = options.embedUrl || envMap["CORM_SEPAL_EMBED_URL"];
 
+    const embedModel = options.embedModel || envMap["CORM_SEPAL_EMBED_MODEL"] || "bge-base";
     const cfg = {
       cormBin: this.cormBin,
       axisLibs: options.axisLibs ?? null,
       memDir: this.sessionDir,
       scanLimit: 5,
       embedUrl: this.embedUrl,
+      embedModel: this.embedUrl ? embedModel : undefined,
       semanticSearch: Boolean(this.embedUrl),
     };
     this.axisPath = resolveAxisPath(cfg as any, cwd);
@@ -307,11 +309,12 @@ export class SessionStore {
     this.filespec = `${this.sessionDir}/session.db@joint,lemma${embed ? ",sepal" : ""}:a:b`;
 
     this.extraEnv = {
+      CORM_QUIET: "1",
       CORM_AXIS_PATH: this.axisPath,
     };
     if (this.embedUrl) {
       this.extraEnv["CORM_SEPAL_EMBED_URL"] = this.embedUrl;
-      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = options.embedModel || envMap["CORM_SEPAL_EMBED_MODEL"] || "bge-base";
+      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = embedModel;
       if (options.embedKey) this.extraEnv["CORM_SEPAL_EMBED_KEY"] = options.embedKey;
     }
     if (options.ephemeralSepal !== false) {
@@ -877,21 +880,23 @@ export class SessionStore {
     if (updates.cormBin) {
       this.cormBin = updates.cormBin;
     }
-    if (updates.embedUrl && !this.embedUrl) {
+    if (updates.embedUrl) {
       this.embedUrl = updates.embedUrl;
+      const embedModel = updates.embedModel || this.options.embedModel || "bge-base";
       const cfg = {
         cormBin: this.cormBin,
         axisLibs: updates.axisLibs ?? this.options.axisLibs ?? null,
         memDir: this.sessionDir,
         scanLimit: 5,
         embedUrl: this.embedUrl,
+        embedModel,
         semanticSearch: true,
       };
       this.axisPath = resolveAxisPath(cfg as any, cwd);
       this.filespec = `${this.sessionDir}/session.db@joint,lemma,sepal:a:b`;
       this.extraEnv["CORM_AXIS_PATH"] = this.axisPath;
       this.extraEnv["CORM_SEPAL_EMBED_URL"] = this.embedUrl;
-      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = updates.embedModel || this.options.embedModel || "bge-base";
+      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = embedModel;
       if (updates.embedKey) this.extraEnv["CORM_SEPAL_EMBED_KEY"] = updates.embedKey;
     }
   }
@@ -1062,7 +1067,7 @@ export class SessionStore {
   async querySemantic(topic: string, limit = 5): Promise<ResultLine[]> {
     if (!this.embedUrl) return [];
     try {
-      const args = ["--field=text", "--query=" + topic];
+      const args = ["--query=" + topic, "--min-sim=0.2"];
       const scanInv = buildScanInvocation(
         this.cormBin,
         this.filespec,

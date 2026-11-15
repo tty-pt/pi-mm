@@ -956,13 +956,25 @@ export function resolveNodeModulesAxisDirs(
     let curr = cwd;
     for (let i = 0; i < 4; i++) {
       addRoot(join(curr, "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "npm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", axis));
       const parent = dirname(curr);
       if (!parent || parent === curr) break;
       curr = parent;
     }
 
-    // 2. When using real filesystem probe, also check module-relative and require.resolve paths
+    // 2. When using real filesystem probe, also check module-relative, user-home, and require.resolve paths
     if (probe === existsSync) {
+      try {
+        const home = homedir();
+        addRoot(join(home, "node_modules", "@tty-pt", axis));
+        addRoot(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
+        addRoot(join(home, ".pi", "npm", "node_modules", "@tty-pt", axis));
+      } catch {
+        // ignore
+      }
       try {
         const req = createRequire(import.meta.url);
         const pkgJson = req.resolve(`@tty-pt/${axis}/package.json`);
@@ -977,6 +989,7 @@ export function resolveNodeModulesAxisDirs(
         addRoot(resolve(here, "..", "..", "node_modules", "@tty-pt", axis));
         addRoot(resolve(here, "..", "..", "..", "node_modules", "@tty-pt", axis));
         addRoot(resolve(here, "..", "..", "..", "..", "node_modules", "@tty-pt", axis));
+        addRoot(resolve(here, "..", "..", "..", "..", "..", "node_modules", "@tty-pt", axis));
       } catch {
         // ignore
       }

@@ -393,8 +393,8 @@ Deno.test("describeProgress and describeModelStatus: non-blocking visual feedbac
     configPath: null,
     notices: [],
   };
-  check(describeProgress(dlState) === "⬇️ bge-base (50%)", "progress includes model id and percentage");
-  check(describeModelStatus(dlState) === "⬇️ bge-base (50%)", "model status reflects download progress");
+  check(describeProgress(dlState) === "⬇️  bge-base (50%)", "progress includes model id and percentage");
+  check(describeModelStatus(dlState) === "⬇️  bge-base (50%)", "model status reflects download progress");
 
   const runningState = {
     phase: "ready" as const,
@@ -468,8 +468,8 @@ Deno.test("pi-mm unified status bar: ⚡/🔌 model state, ⏳ busy hourglass, �
   setMmBusy(ctx, true);
   check(slots.get("pi-mm") === "🧠 0 ⏳ ⚡", `busy online state expected '🧠 0 ⏳ ⚡', got '${slots.get("pi-mm")}'`);
 
-  setMmDownloadProgress(ctx, "⬇️ bge-base (42%)");
-  check(slots.get("pi-mm") === "🧠 0 ⏳ ⬇️ bge-base (42%)", `busy downloading state expected '🧠 0 ⏳ ⬇️ bge-base (42%)', got '${slots.get("pi-mm")}'`);
+  setMmDownloadProgress(ctx, "⬇️  bge-base (42%)");
+  check(slots.get("pi-mm") === "🧠 0 ⏳ ⬇️  bge-base (42%)", `busy downloading state expected '🧠 0 ⏳ ⬇️  bge-base (42%)', got '${slots.get("pi-mm")}'`);
 
   setMmDownloadProgress(ctx, undefined);
   setMmBusy(ctx, false);
@@ -483,5 +483,35 @@ Deno.test("pi-mm unified status bar: ⚡/🔌 model state, ⏳ busy hourglass, �
   check(slots.get("pi-mm") === "🧠 ↑3 ⚡", `transient recall flash keeps lightning bolt: got '${slots.get("pi-mm")}'`);
 
   resetMmStatus(ctx, false);
+});
+
+Deno.test("ensureAuren: late caller with onUpdate immediately receives current state", async () => {
+  const home = tmpHome();
+  const cwd = tmpHome();
+  resetBootstrapForTests();
+  try {
+    touch(join(modelsDir(home), "bge-base-en-v1.5.gguf"), "mock");
+    // First call simulates defaultEnvSource (no onUpdate hook)
+    await ensureAuren({
+      home,
+      cwd,
+      settings: { autoStart: false, autoDownloadModels: "never" },
+    });
+    // Second call simulates session_start attaching onUpdate within RERUN_AFTER_MS window
+    let receivedPhase: string | undefined;
+    await ensureAuren({
+      home,
+      cwd,
+      settings: { autoStart: false, autoDownloadModels: "never" },
+      onUpdate: (st) => {
+        receivedPhase = st.phase;
+      },
+    });
+    check(receivedPhase !== undefined, "late caller onUpdate was invoked immediately with cached bootstrap state");
+  } finally {
+    resetBootstrapForTests();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 

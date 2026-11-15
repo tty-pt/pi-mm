@@ -74,11 +74,13 @@ const PC_ALIASES: Record<EngineName, string[]> = {
 };
 
 const NPM_SHORT_NAMES: Partial<Record<EngineName, string>> = {
+  axil: "axil",
   libcorm: "corm",
   libsepal: "sepal",
   liblemma: "lemma",
   libjoint: "joint",
   libislet: "islet",
+  "axil-auren": "auren",
 };
 
 export type VersionSource = "pkgconfig" | "npm" | "git" | "daemon" | "fallback";
@@ -236,17 +238,27 @@ function findNpmPackageDirs(comp: EngineName, cwd: string, includeModuleRelative
   let curr = cwd;
   for (let i = 0; i < 4; i++) {
     add(join(curr, "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "npm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", short));
     const parent = dirname(curr);
     if (!parent || parent === curr) break;
     curr = parent;
   }
   if (includeModuleRelative) {
     try {
+      const home = homedir();
+      add(join(home, "node_modules", "@tty-pt", short));
+      add(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
+      add(join(home, ".pi", "npm", "node_modules", "@tty-pt", short));
+    } catch { /* ignore */ }
+    try {
       add(dirname(createRequire(import.meta.url).resolve(`@tty-pt/${short}/package.json`)));
     } catch { /* ignore */ }
     try {
       const here = dirname(fileURLToPath(import.meta.url));
-      for (const rel of ["..", "../..", "../../..", "../../../.."]) {
+      for (const rel of ["..", "../..", "../../..", "../../../..", "../../../../.."]) {
         add(resolve(here, rel, "node_modules", "@tty-pt", short));
       }
       add(resolve(here, "../..", short));

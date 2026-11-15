@@ -161,6 +161,162 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
       sym?.name === "computeStandaloneWidget",
       `Expected top hit to be computeStandaloneWidget, got ${sym?.name}`,
     );
+
+    // 6. Verify CodeStore.configure adds sepal prebuild to axisPath when embedUrl is enabled mid-session
+    codeStore.configure({ embedUrl: "http://127.0.0.1:4242/v1/embeddings", embedModel: "bge-base" });
+    check(
+      codeStore.axisPath === `${expectedAxes}:${join(tmp, "node_modules", "@tty-pt", "sepal", "prebuilds", key)}`,
+      `Expected CodeStore.axisPath after configure(embedUrl) to include sepal prebuild, got ${codeStore.axisPath}`,
+    );
+
+    // 7. Verify axil + axil-auren standalone node_modules setup, mid-session download -> server start -> ⚡ status -> live semantic embeddings + zero stderr
+    const axilSrcNpm = join(repoRoot, "external", "axil", "npm");
+    const aurenSrcNpm = existsSync(join(repoRoot, "external", "axil-auren", "npm"))
+      ? join(repoRoot, "external", "axil-auren", "npm")
+      : join(repoRoot, "..", "axil-auren", "npm");
+    const realBgeSmall = join(process.env["HOME"] || "/root", ".models", "bge-small-en-v1.5.gguf");
+
+    if (
+      existsSync(join(axilSrcNpm, "bin", "axil.js")) &&
+      existsSync(join(aurenSrcNpm, "prebuilds", key, "libaxil-auren.so")) &&
+      existsSync(realBgeSmall)
+    ) {
+      const { cpSync, readFileSync: readSync } = await import("node:fs");
+      const { createHash } = await import("node:crypto");
+      const {
+        ensureAuren,
+        resetBootstrapForTests,
+        stopManagedServer,
+        describeProgress,
+      } = await import("../src/auren-bootstrap.ts");
+      const {
+        resetMmStatus,
+        setMmAurenOnline,
+        setMmDownloadProgress,
+        formatMmStatusText,
+      } = await import("../src/hooks/events.ts");
+
+      cpSync(axilSrcNpm, join(tmp, "node_modules", "@tty-pt", "axil"), { recursive: true });
+      cpSync(aurenSrcNpm, join(tmp, "node_modules", "@tty-pt", "auren"), { recursive: true });
+
+      // All 7 engines (including axil and axil-auren) must be satisfied from node_modules alone
+      const allReports = checkAllEngineVersions({ cwd: tmp, home: tmp, includeDefaultDirs: false });
+      for (const r of allReports) {
+        check(
+          r.installed && r.status === "satisfied",
+          `Expected engine ${r.name} satisfied via standalone node_modules, got ${JSON.stringify(r)}`,
+        );
+      }
+
+      const modelBuf = readSync(realBgeSmall);
+      const modelSha = createHash("sha256").update(modelBuf).digest("hex");
+      const testPort = 14242 + Math.floor(Math.random() * 1000);
+      const observedStatuses: string[] = [];
+      const ctx = {
+        cwd: tmp,
+        hasUI: true,
+        mode: "agent",
+        ui: {
+          setStatus: (id: string, text: string | undefined) => {
+            if (id === "pi-mm" && text) observedStatuses.push(text);
+          },
+        },
+      };
+
+      resetBootstrapForTests();
+      resetMmStatus(ctx, false);
+
+      const testCatalog = [
+        {
+          id: "bge-base",
+          file: "bge-base-en-v1.5.gguf",
+          url: "https://example.invalid/bge-base-en-v1.5.gguf",
+          bytes: modelBuf.length,
+          sha256: modelSha,
+          tier: "small" as const,
+          capabilities: ["embed"],
+          config: { enable_embeddings: 1, n_ctx: 512 },
+        },
+      ];
+
+      // Serve the real GGUF bytes in two chunks so download progress (⬇️  bge-base) and completion -> ⚡ are both observed
+      const fakeFetch: typeof fetch = async () => {
+        const half = Math.floor(modelBuf.length / 2);
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(modelBuf.subarray(0, half));
+            controller.enqueue(modelBuf.subarray(half));
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200 });
+      };
+
+      let cfgPath: string | null = null;
+      try {
+        const st = await ensureAuren({
+          cwd: tmp,
+          home: tmp,
+          port: testPort,
+          env: { PATH: process.env["PATH"] },
+          libDirs: [join(tmp, "node_modules", "@tty-pt", "auren", "prebuilds", key)],
+          catalog: testCatalog,
+          fetchImpl: fakeFetch,
+          settings: { autoStart: true, autoDownloadModels: "auto" },
+          readyTimeoutMs: 15000,
+          onUpdate: (state) => {
+            const online = Boolean(state.running && state.activeModel);
+            setMmAurenOnline(ctx, online);
+            setMmDownloadProgress(ctx, describeProgress(state));
+            if (online) {
+              sessionStore.configure({
+                cwd: tmp,
+                embedUrl: `http://127.0.0.1:${testPort}/v1/embeddings`,
+                embedModel: state.activeModel || "bge-base",
+              });
+            }
+          },
+        });
+        cfgPath = st.configPath;
+
+        check(
+          sessionStore.axisPath === `${expectedAxes}:${join(tmp, "node_modules", "@tty-pt", "sepal", "prebuilds", key)}`,
+          `Expected SessionStore.axisPath after configure(embedUrl) to include sepal prebuild, got ${sessionStore.axisPath}`,
+        );
+
+        check(st.running === true, `Expected standalone axil-auren to start on port ${testPort}, failures=${JSON.stringify(st.failures)}`);
+        check(st.activeModel === "bge-base", `Expected activeModel 'bge-base', got '${st.activeModel}'`);
+        check(formatMmStatusText() === "🧠 0 ⚡", `Expected final status bar '🧠 0 ⚡', got '${formatMmStatusText()}'`);
+        check(
+          observedStatuses.some((s) => s.includes("⬇️  bge-base")),
+          `Expected status transitions to include two-space padded '⬇️  bge-base', got ${JSON.stringify(observedStatuses)}`,
+        );
+        check(
+          observedStatuses[observedStatuses.length - 1] === "🧠 0 ⚡",
+          `Expected final observed status '🧠 0 ⚡', got '${observedStatuses[observedStatuses.length - 1]}'`,
+        );
+
+        // Append a second event now that embeddings are live and verify semantic query + zero stderr on fd 2
+        await sessionStore.appendEvent({
+          id: "ev-standalone-2",
+          entryId: "entry-standalone-2",
+          turnIndex: 2,
+          role: "assistant",
+          speaker: "assistant",
+          summary: "Neural vector cosine similarity embeddings powered by axil-auren and libsepal",
+          text: "Semantic search over session memory using local bge-base GGUF embeddings",
+          timestamp: "2026-11-14T20:01:00Z",
+        });
+        await sessionStore.flush(5000);
+
+        const semHits = await sessionStore.querySemantic("vector cosine similarity embeddings", 5);
+        check(semHits.length >= 1, `Expected semantic search hit via live axil-auren + libsepal, got ${semHits.length}`);
+      } finally {
+        if (cfgPath) stopManagedServer(testPort, cfgPath);
+        resetBootstrapForTests();
+        resetMmStatus(ctx, false);
+      }
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

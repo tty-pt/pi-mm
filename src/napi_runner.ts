@@ -31,13 +31,22 @@ function resolveLocalCormEntry(): string | null {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const cwd = typeof process !== "undefined" ? process.cwd() : ".";
+    const home = os.homedir();
     const candidates = [
       resolve(here, "../../../../external/libcorm/npm/dist/index.js"),
       resolve(here, "../../corm/dist/index.js"),
       resolve(here, "../node_modules/@tty-pt/corm/dist/index.js"),
       resolve(here, "../../node_modules/@tty-pt/corm/dist/index.js"),
       resolve(here, "../../../node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(here, "../../../../node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(here, "../../../../../node_modules/@tty-pt/corm/dist/index.js"),
       resolve(cwd, "node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(cwd, ".pi/agent/npm/node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(cwd, ".pi/npm/node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(cwd, ".pi/extensions/pi-mm/node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(home, ".pi/agent/npm/node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(home, ".pi/npm/node_modules/@tty-pt/corm/dist/index.js"),
+      resolve(home, "node_modules/@tty-pt/corm/dist/index.js"),
     ];
     try {
       const req = createRequire(import.meta.url);
@@ -61,6 +70,7 @@ function tryDlopenCormAddon(): CormAddonModule | null {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     const cwd = typeof process !== "undefined" ? process.cwd() : ".";
+    const home = os.homedir();
     const platform = process.platform;
     const arch = process.arch;
     const baseKey = `${platform}-${arch}`;
@@ -71,7 +81,15 @@ function tryDlopenCormAddon(): CormAddonModule | null {
       resolve(here, "../node_modules/@tty-pt/corm"),
       resolve(here, "../../node_modules/@tty-pt/corm"),
       resolve(here, "../../../node_modules/@tty-pt/corm"),
+      resolve(here, "../../../../node_modules/@tty-pt/corm"),
+      resolve(here, "../../../../../node_modules/@tty-pt/corm"),
       resolve(cwd, "node_modules/@tty-pt/corm"),
+      resolve(cwd, ".pi/agent/npm/node_modules/@tty-pt/corm"),
+      resolve(cwd, ".pi/npm/node_modules/@tty-pt/corm"),
+      resolve(cwd, ".pi/extensions/pi-mm/node_modules/@tty-pt/corm"),
+      resolve(home, ".pi/agent/npm/node_modules/@tty-pt/corm"),
+      resolve(home, ".pi/npm/node_modules/@tty-pt/corm"),
+      resolve(home, "node_modules/@tty-pt/corm"),
     ];
     try {
       const req = createRequire(import.meta.url);
@@ -247,7 +265,7 @@ export class NativeAddonCormRunner implements CormRunner {
           resolvedFilespec,
           parsed.arg2,
           payload,
-          inv.env,
+          { CORM_QUIET: "1", ...(inv.env ?? {}) },
         );
         return {
           code: res.code,

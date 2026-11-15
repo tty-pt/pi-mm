@@ -1539,8 +1539,19 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                 settings: { autoStart: env.cfg.autoStartAuren, autoDownloadModels: env.cfg.autoDownloadModels },
                 confirm: confirmFn ? (m: string) => confirmFn.call((ctxUnknown as { ui: object }).ui, "pi-mm: local model", m) : undefined,
                 onUpdate: (st) => {
-                  setMmAurenOnline(ctxUnknown as PiCtx, Boolean(st.running && st.activeModel));
+                  const online = Boolean(st.running && st.activeModel);
+                  setMmAurenOnline(ctxUnknown as PiCtx, online);
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
+                  if (online && env.cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
+                    sessInst.store.configure({
+                      cwd: ctx.cwd,
+                      cormBin: env.cfg.cormBin,
+                      axisLibs: env.cfg.axisLibs,
+                      embedUrl: env.cfg.embedUrl || "http://127.0.0.1:4242/v1/embeddings",
+                      embedModel: env.cfg.embedModel || st.activeModel || "bge-base",
+                      embedKey: env.cfg.embedKey,
+                    });
+                  }
                   if (st.downloads.length > 0) {
                     const dl = st.downloads[0];
                     tell(`download:${dl.id}`, `[pi-mm] Downloading local embedding model "${dl.id}" for fast in-memory classification...`, "info");

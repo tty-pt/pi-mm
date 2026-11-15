@@ -139,12 +139,14 @@ export class CodeStore {
     this.cormdBin = options.cormdBin ?? "";
     this.embedUrl = options.embedUrl || envMap["CORM_SEPAL_EMBED_URL"];
 
+    const embedModel = options.embedModel || envMap["CORM_SEPAL_EMBED_MODEL"] || "bge-base";
     const cfg = {
       cormBin: this.cormBin,
       axisLibs: options.axisLibs ?? null,
       memDir: this.indexDir,
       scanLimit: 10,
       embedUrl: this.embedUrl,
+      embedModel: this.embedUrl ? embedModel : undefined,
       semanticSearch: Boolean(this.embedUrl),
     };
     this.axisPath = resolveAxisPath(cfg as unknown as MmConfig, this.projectRoot);
@@ -152,10 +154,10 @@ export class CodeStore {
     this.filespec = `${this.indexDir}/code.db@joint,lemma${embed ? ",sepal" : ""}:a:b`;
     this.isletFilespec = `${this.indexDir}/code-islet.db@islet:a:s`;
 
-    this.extraEnv = { CORM_AXIS_PATH: this.axisPath };
+    this.extraEnv = { CORM_QUIET: "1", CORM_AXIS_PATH: this.axisPath };
     if (this.embedUrl) {
       this.extraEnv["CORM_SEPAL_EMBED_URL"] = this.embedUrl;
-      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = options.embedModel || envMap["CORM_SEPAL_EMBED_MODEL"] || "bge-base";
+      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = embedModel;
       if (options.embedKey) this.extraEnv["CORM_SEPAL_EMBED_KEY"] = options.embedKey;
     }
     if (options.ephemeralSepal !== false) {
@@ -170,11 +172,23 @@ export class CodeStore {
     if (options.cormBin && options.cormBin !== this.cormBin) {
       this.cormBin = options.cormBin;
     }
-    if (options.embedUrl && !this.embedUrl) {
+    if (options.embedUrl) {
       this.embedUrl = options.embedUrl;
+      const embedModel = options.embedModel || this.extraEnv["CORM_SEPAL_EMBED_MODEL"] || "bge-base";
+      const cfg = {
+        cormBin: this.cormBin,
+        axisLibs: options.axisLibs ?? null,
+        memDir: this.indexDir,
+        scanLimit: 10,
+        embedUrl: this.embedUrl,
+        embedModel,
+        semanticSearch: true,
+      };
+      this.axisPath = resolveAxisPath(cfg as unknown as MmConfig, this.projectRoot);
       this.filespec = `${this.indexDir}/code.db@joint,lemma,sepal:a:b`;
+      this.extraEnv["CORM_AXIS_PATH"] = this.axisPath;
       this.extraEnv["CORM_SEPAL_EMBED_URL"] = this.embedUrl;
-      if (options.embedModel) this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = options.embedModel;
+      this.extraEnv["CORM_SEPAL_EMBED_MODEL"] = embedModel;
       if (options.embedKey) this.extraEnv["CORM_SEPAL_EMBED_KEY"] = options.embedKey;
     }
   }
@@ -676,7 +690,7 @@ export class CodeStore {
       if (this.daemonReadyPromise) await this.daemonReadyPromise;
       const inv = buildScanInvocation(
         this.cormBin, this.filespec, "(sepal)", limit, this.axisPath, this.indexDir, this.extraEnv,
-        ["--field=text", "--query=" + query],
+        ["--query=" + query, "--min-sim=0.2"],
       );
       const res = await Promise.race([
         this.runner.run(inv),

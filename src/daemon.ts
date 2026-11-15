@@ -610,6 +610,7 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
 
     const env: Record<string, string> = {
       ...(runtimeEnv() as Record<string, string>),
+      CORM_QUIET: "1",
       CORM_AXIS_PATH: options.axisPath ?? "",
       CORM_AXIS_LIBS: options.axisPath ?? "",
       ...(options.embedEnv ?? {}),

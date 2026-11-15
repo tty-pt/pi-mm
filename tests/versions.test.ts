@@ -177,6 +177,19 @@ Deno.test("versions: detectComponentVersion resolves node_modules/@tty-pt/* with
     check(jointRep.status === "satisfied", "libjoint satisfied");
     check(jointRep.source === "npm", "libjoint source is npm");
 
+    const axilDir = join(tmp, "node_modules", "@tty-pt", "axil");
+    const aurenDir = join(tmp, ".pi", "agent", "npm", "node_modules", "@tty-pt", "auren");
+    Deno.mkdirSync(axilDir, { recursive: true });
+    Deno.mkdirSync(aurenDir, { recursive: true });
+    writeFileSync(join(axilDir, "package.json"), JSON.stringify({ name: "@tty-pt/axil", version: "1.8.1" }));
+    writeFileSync(join(aurenDir, "package.json"), JSON.stringify({ name: "@tty-pt/auren", version: "1.5.1" }));
+
+    const axilRep = detectComponentVersion("axil", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(axilRep.installed === true && axilRep.version === "1.8.1" && axilRep.status === "satisfied", "axil detected via node_modules/@tty-pt/axil");
+
+    const aurenRep = detectComponentVersion("axil-auren", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(aurenRep.installed === true && aurenRep.version === "1.5.1" && aurenRep.status === "satisfied", "axil-auren detected via .pi/agent/npm/node_modules/@tty-pt/auren");
+
     const missingRep = detectComponentVersion("liblemma", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
     check(missingRep.installed === false && missingRep.status === "missing", "uninstalled liblemma is missing when includeDefaultDirs=false");
   } finally {

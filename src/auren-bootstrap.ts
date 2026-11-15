@@ -425,12 +425,20 @@ function platformPrebuildKeys(): string[] {
 function resolvePkgRoots(name: string, bases: string[], includeDefaultDirs: boolean): string[] {
   const roots: string[] = [];
   const add = (r: string | null | undefined) => { if (r && !roots.includes(r)) roots.push(r); };
-  for (const b of bases) add(join(b, "node_modules", "@tty-pt", name));
+  for (const b of bases) {
+    add(join(b, "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "agent", "npm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "npm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", name));
+  }
   if (includeDefaultDirs) {
     try { add(dirname(createRequire(import.meta.url).resolve(`@tty-pt/${name}/package.json`))); } catch { /* ignore */ }
     try {
       const here = dirname(fileURLToPath(import.meta.url));
-      for (const rel of ["..", "../..", "../../..", "../../../.."]) add(resolve(here, rel, "node_modules", "@tty-pt", name));
+      for (const rel of ["..", "../..", "../../..", "../../../..", "../../../../.."]) {
+        add(resolve(here, rel, "node_modules", "@tty-pt", name));
+      }
       add(resolve(here, "..", "..", name));
     } catch { /* ignore */ }
   }
@@ -442,12 +450,16 @@ function findAxilBins(cwd: string, home: string, env: Record<string, string | un
   const add = (b: string | null | undefined, allowJs = false) => {
     if (b && !bins.includes(b) && (isExecutableFile(b) || (allowJs && b.endsWith(".js") && existsSync(b)))) bins.push(b);
   };
-  add(onPath("axil", env));
   for (const r of resolvePkgRoots("axil", [cwd, home], includeDefaultDirs)) add(join(r, "bin", "axil.js"), true);
   for (const b of [cwd, home]) {
     add(join(b, "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "agent", "npm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "npm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "extensions", "pi-mm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "extensions", "pi-quest", "node_modules", ".bin", "axil"));
     add(join(b, "external", "axil", "npm", "bin", "axil.js"), true);
   }
+  add(onPath("axil", env));
   if (includeDefaultDirs) {
     try { add(resolve(dirname(fileURLToPath(import.meta.url)), "../../../..", "external", "axil", "npm", "bin", "axil.js"), true); } catch { /* ignore */ }
     add(join(home, ".local", "bin", "axil"));
@@ -532,6 +544,8 @@ export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = t
     if (!parent || parent === curr) break;
     curr = parent;
   }
+  const home = homedir();
+  if (!bases.includes(home)) bases.push(home);
   const pkgRoots = resolvePkgRoots("sepal", bases, includeDefaultDirs);
   const candidates: string[] = [];
   for (const ext of exts) candidates.push(join(cwd, "external", "libsepal", "lib", `libsepal${ext}`));
@@ -541,7 +555,7 @@ export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = t
   }
   if (includeDefaultDirs) {
     for (const ext of exts) {
-      candidates.push(join(homedir(), ".local", "lib", `libsepal${ext}`), `/usr/local/lib/libsepal${ext}`, `/usr/lib/libsepal${ext}`, `/lib/libsepal${ext}`, `/usr/lib/x86_64-linux-gnu/libsepal${ext}`);
+      candidates.push(join(home, ".local", "lib", `libsepal${ext}`), `/usr/local/lib/libsepal${ext}`, `/usr/lib/libsepal${ext}`, `/lib/libsepal${ext}`, `/usr/lib/x86_64-linux-gnu/libsepal${ext}`);
     }
   }
   for (const c of candidates) if (existsSync(c)) return c;
@@ -706,8 +720,28 @@ export async function startAurenServer(
   const url = `http://127.0.0.1:${port}`;
   const launchers = findAurenLaunchers({ ...p, port });
   if (launchers.length === 0) return { started: false, error: "no launcher found" };
-  const logPath = serverLogPath(homeOf(p));
+  const home = homeOf(p);
+  const cwd = cwdOf(p);
+  const logPath = serverLogPath(home);
   mkdirSync(dirname(logPath), { recursive: true });
+
+  // Collect shared library directories so node_modules-based launches find libsepal, libcorm, libstele, and libaxil.
+  const ldDirs: string[] = [];
+  const addLdDir = (d: string | null | undefined) => {
+    if (d && !ldDirs.includes(d) && existsSync(d)) ldDirs.push(d);
+  };
+  for (const d of findAurenLibDirs(cwd, home, p.libDirs)) addLdDir(d);
+  const sepalLib = findSepalLib(cwd, p.libDirs === undefined);
+  if (sepalLib) addLdDir(dirname(sepalLib));
+  const keys = platformPrebuildKeys();
+  for (const pkg of ["axil", "corm", "stele", "sepal", "lemma", "joint", "islet"]) {
+    for (const r of resolvePkgRoots(pkg, [cwd, home], p.libDirs === undefined)) {
+      for (const k of keys) addLdDir(join(r, "prebuilds", k));
+      addLdDir(join(r, "build", "Release"));
+      addLdDir(join(r, "lib"));
+    }
+  }
+
   let lastError = "";
   for (const launcher of launchers) {
     try {
@@ -716,15 +750,25 @@ export async function startAurenServer(
       for (const [k, v] of Object.entries(envOf(p))) if (typeof v === "string") env[k] = v;
       env["AUREN_PORT"] = String(port);
       if (p.configPath) env["AUREN_CONFIG_PATH"] = p.configPath;
-      const cmd =
-        launcher.command.endsWith(".js") && !isExecutableFile(launcher.command)
-          ? process.execPath
-          : launcher.command;
-      const cmdArgs = cmd === process.execPath ? [launcher.command, ...launcher.args] : launcher.args;
+      if (sepalLib && !env["SEPAL_LIB"]) env["SEPAL_LIB"] = sepalLib;
+      if (ldDirs.length > 0) {
+        const curLd = env["LD_LIBRARY_PATH"];
+        env["LD_LIBRARY_PATH"] = curLd ? `${ldDirs.join(delimiter)}${delimiter}${curLd}` : ldDirs.join(delimiter);
+        if (typeof process !== "undefined" && process.platform === "darwin") {
+          const curDyld = env["DYLD_LIBRARY_PATH"];
+          env["DYLD_LIBRARY_PATH"] = curDyld ? `${ldDirs.join(delimiter)}${delimiter}${curDyld}` : ldDirs.join(delimiter);
+        }
+      }
+      const isJs = launcher.command.endsWith(".js");
+      const cmd = isJs ? process.execPath : launcher.command;
+      const runArgs = launcher.kind === "axil" && !launcher.args.includes("-d")
+        ? ["-d", ...launcher.args]
+        : launcher.args;
+      const cmdArgs = isJs ? [launcher.command, ...runArgs] : runArgs;
       const child = spawn(cmd, cmdArgs, {
         detached: true,
         stdio: ["ignore", out, out],
-        cwd: launcher.workdir ?? cwdOf(p),
+        cwd: launcher.workdir ?? cwd,
         env,
       });
       child.on("error", () => { /* surfaced through readiness timeout */ });
@@ -793,12 +837,14 @@ export function getBootstrapState(): BootstrapState {
   return { ...liveState, downloads: [...liveState.downloads], failures: [...liveState.failures], notices: [...liveState.notices] };
 }
 
-/** Compact progress text for a status bar, e.g. "⬇️ bge-base (42%)"; undefined when nothing is downloading. */
+/** Compact progress text for a status bar, e.g. "⬇️  bge-base (42%)"; undefined when nothing is downloading.
+ *  Note: ⬇️ (U+2B07 U+FE0F) has wcwidth=1 in terminal cells while rendering as a 2-column emoji glyph,
+ *  so two ASCII spaces follow it to prevent the glyph from overlapping the model name. */
 export function describeProgress(state: BootstrapState = liveState): string | undefined {
   if (state.downloads.length === 0) return undefined;
   const dl = state.downloads[0];
   const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-  return `⬇️ ${dl.id} (${pct}%)`;
+  return `⬇️  ${dl.id} (${pct}%)`;
 }
 
 export const AUREN_STATUS_SLOT = "auren-model";
@@ -833,8 +879,15 @@ export function ensureAuren(opts: EnsureOptions = {}): Promise<BootstrapState> {
   // Late callers (e.g. a UI-aware session hook after a tool-env probe) can still attach their hooks.
   if (opts.confirm) activeHooks.confirm = opts.confirm;
   if (opts.onUpdate) activeHooks.onUpdate = opts.onUpdate;
-  if (inflight) return inflight;
-  if (lastFinishedAt > 0 && Date.now() - lastFinishedAt < RERUN_AFTER_MS) return Promise.resolve(getBootstrapState());
+  if (inflight) {
+    try { opts.onUpdate?.(getBootstrapState()); } catch { /* UI is best effort */ }
+    return inflight;
+  }
+  if (lastFinishedAt > 0 && Date.now() - lastFinishedAt < RERUN_AFTER_MS) {
+    const snap = getBootstrapState();
+    try { opts.onUpdate?.(snap); } catch { /* UI is best effort */ }
+    return Promise.resolve(snap);
+  }
   activeHooks = { confirm: opts.confirm, onUpdate: opts.onUpdate };
   inflight = run(opts)
     .catch((err) => {
