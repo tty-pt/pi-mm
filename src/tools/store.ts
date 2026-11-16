@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
 import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
+import { isNaturalAnchor, syncDirectivesFile } from "../hooks/reinforcement.ts";
 import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildStoreInvocation, buildGetInvocation, embedEnv, payloadDate } from "../corm.ts";
@@ -65,6 +65,8 @@ const STORE_PARAMS = {
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
     constraints: { type: "array", items: { type: "string" }, description: "Standing restrictions or rules enforced by this memory." },
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
+    anchor: { type: "boolean", description: "Whether this record is an anchored memory." },
+    isAnchor: { type: "boolean", description: "Whether this record is an anchored memory." },
     timestamp: { type: "string", description: "ISO timestamp (used as DATE prefix); default now." },
   },
   additionalProperties: false,
@@ -99,6 +101,11 @@ async function applySupersedes(
       ? encodeHtokPayload(oldDate, oldEnv)
       : encodePayload(oldDate, oldEnv);
     await env.runner.run(buildStoreInvocation(bin, fspec, oldRef, payload, axes, cwd, eEnv));
+    try {
+      const { reinforcementScheduler } = await import("../hooks/events.ts");
+      reinforcementScheduler.unregisterDirective(oldRef);
+      await syncDirectivesFile(cwd, reinforcementScheduler, [oldRef]);
+    } catch { /* best effort */ }
   }
 }
 
@@ -163,8 +170,8 @@ async function performPostStoreSideEffects(
         subsystem: envelope.context?.subsystem,
         project: envelope.context?.project,
       });
-      const dirs = reinforcementScheduler.getDirectives();
-      await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+      const removed = typeof envelope.supersedes === "number" ? [envelope.supersedes] : [];
+      await syncDirectivesFile(cwd, reinforcementScheduler, removed);
     } catch { /* best effort */ }
   }
 }
@@ -189,7 +196,7 @@ function buildEnvelope(params: Record<string, unknown>, summary: string, ep?: Ep
     supersedes: typeof params["supersedes"] === "number" ? params["supersedes"] : undefined,
     tags: Array.isArray(params["tags"]) ? (params["tags"] as string[]) : undefined,
     constraints: Array.isArray(params["constraints"]) ? (params["constraints"] as string[]) : undefined,
-    isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
+    isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || isNaturalAnchor(summary) || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
     standing: typeof params["standing"] === "boolean" ? params["standing"] : (type === "invariant" ? true : undefined),
   };
   const isStructured = Boolean(

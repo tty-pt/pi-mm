@@ -257,6 +257,15 @@ export function formatCompactMemoryEntry(
   const summary = env?.summary ?? cand.summary ?? cand.record.slice(0, 100);
   let line = `- [Ref ${ref}] (${level}, ${lifecycleLabel}${scopeStr})${sessionTag}: ${summary}`;
 
+  if (env?.episode?.findings && env.episode.findings.length > 1) {
+    const sumLower = summary.toLowerCase();
+    const extraFindings = env.episode.findings
+      .filter((f) => typeof f === "string" && f.trim().length > 0 && !sumLower.includes(f.trim().toLowerCase().slice(0, 40)))
+      .slice(0, 3);
+    if (extraFindings.length > 0) {
+      line += `\n  Additional facts: ${extraFindings.join(" | ").slice(0, 300)}`;
+    }
+  }
   if (env?.evidence && env.evidence.length > 0) {
     line += `\n  Evidence: cited refs [${env.evidence.join(", ")}]`;
   }
@@ -662,23 +671,36 @@ export function buildInjectedContext(
   const hasSubsystem = mentionedSubsystems.length > 0;
   const isUnprompted = typeof prompt === "string" && !isKnowledgeQuery && !hasSubsystem;
 
-  // Requirement R3: Prompts lacking recall cues and subsystem mentions yield zero context injection
-  if (isUnprompted) {
+  const personaItems = valid.filter(
+    (c) =>
+      c.envelope?.isAnchor === true ||
+      c.envelope?.context?.project === "user" ||
+      c.envelope?.context?.subsystem === "persona" ||
+      c.envelope?.context?.subject === "user",
+  );
+  const globalInvariants = valid.filter(
+    (c) =>
+      !personaItems.includes(c) &&
+      (c.envelope?.standing === true || (c.envelope?.level === "L2" && c.envelope?.type === "invariant")) &&
+      !c.envelope?.context?.subsystem,
+  );
+
+  // Requirement R3: Prompts lacking recall cues, subsystem mentions, and anchored/persona/global-invariant matches yield zero context injection
+  if (isUnprompted && personaItems.length === 0 && globalInvariants.length === 0) {
     return "";
   }
 
-  const personaItems = valid.filter((c) => c.envelope?.context?.project === "user" || c.envelope?.context?.subsystem === "persona" || c.envelope?.context?.subject === "user");
-
-  // Requirement R2: Proactive priming bounded strictly to mentioned subsystems
+  // Requirement R2: Proactive priming bounded strictly to mentioned subsystems (plus global unscoped invariants on unprompted turns)
   const subsystemInvariants = hasSubsystem
     ? valid.filter((c) => {
         if (c.envelope?.level !== "L2" && c.envelope?.type !== "invariant") return false;
         if (personaItems.includes(c)) return false;
         const sub = c.envelope?.context?.subsystem;
-        const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+        if (!sub) return true;
+        const normSub = sub.startsWith("lib") ? sub.slice(3) : sub;
         return Boolean(normSub && (mentionedSubsystems.includes(normSub) || mentionedSubsystems.includes(`lib${normSub}`)));
       })
-    : [];
+    : (isUnprompted ? globalInvariants : []);
 
   const activeHypotheses = hasSubsystem
     ? valid.filter((c) => {
@@ -690,22 +712,24 @@ export function buildInjectedContext(
       })
     : [];
 
-  const generalMemories = valid.filter((c) => {
-    if (personaItems.includes(c) || subsystemInvariants.includes(c) || activeHypotheses.includes(c)) {
-      return false;
-    }
-    const sub = c.envelope?.context?.subsystem;
-    const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
-    // Exclude items belonging to unmentioned subsystems
-    if (hasSubsystem && normSub && !mentionedSubsystems.includes(normSub) && !mentionedSubsystems.includes(`lib${normSub}`)) {
-      return false;
-    }
-    // On technical turns without explicit recall intent, exclude conversational chat notes
-    if (hasSubsystem && !isKnowledgeQuery && c.envelope?.level === "L1" && c.envelope?.type === "note") {
-      return false;
-    }
-    return true;
-  });
+  const generalMemories = isUnprompted
+    ? []
+    : valid.filter((c) => {
+        if (personaItems.includes(c) || subsystemInvariants.includes(c) || activeHypotheses.includes(c)) {
+          return false;
+        }
+        const sub = c.envelope?.context?.subsystem;
+        const normSub = sub ? (sub.startsWith("lib") ? sub.slice(3) : sub) : undefined;
+        // Exclude items belonging to unmentioned subsystems
+        if (hasSubsystem && normSub && !mentionedSubsystems.includes(normSub) && !mentionedSubsystems.includes(`lib${normSub}`)) {
+          return false;
+        }
+        // On technical turns without explicit recall intent, exclude unanchored conversational chat notes
+        if (hasSubsystem && !isKnowledgeQuery && c.envelope?.level === "L1" && c.envelope?.type === "note" && !c.envelope?.isAnchor) {
+          return false;
+        }
+        return true;
+      });
 
   let primedText = "";
   if (personaItems.length > 0) {

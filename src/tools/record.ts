@@ -1,17 +1,18 @@
-import { extractSessionId, type PiCtx, type PiToolSpec } from "../hooks/events.ts";
+import { activeConversationTurn, extractSessionId, type PiCtx, type PiToolSpec } from "../hooks/events.ts";
+import { isNaturalAnchor, isStandingDirective } from "../hooks/reinforcement.ts";
 import type { EnvSource } from "./index.ts";
 import { executeStore } from "./store.ts";
 import { validateEvidenceRef } from "./lifecycle.ts";
 import { hasAttestedPassingVerification } from "../hooks/verification_ledger.ts";
-import type { EpisodeApproach, EpisodeRecord } from "../types.ts";
+import type { EpisodeApproach, EpisodeRecord, MemoryEnvelope, MipmapLevel } from "../types.ts";
 
 const RECORD_PARAMS = {
   type: "object",
   properties: {
-    problem: { type: "string", description: "Problem or task description." },
+    problem: { type: "string", description: "Problem, task, rule, decision, or fact description." },
     approaches: {
       type: "array",
-      description: "List of attempted approaches, outcomes, and reasons.",
+      description: "List of attempted approaches, outcomes, and reasons (required for task episodes; optional when recording standing rules, decisions, or anchored facts).",
       items: {
         type: "object",
         properties: {
@@ -40,8 +41,10 @@ const RECORD_PARAMS = {
     tags: { type: "array", items: { type: "string" }, description: "Categorization tags." },
     constraints: { type: "array", items: { type: "string" }, description: "Explicit constraints or prohibitions established during this episode." },
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
+    anchor: { type: "boolean", description: "Whether this record is a permanent anchored fact or preference to recall automatically." },
+    type: { type: "string", enum: ["episode", "invariant", "decision", "note"], description: "Memory record type (defaults to invariant if standing=true, else episode)." },
   },
-  required: ["problem", "approaches"],
+  required: ["problem"],
   additionalProperties: false,
 };
 
@@ -82,29 +85,68 @@ async function executeRecord(
   }
 
   const rawApproaches = Array.isArray(params["approaches"]) ? (params["approaches"] as EpisodeApproach[]) : [];
-  if (rawApproaches.length === 0) {
+  const explicitType = typeof params["type"] === "string" ? (params["type"] as MemoryEnvelope["type"]) : undefined;
+  const isStanding = typeof params["standing"] === "boolean"
+    ? params["standing"]
+    : (explicitType === "invariant" ? true : undefined);
+  const isAnchor = Boolean(
+    params["anchor"] ||
+    isStanding ||
+    explicitType === "decision" ||
+    explicitType === "note" ||
+    isNaturalAnchor(problem) ||
+    isStandingDirective(problem),
+  );
+  const allowsNoApproaches = Boolean(
+    isStanding ||
+    params["anchor"] === true ||
+    explicitType === "invariant" ||
+    explicitType === "decision" ||
+    explicitType === "note",
+  );
+
+  if (rawApproaches.length === 0 && !allowsNoApproaches) {
     return { content: [{ type: "text", text: "mm record: at least one approach is required" }], details: { error: "missing-approaches" } };
   }
 
   const worked = rawApproaches.find((a) => a.outcome === "worked");
-  const overallOutcome = (typeof params["outcome"] === "string" ? params["outcome"] : (worked ? "success" : "failure"));
+  const overallOutcome = (typeof params["outcome"] === "string" ? params["outcome"] : (worked || allowsNoApproaches ? "success" : "failure"));
 
   const verification = params["verification"] as { testsPassed?: string[]; verifiedDiff?: boolean } | undefined;
   const reportedTests = verification?.testsPassed ?? (Array.isArray(params["testsPassed"]) ? (params["testsPassed"] as string[]) : undefined);
   const evidenceList = Array.isArray(params["evidence"]) ? (params["evidence"] as number[]) : [];
 
-  const { lifecycle, summary, error } = await resolveRecordLifecycle(
-    envSource, ctx, problem, worked, evidenceList, reportedTests,
-  );
-  if (error) {
-    return { content: [{ type: "text", text: `mm record error: invalid evidence reference: ${error}` }], details: { error } };
+  let lifecycle: import("../types.ts").LifecycleState = "supported";
+  let summary = problem;
+
+  if (rawApproaches.length > 0) {
+    const resolved = await resolveRecordLifecycle(
+      envSource, ctx, problem, worked, evidenceList, reportedTests,
+    );
+    if (resolved.error) {
+      return { content: [{ type: "text", text: `mm record error: invalid evidence reference: ${resolved.error}` }], details: { error: resolved.error } };
+    }
+    lifecycle = resolved.lifecycle;
+    summary = resolved.summary;
+  } else if (evidenceList.length > 0) {
+    const env = await envSource(ctx);
+    for (const evRef of evidenceList) {
+      const evCheck = await validateEvidenceRef(env, evRef);
+      if (!evCheck.valid) {
+        return { content: [{ type: "text", text: `mm record error: invalid evidence reference: ${evCheck.reason}` }], details: { error: evCheck.reason } };
+      }
+    }
   }
+
+  const findings = Array.isArray(params["findings"])
+    ? (params["findings"] as string[])
+    : (rawApproaches.length === 0 ? [problem] : undefined);
 
   const episode: EpisodeRecord = {
     problem,
     request: problem,
-    approaches: rawApproaches,
-    findings: Array.isArray(params["findings"]) ? (params["findings"] as string[]) : undefined,
+    approaches: rawApproaches.length > 0 ? rawApproaches : undefined,
+    findings,
     diffs: Array.isArray(params["diffs"]) ? (params["diffs"] as string[]) : undefined,
     constraints: Array.isArray(params["constraints"]) ? (params["constraints"] as string[]) : undefined,
     outcome: overallOutcome,
@@ -115,11 +157,20 @@ async function executeRecord(
     subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
   } : undefined;
 
-  const isStanding = typeof params["standing"] === "boolean" ? params["standing"] : undefined;
+  const targetLevel: MipmapLevel = isStanding
+    ? "L2"
+    : (rawApproaches.length === 0 ? "L1" : "L0");
+  const targetType: MemoryEnvelope["type"] = isStanding
+    ? "invariant"
+    : (explicitType ?? (rawApproaches.length === 0 ? "note" : "episode"));
+  const targetLifecycle: import("../types.ts").LifecycleState = isStanding
+    ? "supported"
+    : lifecycle;
+
   const storeRes = await executeStore(envSource, {
-    level: isStanding ? "L2" : "L0",
-    type: isStanding ? "invariant" : "episode",
-    lifecycle: isStanding ? (lifecycle === "observed" ? "supported" : lifecycle) : lifecycle,
+    level: targetLevel,
+    type: targetType,
+    lifecycle: targetLifecycle,
     summary,
     episode,
     context,
@@ -128,10 +179,12 @@ async function executeRecord(
     tags: params["tags"],
     constraints: params["constraints"],
     standing: isStanding,
+    anchor: isAnchor || undefined,
   }, ctx);
 
   const d = storeRes.details as { ref?: number; key?: string } | undefined;
   if (d?.ref) {
+    activeConversationTurn.explicitlyRecordedInTurn = true;
     return {
       content: [{ type: "text", text: `Recorded episode at Ref ${d.ref} (${overallOutcome}): ${summary}` }],
       details: { ref: d.ref, summary, outcome: overallOutcome, approachesCount: rawApproaches.length },
@@ -144,7 +197,7 @@ export function makeRecordTool(envSource: EnvSource): PiToolSpec {
   return {
     name: "memory_record",
     label: "Record Structured Experience",
-    description: "Record a structured task episode (problem, approaches with reasons, findings, diffs, outcome) without low-level envelope wrangling.",
+    description: "Record a structured task episode (problem, approaches with reasons, findings, diffs, outcome) or a standing rule / permanent fact (problem + standing:true or anchor:true).",
     parameters: RECORD_PARAMS,
     execute: (_id, params, _sig, _upd, ctx) => executeRecord(envSource, params, ctx as PiCtx),
   };

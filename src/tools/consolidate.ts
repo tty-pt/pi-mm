@@ -584,7 +584,8 @@ async function autoL0ToL1(
         summary: updatedSummary,
         supersedes: existingL1.ref,
         evidence: mergedEvidence,
-        context: existingL1.envelope.context,
+        context: existingL1.envelope.context ?? group.find((g) => g.envelope.context)?.envelope.context,
+        isAnchor: Boolean(existingL1.envelope.isAnchor || group.some((g) => g.envelope.isAnchor)) || undefined,
         episode: {
           problem: existingL1.envelope.episode?.problem || group[0].envelope.episode?.problem || updatedSummary,
           findings: mergedFindings,
@@ -645,6 +646,7 @@ async function autoL0ToL1(
         summary,
         evidence: groupEvidence,
         context: group[0].envelope.context,
+        isAnchor: Boolean(group.some((g) => g.envelope.isAnchor)) || undefined,
         episode: {
           problem: group[0].envelope.episode?.problem || summary,
           findings: groupFacts,
@@ -688,6 +690,7 @@ async function autoL0ToL1(
       summary: l0.envelope.summary,
       evidence: [l0.ref],
       context: l0.envelope.context,
+      isAnchor: l0.envelope.isAnchor || undefined,
       episode: l0.envelope.episode,
     };
     const res = await env.runner.run(buildStoreInvocation(cormBin(env), fspec, l1Ref, encodePayload(date, l1Envelope), axes, cwd, eEnv));
@@ -1094,6 +1097,7 @@ async function autoL1ToL2(
       context: isConversational ? { subject: scope } : { project: scope },
       evidence: synthOutcome.citedRefs,
       supersedes: existingL2Item ? existingL2Item.ref : undefined,
+      isAnchor: Boolean(existingL2Item?.envelope.isAnchor || activeItems.some((it) => it.envelope.isAnchor)) || undefined,
       constraints: synthOutcome.constraints && synthOutcome.constraints.length > 0 ? synthOutcome.constraints : undefined,
     };
 

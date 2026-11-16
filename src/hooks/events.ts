@@ -18,7 +18,17 @@ import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
 import { recordAssociations } from "../associative.ts";
-import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
+import {
+  ReinforcementScheduler,
+  synthesizeReinforcementBlockFromDirectives,
+  isStandingDirective,
+  isNaturalAnchor,
+  stripNaturalRememberPrefix,
+  extractDirectiveClause,
+  evaluateStandingDirective,
+  syncDirectivesFile,
+  STANDING_DIRECTIVE_PATTERN,
+} from "./reinforcement.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
 import { detectSubsystemMentions } from "./auto_recall.ts";
 import { extractAssistantThoughtsAndText, evaluateAssistantWondering, isStandbyOrYieldMessage } from "./wondering.ts";
@@ -976,6 +986,7 @@ export interface ActiveConversationTurn {
   previousAssistantResponse?: string;
   topicSubject?: string;
   activeRunId?: string;
+  explicitlyRecordedInTurn?: boolean;
 }
 
 export const activeConversationTurn: ActiveConversationTurn = {};
@@ -1042,7 +1053,7 @@ export async function persistConversationalMemory(
       evidence: classification.evidence,
       context,
       episode,
-      isAnchor: Boolean(classification.isAnchor || classification.standing || classification.summary.includes("@remember") || classification.summary.toLowerCase().startsWith("remember:") || context?.project === "user") || undefined,
+      isAnchor: Boolean(classification.isAnchor || classification.standing || classification.summary.includes("@remember") || classification.summary.toLowerCase().startsWith("remember:") || isNaturalAnchor(classification.summary) || context?.project === "user") || undefined,
       standing: classification.standing || undefined,
     };
 
@@ -1092,8 +1103,7 @@ export async function persistConversationalMemory(
             project: classification.context?.project,
           });
           try {
-            const dirs = reinforcementScheduler.getDirectives();
-            await writeFile(join(cwd, "standing_directives.json"), JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+            await syncDirectivesFile(cwd, reinforcementScheduler);
           } catch {
             // Best-effort disk persistence
           }
@@ -1308,6 +1318,7 @@ export async function handleMemoryUpdate(
         summary: updatedSummary,
         supersedes: validTarget && targetRefNum !== undefined ? targetRefNum : undefined,
         evidence: mergedEvidence.length > 0 ? mergedEvidence : undefined,
+        isAnchor: targetPayloadToUpdate?.envelope.isAnchor || undefined,
         episode,
       };
 
@@ -1466,10 +1477,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
             for (const r of allRefs) {
               await scanRecord(r);
             }
-            if (!hasDirectivesFile) {
+            if (!hasDirectivesFile && reinforcementScheduler.getDirectives().length > 0) {
               try {
-                const dirs = reinforcementScheduler.getDirectives();
-                await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+                await syncDirectivesFile(cwd, reinforcementScheduler);
               } catch {
                 // Best-effort disk persistence
               }
@@ -1487,8 +1497,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                   for (const r of allRefs.slice(-200)) {
                     await scanRecord(r);
                   }
-                  const dirs = reinforcementScheduler.getDirectives();
-                  await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+                  if (reinforcementScheduler.getDirectives().length > 0) {
+                    await syncDirectivesFile(cwd, reinforcementScheduler);
+                  }
                 } catch {
                   // Best-effort background directive backfill
                 }
@@ -1841,8 +1852,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
 
           let shouldStoreConversational = false;
           let contentToStore = prompt;
+          let preEvaluatedStanding: boolean | undefined = undefined;
 
-          if (isMemoryRecallPrompt(prompt)) {
+          if (activeConversationTurn.explicitlyRecordedInTurn) {
+            debugLog("capture", "Skipping automatic conversational capture because memory_record was already called in this turn");
+            shouldStoreConversational = false;
+          } else if (isMemoryRecallPrompt(prompt)) {
             debugLog("capture", "Skipping conversational capture for memory recall query", { prompt: prompt.slice(0, 80) });
             shouldStoreConversational = false;
           } else if (mode === "off") {
@@ -1884,6 +1899,20 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
 
               if (judgeRes.decision.action !== "skip") {
                 shouldStoreConversational = true;
+              } else {
+                // Even if Gate 1 skipped (e.g. mixed task+directive prompt or offline judge fallback),
+                // check if the prompt or an embedded clause is an explicit standing directive or natural anchor.
+                const clause = extractDirectiveClause(prompt);
+                const standingMatch = await evaluateStandingDirective(clause, env.cfg);
+                if (standingMatch) {
+                  preEvaluatedStanding = true;
+                  contentToStore = stripNaturalRememberPrefix(clause);
+                  shouldStoreConversational = true;
+                } else if (isNaturalAnchor(clause)) {
+                  preEvaluatedStanding = false;
+                  contentToStore = stripNaturalRememberPrefix(clause);
+                  shouldStoreConversational = true;
+                }
               }
             }
           } else {
@@ -1892,15 +1921,25 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           }
 
           if (shouldStoreConversational) {
-            const isDirective = prompt.toLowerCase().includes("@remember") || prompt.toLowerCase().startsWith("remember:");
-            const isStanding = await evaluateStandingDirective(prompt, env.cfg);
+            const isDirective =
+              prompt.toLowerCase().includes("@remember") ||
+              prompt.toLowerCase().startsWith("remember:") ||
+              isNaturalAnchor(prompt);
+            const isStanding = preEvaluatedStanding !== undefined
+              ? preEvaluatedStanding
+              : await evaluateStandingDirective(prompt, env.cfg);
+            const directiveClause = isStanding ? extractDirectiveClause(contentToStore) : contentToStore;
+            const normalizedContent = mode === "keyword"
+              ? contentToStore
+              : (isStanding || isNaturalAnchor(directiveClause) ? stripNaturalRememberPrefix(directiveClause) : contentToStore);
+            const storeLevel = mode === "keyword" ? "L0" : (isStanding ? "L2" : "L0");
             const l0Classification: ConversationalClassification = {
               meaningful: true,
               type: isStanding ? "invariant" : "note",
-              level: isStanding ? "L2" : "L0",
-              summary: contentToStore.slice(0, 250),
-              problem: contentToStore,
-              findings: [contentToStore],
+              level: storeLevel,
+              summary: normalizedContent.slice(0, 250),
+              problem: normalizedContent,
+              findings: [normalizedContent],
               context: activeConversationTurn.topicSubject ? { subject: activeConversationTurn.topicSubject } : undefined,
               isAnchor: isDirective || isStanding || undefined,
               standing: isStanding || undefined,
@@ -1910,7 +1949,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
             if (l0Ref !== null && l0Ref !== undefined) {
               const numRef = typeof l0Ref === "number" ? l0Ref : parseInt(String(l0Ref), 10);
               if (!isNaN(numRef)) capturedL0Refs.push(numRef);
-              void recordAssociations(memDir(env), contentToStore).catch(() => {});
+              void recordAssociations(memDir(env), normalizedContent).catch(() => {});
               notifyMmEvent(ctx, "saved");
             }
           }
@@ -1983,6 +2022,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     activeConversationTurn.responses = undefined;
     activeConversationTurn.timestamp = undefined;
     activeConversationTurn.activeRunId = undefined;
+    activeConversationTurn.explicitlyRecordedInTurn = undefined;
 
     // 3. Dispatch incremental auto-consolidation through non-blocking queue
     if (hasActiveRun) {
@@ -2016,6 +2056,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
         activeConversationTurn.prompt = event.prompt;
         activeConversationTurn.response = undefined;
         activeConversationTurn.responses = undefined;
+        activeConversationTurn.explicitlyRecordedInTurn = undefined;
         try {
           const sessionInst = getSessionInstances(sessionId, { cwd: ctx?.cwd });
           if (ctx?.sessionManager) {
@@ -2085,6 +2126,9 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
         "  • Counterfactual guardrail pre-flight: { guardrail: \"<planned edit|command>\", file?: \"<path>\", symbol?: \"<name>\" }",
         "  • Session transcript recall: { scope: \"session\", query: \"<topic>\", session?: \"current\" | \"<id|slot|parallel|all>\" } or { scope: \"session\", session: \"current\", zoomTurn: <N> }",
         "  • Persistent lore recall: { scope: \"persistent\", query: \"<topic>\" } or { zoomRef: <id>, zoomTurn?: <N>, lineRange?: [s, e] }",
+        "- When the user states a standing rule, permanent instruction, or fact to remember forever, persist it via `memory_record` (or MCP `pi_memory_record`):",
+        "  • Global behavioral rule / habit: { problem: \"<rule>\", standing: true, constraints?: [\"<rule>\"] }",
+        "  • Permanent fact / decision / preference: { problem: \"<fact>\", anchor: true, type: \"decision\" | \"note\" }",
         "- Session boundary: Distinguish current active session (`[Current Session]`) from parallel (`[Parallel Session ...]`) and past sessions (`[Past Session ...]`).",
       ].join("\n");
     }

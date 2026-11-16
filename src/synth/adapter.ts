@@ -32,14 +32,54 @@ function extractJsonText(raw: string): string {
   return trimmed;
 }
 
+export function normalizeModelsUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim().replace(/\/+$/, "");
+  if (trimmed.endsWith("/chat/completions")) {
+    return trimmed.slice(0, -"/chat/completions".length) + "/models";
+  }
+  if (trimmed.endsWith("/v1")) {
+    return `${trimmed}/models`;
+  }
+  return `${trimmed}/v1/models`;
+}
+
+async function discoverFallbackChatModel(
+  rawUrl: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  fetchFn: typeof fetch,
+): Promise<{ model?: string; onlyEmbeddings: boolean }> {
+  try {
+    const res = await fetchFn(normalizeModelsUrl(rawUrl), {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(Math.min(3000, timeoutMs)),
+    });
+    if (!res.ok) return { onlyEmbeddings: false };
+    const data = (await res.json()) as { data?: Array<{ id?: string }> };
+    if (!Array.isArray(data?.data)) return { onlyEmbeddings: false };
+    const ids = data.data
+      .map((m) => (typeof m?.id === "string" ? m.id.trim() : ""))
+      .filter((id) => id.length > 0);
+    if (ids.length === 0) return { onlyEmbeddings: false };
+    const nonEmbed = ids.filter((id) => !/^(?:bge|nomic-embed|text-embedding|e5-|all-minilm)/i.test(id));
+    if (nonEmbed.length > 0) {
+      return { model: nonEmbed[0], onlyEmbeddings: false };
+    }
+    return { onlyEmbeddings: true };
+  } catch {
+    return { onlyEmbeddings: false };
+  }
+}
+
 export async function callChatCompletions(
   cfg: MmConfig,
   systemPrompt: string,
   userPrompt: string,
   fetchFn: typeof fetch = globalThis.fetch,
-): Promise<{ ok: boolean; content?: string; error?: string }> {
+): Promise<{ ok: boolean; content?: string; error?: string; unavailable?: boolean }> {
   if (!synthConfigured(cfg)) {
-    return { ok: false, error: "synthesis capability not configured" };
+    return { ok: false, error: "synthesis capability not configured", unavailable: true };
   }
 
   const url = normalizeChatCompletionUrl(cfg.synthUrl!);
@@ -61,7 +101,7 @@ export async function callChatCompletions(
   };
 
   try {
-    const res = await fetchFn(url, {
+    let res = await fetchFn(url, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -70,7 +110,31 @@ export async function callChatCompletions(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      return { ok: false, error: `HTTP ${res.status}: ${res.statusText} ${errText.slice(0, 100)}` };
+      if (res.status === 404 && /unknown model|model.*not found/i.test(errText)) {
+        const fallback = await discoverFallbackChatModel(cfg.synthUrl!, headers, timeoutMs, fetchFn);
+        if (fallback.model && fallback.model !== cfg.synthModel) {
+          res = await fetchFn(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ ...payload, model: fallback.model }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!res.ok) {
+            const retryErr = await res.text().catch(() => "");
+            return { ok: false, error: `HTTP ${res.status}: ${res.statusText} ${retryErr.slice(0, 100)}` };
+          }
+        } else if (fallback.onlyEmbeddings) {
+          return {
+            ok: false,
+            unavailable: true,
+            error: `No generative chat model loaded on synthesis endpoint (requested '${cfg.synthModel}')`,
+          };
+        } else {
+          return { ok: false, error: `HTTP ${res.status}: ${res.statusText} ${errText.slice(0, 100)}` };
+        }
+      } else {
+        return { ok: false, error: `HTTP ${res.status}: ${res.statusText} ${errText.slice(0, 100)}` };
+      }
     }
 
     const data = await res.json();
@@ -146,6 +210,9 @@ RULES:
 
   const resp = await callChatCompletions(cfg, systemPrompt, userPrompt, fetchFn);
   if (!resp.ok || !resp.content) {
+    if (resp.unavailable) {
+      return { status: "unavailable", reason: resp.error || "Synthesis model unavailable" };
+    }
     return { status: "failed", reason: resp.error || "Synthesis request failed" };
   }
 
@@ -234,6 +301,9 @@ RULES:
 
   const resp = await callChatCompletions(cfg, systemPrompt, userPrompt, fetchFn);
   if (!resp.ok || !resp.content) {
+    if (resp.unavailable) {
+      return { status: "unavailable", reason: resp.error || "Synthesis model unavailable" };
+    }
     return { status: "failed", reason: resp.error || "Synthesis request failed" };
   }
 

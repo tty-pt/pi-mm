@@ -1,6 +1,7 @@
 import type { MmConfig, ReinforcementConfig } from "../config.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG, directiveEmbed, directiveFallback } from "../config.ts";
 import { existsSync, readdirSync } from "node:fs";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { classifyDirectiveByEmbedding } from "../judge/adapter.ts";
 
@@ -11,11 +12,51 @@ export interface StandingDirectiveItem {
   project?: string;
 }
 
-export const STANDING_DIRECTIVE_PATTERN = /(?:always\s+remember(?:\s+to)?|never\s+(?:use|do|edit|commit|modify)|our\s+rule\s+is|standing\s+rule|invariant:)/i;
+export const STANDING_DIRECTIVE_PATTERN =
+  /(?:always\s+remember(?:\s+to)?|remember\s+(?:this\s+)?(?:forever|permanently|always)\s+(?:to\b|never\b|always\b|do\s+not\b|don't\b)|never\s+forget\s+to\b|remember\s+this\s+rule|from\s+now\s+on[\s,]+(?:always|never|do\s+not|don't)|never\s+(?:use|do|edit|commit|modify|mock|skip)|our\s+rule\s+is|standing\s+rule|invariant:|regra\s+permanente:|diretriz\s+permanente:|lembre-se\s+sempre\s+de\b)/i;
+
+export const NATURAL_ANCHOR_PATTERN =
+  /(?:@remember\b|^\s*remember:|^\s*note:|\bremember\s+(?:this\s+)?(?:forever|permanently|always)\b|\balways\s+remember\b|\bnever\s+forget\b|\bdon't\s+forget\b|\bkeep\s+in\s+mind\s+(?:that|forever|always)\b|\blembre-se\s+sempre\b|\bnunca\s+esque[cç]a\b)/i;
 
 export function isStandingDirective(prompt?: string): boolean {
   if (!prompt || typeof prompt !== "string") return false;
   return STANDING_DIRECTIVE_PATTERN.test(prompt);
+}
+
+export function isNaturalAnchor(prompt?: string): boolean {
+  if (!prompt || typeof prompt !== "string") return false;
+  return NATURAL_ANCHOR_PATTERN.test(prompt);
+}
+
+export function stripNaturalRememberPrefix(prompt: string): string {
+  const cleaned = prompt
+    .trim()
+    .replace(/^(?:please\s+)?(?:remember\s+(?:this\s+)?(?:forever|permanently|always)(?:\s+that|\s+to)?|always\s+remember(?:\s+that|\s+to)?|never\s+forget(?:\s+that|\s+to)?|don't\s+forget(?:\s+that|\s+to)?|keep\s+in\s+mind(?:\s+forever|\s+always)?(?:\s+that)?|remember\s+this\s+rule|lembre-se\s+sempre(?:\s+que|\s+de)?|nunca\s+esque[cç]a(?:\s+que|\s+de)?)[\s:,-]*/i, "")
+    .trim();
+  return cleaned.length >= 4 ? cleaned : prompt.trim();
+}
+
+export function extractDirectiveClause(prompt: string): string {
+  if (!prompt || typeof prompt !== "string") return "";
+  const trimmed = prompt.trim();
+  const clauses = trimmed
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  if (clauses.length <= 1) return trimmed;
+  const matching = clauses.filter(
+    (c) =>
+      isStandingDirective(c) ||
+      isNaturalAnchor(c) ||
+      /^(?:also[\s,]+)?(?:always|never|do\s+not|don't|from\s+now\s+on|in\s+all\s+future)/i.test(c),
+  );
+  if (matching.length > 0) {
+    return matching
+      .join(" ")
+      .replace(/^(?:also|and|by\s+the\s+way|btw)[\s,:-]+/i, "")
+      .trim();
+  }
+  return trimmed;
 }
 
 export async function evaluateStandingDirective(
@@ -24,19 +65,74 @@ export async function evaluateStandingDirective(
   fetchFn?: typeof fetch,
 ): Promise<boolean> {
   if (!prompt || typeof prompt !== "string") return false;
+  const candidateClause = extractDirectiveClause(prompt);
+  const probes = candidateClause !== prompt.trim() ? [candidateClause, prompt] : [prompt];
   if (cfg && directiveEmbed(cfg) !== "off") {
-    try {
-      const verdict = await classifyDirectiveByEmbedding(prompt, cfg, fetchFn);
-      if (verdict === "standing_directive") return true;
-      if (verdict === "transient_task") return false;
-    } catch {
-      // Endpoint error or timeout
+    for (const probe of probes) {
+      try {
+        const verdict = await classifyDirectiveByEmbedding(probe, cfg, fetchFn);
+        if (verdict === "standing_directive") return true;
+        if (verdict === "transient_task" && probes.length === 1) return false;
+      } catch {
+        // Endpoint error or timeout
+      }
     }
     const fb = directiveFallback(cfg);
     if (fb === "skip") return false;
-    return isStandingDirective(prompt);
+    return probes.some((p) => isStandingDirective(p));
   }
-  return isStandingDirective(prompt);
+  return probes.some((p) => isStandingDirective(p));
+}
+
+export async function syncDirectivesFile(
+  cwd: string,
+  scheduler: ReinforcementScheduler,
+  removedRefs: number[] = [],
+): Promise<void> {
+  const filePath = join(cwd, "standing_directives.json");
+  const merged = new Map<number, StandingDirectiveItem>();
+  const removedSet = new Set<number>(removedRefs);
+
+  try {
+    if (existsSync(filePath)) {
+      const raw = JSON.parse(await readFile(filePath, "utf8"));
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (
+            item &&
+            typeof item.ref === "number" &&
+            typeof item.summary === "string" &&
+            !removedSet.has(item.ref)
+          ) {
+            merged.set(item.ref, item);
+            scheduler.registerDirective(item);
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed or missing file
+  }
+
+  for (const r of removedSet) {
+    scheduler.unregisterDirective(r);
+    merged.delete(r);
+  }
+
+  for (const item of scheduler.getDirectives()) {
+    if (!removedSet.has(item.ref)) {
+      merged.set(item.ref, item);
+    }
+  }
+
+  const out = Array.from(merged.values()).sort((a, b) => a.ref - b.ref);
+  const tmpPath = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(out, null, 2), "utf8");
+    await rename(tmpPath, filePath);
+  } catch {
+    await writeFile(filePath, JSON.stringify(out, null, 2), "utf8").catch(() => {});
+  }
 }
 
 export interface ReinforcementTriggerResult {
