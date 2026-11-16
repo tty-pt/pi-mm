@@ -2,7 +2,7 @@ import type { PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { EnvSource } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildGetInvocation, buildStoreInvocation, embedEnv } from "../corm.ts";
-import { decodePayload, encodePayload } from "../payload.ts";
+import { decodeResult, encodePayload } from "../payload.ts";
 import type { UtilityFeedback } from "../types.ts";
 
 export function makeFeedbackTool(envSource: EnvSource): PiToolSpec {
@@ -50,7 +50,7 @@ export function makeFeedbackTool(envSource: EnvSource): PiToolSpec {
           return { content: [{ type: "text", text: `mm feedback: ref ${ref} not found` }], details: { error: "not-found", ref } };
         }
 
-        const { date, envelope } = decodePayload(getRes.stdout.trim());
+        const { date, envelope } = decodeResult(getRes);
         const util: UtilityFeedback = envelope.utility ?? {
           usedCount: 0,
           irrelevantCount: 0,

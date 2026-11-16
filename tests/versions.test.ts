@@ -8,6 +8,8 @@ import {
   generateRemediationAdvice,
   formatRemediationToast,
   MIN_ENGINE_VERSIONS,
+  REQUIRED_ENGINE_FEATURES,
+  type EngineName,
 } from "../src/versions.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -80,8 +82,8 @@ Deno.test("versions: detectComponentVersion discovers .pc file in custom search 
 Deno.test("versions: checkAllEngineVersions reports status against MIN_ENGINE_VERSIONS", () => {
   const tmp = mkdtempSync(join(tmpdir(), "eng-test-"));
   try {
-    // Fake partial install in tmp: corm is up to date, sepal is outdated
-    writeFileSync(join(tmp, "corm.pc"), "Name: corm\nVersion: 2.1.0\n");
+    // Fake partial install in tmp: corm is up to date (2.2.0), sepal is outdated (1.0.0)
+    writeFileSync(join(tmp, "corm.pc"), "Name: corm\nVersion: 2.2.0\n");
     writeFileSync(join(tmp, "sepal.pc"), "Name: sepal\nVersion: 1.0.0\n"); // below min 1.2.0
 
     const reports = checkAllEngineVersions({ searchDirs: [tmp], cwd: tmp });
@@ -89,7 +91,7 @@ Deno.test("versions: checkAllEngineVersions reports status against MIN_ENGINE_VE
 
     const cormReport = reports.find((r) => r.name === "libcorm")!;
     check(cormReport.installed === true, "corm installed");
-    check(cormReport.version === "2.1.0", "corm version 2.1.0");
+    check(cormReport.version === "2.2.0", "corm version 2.2.0");
     check(cormReport.status === "satisfied", "corm satisfied");
 
     const sepalReport = reports.find((r) => r.name === "libsepal")!;
@@ -110,7 +112,7 @@ Deno.test("versions: checkAllEngineVersions reports status against MIN_ENGINE_VE
       name: "axil-auren",
       installed: false,
       version: null,
-      minRequired: "1.3.0",
+      minRequired: "1.4.0",
       status: "missing",
       source: null,
     });
@@ -119,7 +121,80 @@ Deno.test("versions: checkAllEngineVersions reports status against MIN_ENGINE_VE
 
     const satisfiedToast = formatRemediationToast(cormReport);
     check(satisfiedToast === "", "satisfied component produces empty toast");
+
+    // Verify corm 2.1.0 is flagged outdated against min 2.2.0
+    writeFileSync(join(tmp, "corm.pc"), "Name: corm\nVersion: 2.1.0\n");
+    const outdatedCorm = detectComponentVersion("libcorm", { searchDirs: [tmp], cwd: tmp })!;
+    check(outdatedCorm.status === "outdated", "corm 2.1.0 is outdated when min is 2.2.0");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+Deno.test("versions: MIN_ENGINE_VERSIONS satisfies all REQUIRED_ENGINE_FEATURES floors", () => {
+  const coveredEngines = new Set<EngineName>();
+  for (const item of REQUIRED_ENGINE_FEATURES) {
+    coveredEngines.add(item.engine);
+    const minConfigured = MIN_ENGINE_VERSIONS[item.engine];
+    check(
+      Boolean(minConfigured),
+      `Engine ${item.engine} referenced in REQUIRED_ENGINE_FEATURES must exist in MIN_ENGINE_VERSIONS`,
+    );
+    check(
+      satisfiesMinVersion(minConfigured, item.minVersion),
+      `MIN_ENGINE_VERSIONS[${item.engine}] (${minConfigured}) is lower than required floor ${item.minVersion} for feature: ${item.feature}`,
+    );
+  }
+  for (const engine of Object.keys(MIN_ENGINE_VERSIONS) as EngineName[]) {
+    check(
+      coveredEngines.has(engine),
+      `Engine ${engine} in MIN_ENGINE_VERSIONS must have at least one entry in REQUIRED_ENGINE_FEATURES`,
+    );
+  }
+});
+
+Deno.test("versions: detectComponentVersion resolves node_modules/@tty-pt/* without system libs", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "npm-ver-test-"));
+  try {
+    const cormDir = join(tmp, "node_modules", "@tty-pt", "corm");
+    const jointDir = join(tmp, "node_modules", "@tty-pt", "joint");
+    Deno.mkdirSync(cormDir, { recursive: true });
+    Deno.mkdirSync(jointDir, { recursive: true });
+
+    // 1. Package with bundled .pc file
+    writeFileSync(join(cormDir, "corm.pc"), "Name: corm\nVersion: 2.4.0\n");
+    // 2. Package with package.json only
+    writeFileSync(join(jointDir, "package.json"), JSON.stringify({ name: "@tty-pt/joint", version: "1.8.0" }));
+
+    const cormRep = detectComponentVersion("libcorm", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(cormRep.installed === true, "libcorm detected via node_modules .pc");
+    check(cormRep.version === "2.4.0", "libcorm version 2.4.0");
+    check(cormRep.status === "satisfied", "libcorm satisfied");
+
+    const jointRep = detectComponentVersion("libjoint", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(jointRep.installed === true, "libjoint detected via node_modules package.json");
+    check(jointRep.version === "1.8.0", "libjoint version 1.8.0");
+    check(jointRep.status === "satisfied", "libjoint satisfied");
+    check(jointRep.source === "npm", "libjoint source is npm");
+
+    // 3. axil and axil-auren resolved from node_modules and ~/.pi/agent/npm/node_modules/@tty-pt/*
+    const axilDir = join(tmp, "node_modules", "@tty-pt", "axil");
+    const aurenDir = join(tmp, ".pi", "agent", "npm", "node_modules", "@tty-pt", "auren");
+    Deno.mkdirSync(axilDir, { recursive: true });
+    Deno.mkdirSync(aurenDir, { recursive: true });
+    writeFileSync(join(axilDir, "package.json"), JSON.stringify({ name: "@tty-pt/axil", version: "1.8.1" }));
+    writeFileSync(join(aurenDir, "package.json"), JSON.stringify({ name: "@tty-pt/auren", version: "1.5.1" }));
+
+    const axilRep = detectComponentVersion("axil", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(axilRep.installed === true && axilRep.version === "1.8.1" && axilRep.status === "satisfied" && axilRep.source === "npm", "axil detected via node_modules/@tty-pt/axil");
+
+    const aurenRep = detectComponentVersion("axil-auren", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(aurenRep.installed === true && aurenRep.version === "1.5.1" && aurenRep.status === "satisfied" && aurenRep.source === "npm", "axil-auren detected via .pi/agent/npm/node_modules/@tty-pt/auren");
+
+    const missingRep = detectComponentVersion("liblemma", { cwd: tmp, home: tmp, includeDefaultDirs: false })!;
+    check(missingRep.installed === false && missingRep.status === "missing", "uninstalled liblemma is missing when includeDefaultDirs=false");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+

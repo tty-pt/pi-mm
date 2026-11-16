@@ -73,6 +73,12 @@ export class ReinforcementScheduler {
     this.syncGlobal();
   }
 
+  public unregisterDirective(ref: number): boolean {
+    const deleted = this.directives.delete(ref);
+    if (deleted) this.syncGlobal();
+    return deleted;
+  }
+
   public clearDirectives(): void {
     this.directives.clear();
     this.syncGlobal();

@@ -13,10 +13,12 @@
  */
 import * as fs from "node:fs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, openSync, closeSync } from "node:fs";
-import { join, dirname, delimiter } from "node:path";
+import { createRequire } from "node:module";
+import { join, dirname, delimiter, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 export const DEFAULT_AUREN_PORT = 4242;
 export const DEFAULT_AUREN_URL = `http://127.0.0.1:${DEFAULT_AUREN_PORT}`;
@@ -413,6 +415,106 @@ function onPath(name: string, env: Record<string, string | undefined>): string |
 
 const DEFAULT_LIB_DIRS = ["/usr/lib", "/usr/local/lib", "/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu", "/opt/homebrew/lib"];
 
+function platformPrebuildKeys(): string[] {
+  if (typeof process === "undefined") return ["linux-x64"];
+  return process.platform === "linux"
+    ? [`${process.platform}-${process.arch}-musl`, `${process.platform}-${process.arch}`]
+    : [`${process.platform}-${process.arch}`];
+}
+
+export function resolveInstalledPkgRoot(name: string, searchPaths?: string[]): string | null {
+  try {
+    const req = createRequire(import.meta.url);
+    const opts = searchPaths ? { paths: searchPaths } : undefined;
+    try { return dirname(req.resolve(`@tty-pt/${name}/package.json`, opts)); } catch {
+      for (let d = dirname(req.resolve(`@tty-pt/${name}`, opts)), i = 0; i < 4; i++, d = dirname(d)) {
+        if (existsSync(join(d, "package.json"))) return d;
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function resolvePkgRoots(name: string, bases: string[], includeDefaultDirs: boolean): string[] {
+  const roots: string[] = [];
+  const add = (r: string | null | undefined) => { if (r && !roots.includes(r)) roots.push(r); };
+  for (const b of bases) {
+    add(join(b, "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "agent", "npm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "npm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", name));
+    add(join(b, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", name));
+  }
+  if (includeDefaultDirs) {
+    add(resolveInstalledPkgRoot(name));
+    try {
+      const here = dirname(fileURLToPath(import.meta.url));
+      for (const rel of ["..", "../..", "../../..", "../../../..", "../../../../.."]) {
+        add(resolve(here, rel, "node_modules", "@tty-pt", name));
+      }
+      add(resolve(here, "..", "..", name));
+    } catch { /* ignore */ }
+  }
+  return roots;
+}
+
+function resolveUsableAxilJs(jsPath: string): string | null {
+  if (!jsPath.endsWith(".js") || !existsSync(jsPath)) return null;
+  let realRoot = dirname(dirname(jsPath));
+  try { realRoot = fs.realpathSync(realRoot); } catch { /* ignore */ }
+  const hasAddon = platformPrebuildKeys().some((k) => existsSync(join(realRoot, "prebuilds", k))) || existsSync(join(realRoot, "build", "Release"));
+  const siblingBin = resolve(realRoot, "..", "bin", "axil");
+  if (!hasAddon && isExecutableFile(siblingBin)) return siblingBin;
+  return jsPath;
+}
+
+function findAxilBins(cwd: string, home: string, env: Record<string, string | undefined>, includeDefaultDirs: boolean): string[] {
+  const bins: string[] = [];
+  const add = (b: string | null | undefined, allowJs = false) => {
+    const resolved = allowJs && b ? resolveUsableAxilJs(b) : (b && isExecutableFile(b) ? b : null);
+    if (resolved && !bins.includes(resolved)) bins.push(resolved);
+  };
+  for (const r of resolvePkgRoots("axil", [cwd, home], includeDefaultDirs)) add(join(r, "bin", "axil.js"), true);
+  for (const b of [cwd, home]) {
+    add(join(b, "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "agent", "npm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "npm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "extensions", "pi-mm", "node_modules", ".bin", "axil"));
+    add(join(b, ".pi", "extensions", "pi-quest", "node_modules", ".bin", "axil"));
+    add(join(b, "external", "axil", "npm", "bin", "axil.js"), true);
+  }
+  add(onPath("axil", env));
+  if (includeDefaultDirs) {
+    try { add(resolve(dirname(fileURLToPath(import.meta.url)), "../../../..", "external", "axil", "npm", "bin", "axil.js"), true); } catch { /* ignore */ }
+    add(join(home, ".local", "bin", "axil"));
+  }
+  return bins;
+}
+
+function findAurenLibDirs(cwd: string, home: string, explicitLibDirs?: string[]): string[] {
+  const includeDefaultDirs = explicitLibDirs === undefined;
+  const keys = platformPrebuildKeys();
+  const dirs: string[] = [];
+  const add = (d: string | null | undefined) => { if (d && !dirs.includes(d)) dirs.push(d); };
+  if (explicitLibDirs !== undefined) for (const d of explicitLibDirs) add(d);
+  for (const r of resolvePkgRoots("auren", [cwd, home], includeDefaultDirs)) {
+    for (const k of keys) add(join(r, "prebuilds", k));
+    add(join(r, "build", "Release"));
+    add(join(r, "lib"));
+  }
+  for (const b of [cwd, home]) {
+    for (const sub of [join(b, "external", "axil-auren"), join(b, "axil-auren")]) {
+      for (const k of keys) add(join(sub, "npm", "prebuilds", k));
+      add(join(sub, "lib"));
+    }
+  }
+  if (includeDefaultDirs) {
+    add(join(home, ".local", "lib"));
+    for (const d of DEFAULT_LIB_DIRS) add(d);
+  }
+  return dirs;
+}
+
 export function findAurenLaunchers(p: AurenPaths & { port?: number }): Launcher[] {
   const env = envOf(p);
   const home = homeOf(p);
@@ -431,14 +533,11 @@ export function findAurenLaunchers(p: AurenPaths & { port?: number }): Launcher[
     if (existsSync(script)) out.push({ kind: "script", command: script, args: [], workdir: root });
   }
 
-  const axil = onPath("axil", env);
-  if (axil) {
-    const libDirs = p.libDirs ?? [join(home, ".local", "lib"), ...DEFAULT_LIB_DIRS];
-    for (const dir of libDirs) {
-      for (const ext of [".so", ".dylib"]) {
-        if (existsSync(join(dir, `libaxil-auren${ext}`))) {
-          out.push({ kind: "axil", command: axil, args: ["-A", "-p", port, "-m", join(dir, "libaxil-auren")] });
-        }
+  for (const axil of findAxilBins(cwd, home, env, p.libDirs === undefined)) {
+    for (const dir of findAurenLibDirs(cwd, home, p.libDirs)) {
+      if (existsSync(join(dir, "libaxil-auren.so")) || existsSync(join(dir, "libaxil-auren.dylib"))) {
+        out.push({ kind: "axil", command: axil, args: ["-A", "-p", port, "-m", join(dir, "libaxil-auren")] });
+        break;
       }
     }
   }
@@ -455,17 +554,33 @@ export function findAurenServer(cwd: string = process.cwd()): string | null {
   return l ? l.command : null;
 }
 
-export function findSepalLib(cwd: string = process.cwd()): string | null {
+export function findSepalLib(cwd: string = process.cwd(), includeDefaultDirs = true): string | null {
   const envLib = typeof process !== "undefined" ? process.env?.["SEPAL_LIB"] : undefined;
   if (envLib && existsSync(envLib)) return envLib;
-  const candidates = [
-    join(cwd, "external", "libsepal", "lib", "libsepal.so"),
-    join(homedir(), ".local", "lib", "libsepal.so"),
-    "/usr/local/lib/libsepal.so",
-    "/usr/lib/libsepal.so",
-    "/lib/libsepal.so",
-    "/usr/lib/x86_64-linux-gnu/libsepal.so",
-  ];
+
+  const exts = [".so", ".dylib", ".dll"];
+  const keys = platformPrebuildKeys();
+  const bases: string[] = [];
+  for (let curr = cwd, i = 0; i < 4; i++) {
+    bases.push(curr);
+    const parent = dirname(curr);
+    if (!parent || parent === curr) break;
+    curr = parent;
+  }
+  const home = homedir();
+  if (includeDefaultDirs && !bases.includes(home)) bases.push(home);
+  const pkgRoots = resolvePkgRoots("sepal", bases, includeDefaultDirs);
+  const candidates: string[] = [];
+  for (const ext of exts) candidates.push(join(cwd, "external", "libsepal", "lib", `libsepal${ext}`));
+  for (const root of pkgRoots) {
+    for (const key of keys) for (const ext of exts) candidates.push(join(root, "prebuilds", key, `libsepal${ext}`));
+    for (const ext of exts) candidates.push(join(root, "build", "Release", `libsepal${ext}`), join(root, "lib", `libsepal${ext}`));
+  }
+  if (includeDefaultDirs) {
+    for (const ext of exts) {
+      candidates.push(join(home, ".local", "lib", `libsepal${ext}`), `/usr/local/lib/libsepal${ext}`, `/usr/lib/libsepal${ext}`, `/lib/libsepal${ext}`, `/usr/lib/x86_64-linux-gnu/libsepal${ext}`);
+    }
+  }
   for (const c of candidates) if (existsSync(c)) return c;
   return null;
 }
@@ -473,15 +588,12 @@ export function findSepalLib(cwd: string = process.cwd()): string | null {
 // ───────────────────────────── server probe / lifecycle ─────────────────────────────
 
 export async function isAurenRunning(url: string = DEFAULT_AUREN_URL, timeoutMs = 250): Promise<boolean> {
-  const base = url
-    .replace(/\/+$/, "")
-    .replace(/\/api\/v1\/systemone$/, "")
-    .replace(/\/api\/v1\/systemzero\/?$/, "")
-    .replace(/\/v1$/, "");
+  const base = url.replace(/\/+$/, "").replace(/\/api\/v1\/systemone$/, "").replace(/\/api\/v1\/systemzero\/?$/, "").replace(/\/v1$/, "");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${base}/v1/models`, { method: "GET", signal: ctrl.signal });
+    await res.body?.cancel();
     return res.ok || res.status === 404 || res.status === 405;
   } catch {
     return false;
@@ -517,28 +629,13 @@ export function diagnoseAuren(d: DiagnoseInput): Notice[] {
   const notices: Notice[] = [];
   for (const dl of d.downloads) {
     const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-    notices.push({
-      code: "downloading",
-      severity: "info",
-      message: `Downloading local model "${dl.id}" (${pct}%)…`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "downloading", severity: "info", message: `Downloading local model "${dl.id}" (${pct}%)…`, link: DOCS_PIMM_PREREQUISITES });
   }
   for (const f of d.failures ?? []) {
-    notices.push({
-      code: "download-failed",
-      severity: "warning",
-      message: `Could not download model "${f.id}": ${f.error}. It will be retried next session.`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "download-failed", severity: "warning", message: `Could not download model "${f.id}": ${f.error}. It will be retried next session.`, link: DOCS_PIMM_PREREQUISITES });
   }
   for (const m of d.pendingConsent ?? []) {
-    notices.push({
-      code: "needs-consent",
-      severity: "info",
-      message: `Optional model "${m.id}" (${(m.bytes / 1073741824).toFixed(1)} GB) was not downloaded. Set autoDownloadModels to "auto" to fetch it.`,
-      link: DOCS_PIMM_PREREQUISITES,
-    });
+    notices.push({ code: "needs-consent", severity: "info", message: `Optional model "${m.id}" (${(m.bytes / 1073741824).toFixed(1)} GB) was not downloaded. Set autoDownloadModels to "auto" to fetch it.`, link: DOCS_PIMM_PREREQUISITES });
   }
   if (d.running) return notices;
 
@@ -621,6 +718,16 @@ export interface SpawnResult {
   error?: string;
 }
 
+async function waitForServerReady(url: string, child: ReturnType<typeof spawn>, kind: "script" | "axil", timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (await isAurenRunning(url, 300)) return true;
+    if (child.exitCode !== null && (kind === "axil" || child.exitCode !== 0)) return false;
+  }
+  return false;
+}
+
 export async function startAurenServer(
   p: AurenPaths & { port?: number; readyTimeoutMs?: number; configPath?: string | null },
 ): Promise<SpawnResult> {
@@ -628,8 +735,28 @@ export async function startAurenServer(
   const url = `http://127.0.0.1:${port}`;
   const launchers = findAurenLaunchers({ ...p, port });
   if (launchers.length === 0) return { started: false, error: "no launcher found" };
-  const logPath = serverLogPath(homeOf(p));
+  const home = homeOf(p);
+  const cwd = cwdOf(p);
+  const logPath = serverLogPath(home);
   mkdirSync(dirname(logPath), { recursive: true });
+
+  // Collect shared library directories so node_modules-based launches find libsepal, libcorm, libstele, and libaxil.
+  const ldDirs: string[] = [];
+  const addLdDir = (d: string | null | undefined) => {
+    if (d && !ldDirs.includes(d) && existsSync(d)) ldDirs.push(d);
+  };
+  for (const d of findAurenLibDirs(cwd, home, p.libDirs)) addLdDir(d);
+  const sepalLib = findSepalLib(cwd, p.libDirs === undefined);
+  if (sepalLib) addLdDir(dirname(sepalLib));
+  const keys = platformPrebuildKeys();
+  for (const pkg of ["axil", "corm", "stele", "sepal", "lemma", "joint", "islet"]) {
+    for (const r of resolvePkgRoots(pkg, [cwd, home], p.libDirs === undefined)) {
+      for (const k of keys) addLdDir(join(r, "prebuilds", k));
+      addLdDir(join(r, "build", "Release"));
+      addLdDir(join(r, "lib"));
+    }
+  }
+
   let lastError = "";
   for (const launcher of launchers) {
     try {
@@ -638,19 +765,32 @@ export async function startAurenServer(
       for (const [k, v] of Object.entries(envOf(p))) if (typeof v === "string") env[k] = v;
       env["AUREN_PORT"] = String(port);
       if (p.configPath) env["AUREN_CONFIG_PATH"] = p.configPath;
-      const child = spawn(launcher.command, launcher.args, {
+      if (sepalLib && !env["SEPAL_LIB"]) env["SEPAL_LIB"] = sepalLib;
+      if (ldDirs.length > 0) {
+        const curLd = env["LD_LIBRARY_PATH"];
+        env["LD_LIBRARY_PATH"] = curLd ? `${ldDirs.join(delimiter)}${delimiter}${curLd}` : ldDirs.join(delimiter);
+        if (typeof process !== "undefined" && process.platform === "darwin") {
+          const curDyld = env["DYLD_LIBRARY_PATH"];
+          env["DYLD_LIBRARY_PATH"] = curDyld ? `${ldDirs.join(delimiter)}${delimiter}${curDyld}` : ldDirs.join(delimiter);
+        }
+      }
+      const isJs = launcher.command.endsWith(".js");
+      const cmd = isJs ? process.execPath : launcher.command;
+      const runArgs = launcher.kind === "axil" && !launcher.args.includes("-d")
+        ? ["-d", ...launcher.args]
+        : launcher.args;
+      const cmdArgs = isJs ? [launcher.command, ...runArgs] : runArgs;
+      const child = spawn(cmd, cmdArgs, {
         detached: true,
         stdio: ["ignore", out, out],
-        cwd: launcher.workdir ?? cwdOf(p),
+        cwd: launcher.workdir ?? cwd,
         env,
       });
       child.on("error", () => { /* surfaced through readiness timeout */ });
       child.unref();
       closeSync(out);
-      const deadline = Date.now() + (p.readyTimeoutMs ?? 20000);
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 250));
-        if (await isAurenRunning(url, 300)) return { started: true, launcher };
+      if (await waitForServerReady(url, child, launcher.kind, p.readyTimeoutMs ?? 20000)) {
+        return { started: true, launcher };
       }
       lastError = `${launcher.command} did not answer on ${url} in time`;
     } catch (err) {
@@ -710,12 +850,14 @@ export function getBootstrapState(): BootstrapState {
   return { ...liveState, downloads: [...liveState.downloads], failures: [...liveState.failures], notices: [...liveState.notices] };
 }
 
-/** Compact progress text for a status bar, e.g. "⬇ bge-base (42%)"; undefined when nothing is downloading. */
+/** Compact progress text for a status bar, e.g. "⬇️  bge-base (42%)"; undefined when nothing is downloading.
+ *  Note: ⬇️ (U+2B07 U+FE0F) has wcwidth=1 in terminal cells while rendering as a 2-column emoji glyph,
+ *  so two ASCII spaces follow it to prevent the glyph from overlapping the model name. */
 export function describeProgress(state: BootstrapState = liveState): string | undefined {
   if (state.downloads.length === 0) return undefined;
   const dl = state.downloads[0];
   const pct = dl.total > 0 ? Math.floor((dl.done / dl.total) * 100) : 0;
-  return `⬇ ${dl.id} (${pct}%)`;
+  return `⬇️  ${dl.id} (${pct}%)`;
 }
 
 export const AUREN_STATUS_SLOT = "auren-model";
@@ -750,8 +892,15 @@ export function ensureAuren(opts: EnsureOptions = {}): Promise<BootstrapState> {
   // Late callers (e.g. a UI-aware session hook after a tool-env probe) can still attach their hooks.
   if (opts.confirm) activeHooks.confirm = opts.confirm;
   if (opts.onUpdate) activeHooks.onUpdate = opts.onUpdate;
-  if (inflight) return inflight;
-  if (lastFinishedAt > 0 && Date.now() - lastFinishedAt < RERUN_AFTER_MS) return Promise.resolve(getBootstrapState());
+  if (inflight) {
+    try { opts.onUpdate?.(getBootstrapState()); } catch { /* UI is best effort */ }
+    return inflight;
+  }
+  if (lastFinishedAt > 0 && Date.now() - lastFinishedAt < RERUN_AFTER_MS) {
+    const snap = getBootstrapState();
+    try { opts.onUpdate?.(snap); } catch { /* UI is best effort */ }
+    return Promise.resolve(snap);
+  }
   activeHooks = { confirm: opts.confirm, onUpdate: opts.onUpdate };
   inflight = run(opts)
     .catch((err) => {

@@ -81,6 +81,7 @@ export const FIELD_NAME_TO_ID = new Map<string, number>([
   ["ep_pr", 26],
   ["ep_ap", 27],
   ["standing", 28],
+  ["constr", 29],
 ]);
 
 export const FIELD_ID_TO_NAME = new Map<number, string>(
@@ -375,6 +376,12 @@ export function encodeHtokPayload(date: string, envelope: MemoryEnvelope, versio
   // Tags
   if (envelope.tags && envelope.tags.length > 0) {
     fields.push(tokField("tags", envelope.tags.join("\n")));
+  }
+
+  // Constraints / Restrictions
+  const effectiveConstraints = envelope.constraints ?? envelope.episode?.constraints;
+  if (effectiveConstraints && effectiveConstraints.length > 0) {
+    fields.push(tokField("constr", effectiveConstraints.join("\n")));
   }
 
   // Context fields
@@ -935,6 +942,7 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
   }
 
   let tags: string[] | undefined = has("tags") ? getStr("tags").split("\n").filter(Boolean) : undefined;
+  const constraints: string[] | undefined = has("constr") ? getStr("constr").split("\n").filter(Boolean) : undefined;
 
   let context: MemoryContext | undefined;
   if (has("ctx_proj") || has("ctx_sub") || has("ctx_mod") || has("ctx_path") || has("ctx_subj") || has("ctx_grid")) {
@@ -1073,6 +1081,7 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
       supersedes,
       supersededBy,
       tags,
+      constraints,
       context,
       episode,
       utility,
@@ -1238,4 +1247,17 @@ export function decodePayload(raw: string | Uint8Array): { date: string; envelop
       summary: text,
     },
   };
+}
+
+/**
+ * Byte-exact decode helper for corm result objects ({ stdout, stdoutBytes?, stderr, code }).
+ * Prefers raw Uint8Array (stdoutBytes) to avoid lossy UTF-8 decodes and trailing-trim corruption
+ * of binary HTOK payloads.
+ */
+export function decodeResult(res: { stdout?: string; stdoutBytes?: Uint8Array }): { date: string; envelope: MemoryEnvelope } {
+  if (res.stdoutBytes && res.stdoutBytes.length > 0) {
+    return decodePayload(res.stdoutBytes);
+  }
+  const text = (res.stdout ?? "").trim();
+  return decodePayload(text);
 }

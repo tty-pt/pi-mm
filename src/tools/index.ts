@@ -5,7 +5,7 @@ import type { Pi, PiCtx, PiToolSpec } from "../hooks/events.ts";
 import type { MmConfig } from "../config.ts";
 import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolveSocketPath, resolveAdvancedTools, runtimeEnv, sepalConfigured } from "../config.ts";
 import type { CormRunner } from "../corm.ts";
-import { ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv } from "../corm.ts";
+import { NativeAddonCormRunner, ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv, loadCormAddonModule, isDaemonLockHeld } from "../corm.ts";
 import { ensureDaemon } from "../daemon.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";
@@ -58,13 +58,13 @@ export function cormBin(env: ToolEnv): string {
   return env.cfg.cormBin || env.cfg.qmapBin || "";
 }
 
-export async function readToolEnv(cwd: string, runner: CormRunner): Promise<ToolEnv> {
-  const cfg = await readMmConfig(cwd);
+export async function readToolEnv(cwd: string, runner: CormRunner, preloadedCfg?: MmConfig): Promise<ToolEnv> {
+  const cfg = preloadedCfg ?? (await readMmConfig(cwd));
   if (!cfg.cormBin) {
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
     const resolved = resolveCormBin(cfg, cwd, pathDirs, existsSync).path;
-    cfg.cormBin = resolved;
+    cfg.cormBin = resolved || ((await loadCormAddonModule()) !== null ? "corm" : "");
   }
   try {
     await mkdir(resolveMemDir(cwd, cfg.memDir), { recursive: true });
@@ -74,59 +74,76 @@ export async function readToolEnv(cwd: string, runner: CormRunner): Promise<Tool
   return { cwd, cfg, runner, nowProvider: () => new Date() };
 }
 
+async function adoptRunningAuren(ctx: PiCtx, cfg: MmConfig): Promise<void> {
+  try {
+    const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
+    const { setMmAurenOnline } = await import("../hooks/events.ts");
+    void ensureAuren({
+      cwd: ctx.cwd,
+      settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
+    });
+    if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
+      setMmAurenOnline(ctx, true);
+      if (!cfg.captureEmbedUrl) cfg.captureEmbedUrl = DEFAULT_AUREN_URL;
+      if (!cfg.judgeUrl && cfg.judgeMode !== "off") {
+        cfg.judgeUrl = DEFAULT_AUREN_URL;
+        if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
+      }
+      if (!cfg.embedUrl && cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
+        cfg.embedUrl = `${DEFAULT_AUREN_URL}/v1/embeddings`;
+        if (!cfg.embedModel) cfg.embedModel = DEFAULT_AUREN_EMBED_MODEL;
+      }
+    }
+  } catch {
+    // Best-effort auto-discovery
+  }
+}
+
 export function defaultEnvSource(pi: Pi): EnvSource {
   const shellRunner = new ShellCormRunner((command, args, options) => pi.exec(command, args, options));
-  // Memoize active runner per socketPath to avoid repeat probe/ensureDaemon on every single turn/hook
+  const localRunner = new NativeAddonCormRunner(shellRunner);
   const runnerCache = new Map<string, Promise<CormRunner>>();
 
   return async (ctx) => {
     const cfg = await readMmConfig(ctx.cwd);
     const mDir = resolveMemDir(ctx.cwd, cfg.memDir);
     const socketPath = resolveSocketPath(cfg, mDir);
+
+    const isTestMock = ctx.cwd.includes("fake");
+    const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(mDir) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
+    if (!isTestMock) {
+      try {
+        await mkdir(mDir, { recursive: true });
+      } catch {
+        // Best-effort directory creation
+      }
+    }
+    const fallbackRunner = isTestMock ? shellRunner : localRunner;
+
+    // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
+    // and adopt the local server for judge/embeddings as soon as it answers.
+    if (isProject) await adoptRunningAuren(ctx, cfg);
+
     const axes = resolveAxisPath(cfg, ctx.cwd);
     const embed = sepalConfigured(cfg);
     const fspec = filespecFor(mDir, embed);
     const eEnv = embedEnv(cfg);
 
+    const hasNativeAddon = !isTestMock && (await loadCormAddonModule()) !== null;
+    const lockHeld = await isDaemonLockHeld(join(mDir, ".cormd.lock"));
+
     const env = runtimeEnv();
     const pathDirs = (env["PATH"] ?? "").split(":");
-    const cormdRes = resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
-
-    const isTestMock = ctx.cwd.includes("fake");
-    const isProject = !isTestMock && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(mDir, "mem.db")) || Boolean(cfg.cormdBin));
-
-    // Zero-config axil-auren: start/provision in the background (singleton, never blocks a tool call),
-    // and adopt the local server for judge/embeddings as soon as it answers.
-    if (isProject && (!cfg.captureEmbedUrl || !cfg.judgeUrl || !cfg.embedUrl)) {
-      try {
-        const { ensureAuren, isAurenRunning, findSepalLib, DEFAULT_AUREN_URL, DEFAULT_AUREN_JUDGE_MODEL, DEFAULT_AUREN_EMBED_MODEL } = await import("../auren.ts");
-        void ensureAuren({
-          cwd: ctx.cwd,
-          settings: { autoStart: cfg.autoStartAuren, autoDownloadModels: cfg.autoDownloadModels },
-        });
-        if (await isAurenRunning(DEFAULT_AUREN_URL, 250)) {
-          if (!cfg.captureEmbedUrl) cfg.captureEmbedUrl = DEFAULT_AUREN_URL;
-          if (!cfg.judgeUrl && cfg.judgeMode !== "off") {
-            cfg.judgeUrl = DEFAULT_AUREN_URL;
-            if (!cfg.judgeModel) cfg.judgeModel = DEFAULT_AUREN_JUDGE_MODEL;
-          }
-          if (!cfg.embedUrl && cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
-            cfg.embedUrl = DEFAULT_AUREN_URL;
-            if (!cfg.embedModel) cfg.embedModel = DEFAULT_AUREN_EMBED_MODEL;
-          }
-        }
-      } catch {
-        // Best-effort auto-discovery
-      }
-    }
+    const cormdRes = cfg.cormdBin
+      ? { path: cfg.cormdBin }
+      : resolveCormdBin(cfg, ctx.cwd, pathDirs, existsSync);
 
     let runner: CormRunner;
-    if (cormdRes.path !== "" && isProject) {
-      // Fast non-blocking socket check:
-      // If the daemon socket is already alive and serving the correct database, use DaemonCormRunner immediately (0ms).
-      // If socket is absent or not responding within 50ms, kick off ensureDaemon() in the background and return
-      // DaemonCormRunner (which immediately falls back to ShellCormRunner for any urgent foreground operation without stalling).
-      let runnerPromise = runnerCache.get(socketPath);
+    // Prefer resident cormd for project stores when cormd is installed so the in-memory
+    // lemma/sepal indices stay warm across turns/processes and queries remain non-blocking.
+    if (cormdRes.path !== "" && (Boolean(cfg.cormdBin) || lockHeld || isProject)) {
+      const cacheKey = `${socketPath}|${fspec}`;
+      let runnerPromise = runnerCache.get(cacheKey);
       if (!runnerPromise) {
         runnerPromise = (async () => {
           try {
@@ -138,25 +155,24 @@ export function defaultEnvSource(pi: Pi): EnvSource {
               embedEnv: eEnv,
               cwd: mDir,
             });
-            return new DaemonCormRunner(socketPath, shellRunner);
+            return new DaemonCormRunner(socketPath, fallbackRunner);
           } catch {
-            return new DaemonCormRunner(socketPath, shellRunner);
+            return new DaemonCormRunner(socketPath, fallbackRunner);
           }
         })();
-        runnerCache.set(socketPath, runnerPromise);
+        runnerCache.set(cacheKey, runnerPromise);
       }
-
-      // If socket is already established and responding, wait on runnerPromise with a tight 50ms budget;
-      // otherwise, decouple and return DaemonCormRunner immediately so pi startup is never delayed.
       const fastReady = await Promise.race([
         runnerPromise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
       ]);
-      runner = fastReady ?? new DaemonCormRunner(socketPath, shellRunner);
+      runner = fastReady ?? new DaemonCormRunner(socketPath, fallbackRunner);
+    } else if (hasNativeAddon) {
+      runner = localRunner;
     } else {
-      runner = new DaemonCormRunner(socketPath, shellRunner);
+      runner = new DaemonCormRunner(socketPath, fallbackRunner);
     }
-    return readToolEnv(ctx.cwd, runner);
+    return readToolEnv(ctx.cwd, runner, cfg);
   };
 }
 

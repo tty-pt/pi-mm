@@ -80,6 +80,15 @@ export const DIRECTIVE_EXEMPLARS: Record<string, string[]> = {
     "search for all occurrences of corm_open across the repo",
     "show me the diff for the last commit",
     "restart the test daemon and check its log output",
+    "just commit, we can work on tests later",
+    "skip tests for now and commit",
+    "work on tests later",
+    "make sure everything is committed and pushed as part of this wip commit thing",
+    "make sure the nd work is committed",
+    "just commit and push",
+    "judging by the introduced clever preprocessor guards, the wasm boundary is not totally unified. Correct? This is an analysis request. Nothing else.",
+    "and our site, which is pure C, should work without those clever precompiler guards? Understood?",
+    "how unified is this boundary right now across all the libs?",
 
     // --- Portuguese ---
     "onde fica o arquivo de configuração do servidor axil?",
@@ -90,5 +99,7 @@ export const DIRECTIVE_EXEMPLARS: Record<string, string[]> = {
     "verifique se os testes unitários passaram sem problemas",
     "adicione uma nova rota GET /health no módulo core",
     "qual foi a mensagem de erro que apareceu no terminal?",
+    "faz só o commit agora, depois vemos os testes",
+    "garante que o trabalho atual está comitado",
   ],
 };

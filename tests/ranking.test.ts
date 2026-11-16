@@ -116,3 +116,42 @@ Deno.test("scan: ranking preserves question-form L1 conversational memories and 
   assert.strictEqual(details.records[1].ref, 2);
   assert.strictEqual(details.records[1].summary, "Recall if I said or asked something about my grandfather.");
 });
+
+Deno.test("recall: preserves rankingScore order (L2 > L1 > L0) instead of sorting by ascending ref and deduplicates redundant L0 evidence children", async () => {
+  const { makeRecallTool } = await import("../src/tools/recall.ts");
+  const rawL0 = encodePayload("2026-11-10", {
+    level: "L0",
+    type: "episode",
+    lifecycle: "observed",
+    summary: "Commit pi-mm",
+  });
+  const consolidatedL1 = encodePayload("2026-11-10", {
+    level: "L1",
+    type: "note",
+    lifecycle: "observed",
+    summary: "Commit pi-mm",
+    evidence: [1],
+  });
+  const highRankL2 = encodePayload("2026-11-12", {
+    level: "L2",
+    type: "invariant",
+    lifecycle: "supported",
+    summary: "pi-mm must preserve relevance ranking order in executeTargetedHybridRecall",
+    evidence: [10],
+  });
+
+  const runner = fakeRunner([
+    okResult(`1 1.000000 ${b2s(rawL0)}\n20 1.000000 ${b2s(consolidatedL1)}\n50 1.000000 ${b2s(highRankL2)}\n`),
+  ]);
+
+  const recallTool = makeRecallTool(give(env(runner)));
+  const res = await runTool(recallTool, { query: "pi-mm", scope: "persistent" }, ctx);
+  const details = res.details as { results: Array<{ ref: number; level?: string }> };
+
+  // 1. Ref 50 (L2 supported) must rank 1st even though its ref ID (50) is highest
+  assert.strictEqual(details.results[0].ref, 50);
+  // 2. Ref 20 (L1) must be kept while Ref 1 (redundant L0 child with identical summary cited in evidence: [1]) is deduplicated
+  assert.strictEqual(details.results.length, 2);
+  assert.strictEqual(details.results[1].ref, 20);
+  assert.ok(!details.results.some((r) => r.ref === 1), "redundant L0 evidence child with identical summary must be collapsed");
+});

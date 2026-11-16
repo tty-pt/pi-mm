@@ -7,19 +7,50 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-export type EngineName = "axil" | "libcorm" | "libsepal" | "liblemma" | "libjoint" | "axil-auren";
+export type EngineName =
+  | "axil"
+  | "libcorm"
+  | "libsepal"
+  | "liblemma"
+  | "libjoint"
+  | "libislet"
+  | "axil-auren";
+
+export interface EngineFeatureFloor {
+  engine: EngineName;
+  feature: string;
+  minVersion: string;
+}
+
+export const REQUIRED_ENGINE_FEATURES: readonly EngineFeatureFloor[] = [
+  { engine: "libcorm", feature: "LIST / GET / PUT / DEL / DEL_ALL / QUERY / RECONCILE CLI & cormd TCP/UDS protocol", minVersion: "2.0.0" },
+  { engine: "libcorm", feature: "HTOK v4 native binary packing (corm_htok_pack / corm_htok_unpack), PUT_JSON, GET_JSON", minVersion: "2.2.0" },
+  { engine: "libsepal", feature: "HNSW / sketch hybrid approximate vector index & recall axis plugin", minVersion: "1.0.0" },
+  { engine: "libsepal", feature: "rec_axis_store_typed for HTOK v4 binary vector embedding ingestion", minVersion: "1.2.0" },
+  { engine: "liblemma", feature: "Lexical inverted index & recall axis plugin", minVersion: "1.0.0" },
+  { engine: "liblemma", feature: "3-gram index, lemma_tok_encode/decode, and rec_axis_store_typed for HTOK v4", minVersion: "1.1.0" },
+  { engine: "libjoint", feature: "Interval tree temporal axis plugin (rec_axis_fill_interval)", minVersion: "1.0.0" },
+  { engine: "libjoint", feature: "rec_axis_store_typed for HTOK v4 temporal interval ingestion", minVersion: "1.5.0" },
+  { engine: "libislet", feature: "Morton Z-order 2D/3D spatial index & cormr.h recall axis plugin (rec_axis_fill_bbox_2)", minVersion: "1.2.0" },
+  { engine: "axil", feature: "Browser axil-bridge.js, WebSocket/HTTP transport & /api/v1 proxy endpoints", minVersion: "1.6.0" },
+  { engine: "axil-auren", feature: "POST /v1/embeddings (128D) & /v1/rerank HTTP endpoints", minVersion: "1.3.0" },
+  { engine: "axil-auren", feature: "Unified non-generative POST /v1/systemone & /api/v1/systemone/ (choice gating, exemplars, Jev)", minVersion: "1.4.0" },
+];
 
 export const MIN_ENGINE_VERSIONS: Record<EngineName, string> = {
   axil: "1.6.0",
-  libcorm: "2.0.0",
+  libcorm: "2.2.0",
   libsepal: "1.2.0",
   liblemma: "1.1.0",
   libjoint: "1.5.0",
-  "axil-auren": "1.3.0",
+  libislet: "1.2.0",
+  "axil-auren": "1.4.0",
 };
 
 export const DOCS_ENGINE_GUIDES: Record<EngineName, string> = {
@@ -28,6 +59,7 @@ export const DOCS_ENGINE_GUIDES: Record<EngineName, string> = {
   libsepal: "https://github.com/tty-pt/libsepal#installation--build",
   liblemma: "https://github.com/tty-pt/liblemma#installation--build",
   libjoint: "https://github.com/tty-pt/libjoint#installation--build",
+  libislet: "https://github.com/tty-pt/libislet#installation--build",
   "axil-auren": "https://github.com/tty-pt/axil-auren#installation--build",
 };
 
@@ -37,10 +69,21 @@ const PC_ALIASES: Record<EngineName, string[]> = {
   libsepal: ["sepal.pc", "sepallib.pc", "libsepal.pc"],
   liblemma: ["lemma.pc", "liblemma.pc"],
   libjoint: ["joint.pc", "libjoint.pc"],
+  libislet: ["islet.pc", "libislet.pc"],
   "axil-auren": ["auren.pc", "axil-auren.pc", "libaxil-auren.pc"],
 };
 
-export type VersionSource = "pkgconfig" | "git" | "daemon" | "fallback";
+const NPM_SHORT_NAMES: Partial<Record<EngineName, string>> = {
+  axil: "axil",
+  libcorm: "corm",
+  libsepal: "sepal",
+  liblemma: "lemma",
+  libjoint: "joint",
+  libislet: "islet",
+  "axil-auren": "auren",
+};
+
+export type VersionSource = "pkgconfig" | "npm" | "git" | "daemon" | "fallback";
 export type VersionStatus = "satisfied" | "outdated" | "missing";
 
 export interface ComponentVersionReport {
@@ -57,85 +100,54 @@ export interface VersionDetectOptions {
   cwd?: string;
   home?: string;
   searchDirs?: string[];
+  includeDefaultDirs?: boolean;
 }
 
-/**
- * Extracts the version string from the text of a pkg-config (.pc) file.
- */
 export function parsePkgConfigVersion(content: string): string | null {
   for (const rawLine of content.split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("#")) continue;
     const match = /^Version:\s*([^\s#]+)/i.exec(line);
-    if (match) {
-      return match[1].trim();
-    }
+    if (match) return match[1].trim();
   }
   return null;
 }
 
-/**
- * Parses and cleans a semver tag from `git describe --tags` (e.g. "v1.7.0-2-ga1fc123" -> "1.7.0").
- */
 export function parseGitDescribeTag(tag: string): string | null {
   const clean = tag.trim().replace(/^v/i, "");
   const match = /^(\d+\.\d+(?:\.\d+)?)/.exec(clean);
   return match ? match[1] : null;
 }
 
-interface ParsedSemver {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease?: string;
-}
+interface ParsedSemver { major: number; minor: number; patch: number; prerelease?: string; }
 
 function parseSemver(v: string): ParsedSemver | null {
   const trimmed = v.trim().replace(/^v/i, "");
-  const match = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/.exec(trimmed);
-  if (!match) return null;
-  return {
-    major: Number(match[1]),
-    minor: match[2] !== undefined ? Number(match[2]) : 0,
-    patch: match[3] !== undefined ? Number(match[3]) : 0,
-    prerelease: match[4],
-  };
+  const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?/.exec(trimmed);
+  if (!m) return null;
+  return { major: Number(m[1]), minor: m[2] !== undefined ? Number(m[2]) : 0, patch: m[3] !== undefined ? Number(m[3]) : 0, prerelease: m[4] };
 }
 
-/**
- * Standard semver comparator: returns 1 if a > b, 0 if a == b, -1 if a < b.
- */
 export function compareSemver(a: string, b: string): number {
   const pA = parseSemver(a);
   const pB = parseSemver(b);
   if (!pA || !pB) return a.localeCompare(b);
-
   if (pA.major !== pB.major) return pA.major > pB.major ? 1 : -1;
   if (pA.minor !== pB.minor) return pA.minor > pB.minor ? 1 : -1;
   if (pA.patch !== pB.patch) return pA.patch > pB.patch ? 1 : -1;
-
   if (pA.prerelease && !pB.prerelease) return -1;
   if (!pA.prerelease && pB.prerelease) return 1;
-  if (pA.prerelease && pB.prerelease) {
-    return pA.prerelease.localeCompare(pB.prerelease);
-  }
+  if (pA.prerelease && pB.prerelease) return pA.prerelease.localeCompare(pB.prerelease);
   return 0;
 }
 
-/**
- * Returns true if the actual version meets or exceeds the required minimum.
- */
 export function satisfiesMinVersion(actual: string, minRequired: string): boolean {
   return compareSemver(actual, minRequired) >= 0;
 }
 
 const DEFAULT_PC_DIRS = [
-  "/usr/lib/pkgconfig",
-  "/usr/local/lib/pkgconfig",
-  "/usr/share/pkgconfig",
-  "/usr/lib/x86_64-linux-gnu/pkgconfig",
-  "/usr/lib/aarch64-linux-gnu/pkgconfig",
-  "/opt/homebrew/lib/pkgconfig",
+  "/usr/lib/pkgconfig", "/usr/local/lib/pkgconfig", "/usr/share/pkgconfig",
+  "/usr/lib/x86_64-linux-gnu/pkgconfig", "/usr/lib/aarch64-linux-gnu/pkgconfig", "/opt/homebrew/lib/pkgconfig",
 ];
 
 function findPcFile(aliases: string[], searchDirs: string[]): { path: string; version: string } | null {
@@ -143,26 +155,19 @@ function findPcFile(aliases: string[], searchDirs: string[]): { path: string; ve
     if (!existsSync(dir)) continue;
     for (const alias of aliases) {
       const full = join(dir, alias);
-      if (existsSync(full)) {
-        try {
-          const text = readFileSync(full, "utf8");
-          const ver = parsePkgConfigVersion(text);
-          if (ver) return { path: full, version: ver };
-        } catch {
-          // ignore unreadable
-        }
-      }
+      if (!existsSync(full)) continue;
+      try {
+        const ver = parsePkgConfigVersion(readFileSync(full, "utf8"));
+        if (ver) return { path: full, version: ver };
+      } catch { /* ignore */ }
     }
   }
   return null;
 }
 
 function findRepoRoot(startDir: string): string | null {
-  let curr = startDir;
-  for (let i = 0; i < 6; i++) {
-    if (existsSync(join(curr, "external"))) {
-      return curr;
-    }
+  for (let curr = startDir, i = 0; i < 6; i++) {
+    if (existsSync(join(curr, "external"))) return curr;
     const parent = dirname(curr);
     if (parent === curr) break;
     curr = parent;
@@ -170,140 +175,161 @@ function findRepoRoot(startDir: string): string | null {
   return null;
 }
 
+const gitVersionCache = new Map<string, { path: string; version: string } | null>();
+
 function findGitVersion(comp: EngineName, cwd: string, home: string): { path: string; version: string } | null {
   const repoRoot = findRepoRoot(cwd);
+  const short = comp.replace(/^lib/, "");
   const candidateDirs = [
-    join(cwd, "external", comp),
-    join(cwd, "external", comp.replace(/^lib/, "")),
-    ...(repoRoot ? [join(repoRoot, "external", comp), join(repoRoot, "external", comp.replace(/^lib/, ""))] : []),
-    join(cwd, "..", comp),
-    join(home, comp),
+    join(cwd, "external", comp), join(cwd, "external", short),
+    ...(repoRoot ? [join(repoRoot, "external", comp), join(repoRoot, "external", short)] : []),
+    join(cwd, "..", comp), join(home, comp),
   ];
-
   for (const dir of candidateDirs) {
-    if (existsSync(join(dir, ".git"))) {
-      try {
-        const out = execSync("git describe --tags --always", {
-          cwd: dir,
-          stdio: ["ignore", "pipe", "ignore"],
-          encoding: "utf8",
-          timeout: 1000,
-        });
-        const ver = parseGitDescribeTag(out);
-        if (ver) return { path: dir, version: ver };
-      } catch {
-        // best effort
-      }
+    if (!existsSync(join(dir, ".git"))) continue;
+    const resolvedDir = resolve(dir);
+    if (gitVersionCache.has(resolvedDir)) {
+      const cached = gitVersionCache.get(resolvedDir) ?? null;
+      if (cached) return cached;
+      continue;
+    }
+    try {
+      const out = execSync("git describe --tags --always", { cwd: dir, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 1000 });
+      const ver = parseGitDescribeTag(out);
+      const result = ver ? { path: dir, version: ver } : null;
+      gitVersionCache.set(resolvedDir, result);
+      if (result) return result;
+    } catch {
+      gitVersionCache.set(resolvedDir, null);
     }
   }
   return null;
 }
 
-/**
- * Portable detection of a specific engine component's installed version.
- */
-export function detectComponentVersion(
-  name: EngineName,
-  opts: VersionDetectOptions = {},
-): ComponentVersionReport | null {
-  const cwd = opts.cwd ?? (typeof process !== "undefined" ? process.cwd() : ".");
-  const home = opts.home ?? homedir();
-  const repoRoot = findRepoRoot(cwd);
-  const searchDirs = [
-    ...(opts.searchDirs ?? []),
-    join(home, ".local", "lib", "pkgconfig"),
-    join(cwd, "external", name),
-    join(cwd, "external", name.replace(/^lib/, "")),
-    ...(repoRoot ? [join(repoRoot, "external", name), join(repoRoot, "external", name.replace(/^lib/, ""))] : []),
-    join(home, name),
-    ...DEFAULT_PC_DIRS,
-  ];
-
-  const minRequired = MIN_ENGINE_VERSIONS[name];
-  const aliases = PC_ALIASES[name] ?? [`${name}.pc`];
-
-  // 1. Check direct .pc files
-  const pc = findPcFile(aliases, searchDirs);
-  if (pc) {
-    const status = satisfiesMinVersion(pc.version, minRequired) ? "satisfied" : "outdated";
-    return {
-      name,
-      installed: true,
-      version: pc.version,
-      minRequired,
-      status,
-      source: "pkgconfig",
-      path: pc.path,
-    };
+function findNpmPackageDirs(comp: EngineName, cwd: string, includeModuleRelative = true, home = homedir()): string[] {
+  const short = NPM_SHORT_NAMES[comp];
+  if (!short) return [];
+  const dirs: string[] = [];
+  const add = (d: string) => { if (d && !dirs.includes(d) && existsSync(d)) dirs.push(d); };
+  for (let curr = cwd, i = 0; i < 4; i++) {
+    add(join(curr, "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "npm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", short));
+    add(join(curr, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", short));
+    const parent = dirname(curr);
+    if (!parent || parent === curr) break;
+    curr = parent;
   }
-
-  // 2. Check git checkouts in workspace or HOME
-  const git = findGitVersion(name, cwd, home);
-  if (git) {
-    const status = satisfiesMinVersion(git.version, minRequired) ? "satisfied" : "outdated";
-    return {
-      name,
-      installed: true,
-      version: git.version,
-      minRequired,
-      status,
-      source: "git",
-      path: git.path,
-    };
+  for (const base of [cwd, home]) {
+    add(join(base, "node_modules", "@tty-pt", short));
+    add(join(base, ".pi", "agent", "npm", "node_modules", "@tty-pt", short));
+    add(join(base, ".pi", "npm", "node_modules", "@tty-pt", short));
   }
-
-  return {
-    name,
-    installed: false,
-    version: null,
-    minRequired,
-    status: "missing",
-    source: null,
-  };
+  if (includeModuleRelative) {
+    try {
+      const req = createRequire(import.meta.url);
+      try { add(dirname(req.resolve(`@tty-pt/${short}/package.json`))); } catch {
+        for (let d = dirname(req.resolve(`@tty-pt/${short}`)), i = 0; i < 4; i++, d = dirname(d)) {
+          if (existsSync(join(d, "package.json"))) { add(d); break; }
+        }
+      }
+    } catch { /* ignore */ }
+    try {
+      const here = dirname(fileURLToPath(import.meta.url));
+      for (const rel of ["..", "../..", "../../..", "../../../..", "../../../../.."]) {
+        add(resolve(here, rel, "node_modules", "@tty-pt", short));
+      }
+      add(resolve(here, "../..", short));
+    } catch { /* ignore */ }
+  }
+  return dirs;
 }
 
-/**
- * Checks all defined core C engines against the minimum version requirements.
- */
+function findNpmPackageJsonVersion(dirs: string[]): { path: string; version: string } | null {
+  for (const dir of dirs) {
+    const pkgJsonPath = join(dir, "package.json");
+    if (!existsSync(pkgJsonPath)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.trim() !== "") {
+        return { path: pkgJsonPath, version: parsed.version.trim() };
+      }
+    } catch { /* ignore */ }
+  }
+  return null;
+}
+
+function buildReport(name: EngineName, minRequired: string, found: { path: string; version: string } | null, source: VersionSource | null): ComponentVersionReport {
+  if (!found || !source) return { name, installed: false, version: null, minRequired, status: "missing", source: null };
+  const status = satisfiesMinVersion(found.version, minRequired) ? "satisfied" : "outdated";
+  return { name, installed: true, version: found.version, minRequired, status, source, path: found.path };
+}
+
+export function detectComponentVersion(name: EngineName, opts: VersionDetectOptions = {}): ComponentVersionReport | null {
+  const cwd = opts.cwd ?? (typeof process !== "undefined" ? process.cwd() : ".");
+  const home = opts.home ?? homedir();
+  const includeDefaults = opts.includeDefaultDirs !== false;
+  const repoRoot = includeDefaults ? findRepoRoot(cwd) : null;
+  const npmDirs = findNpmPackageDirs(name, cwd, includeDefaults, home);
+  const short = name.replace(/^lib/, "");
+  const searchDirs = [
+    ...(opts.searchDirs ?? []), ...npmDirs,
+    ...(includeDefaults
+      ? [
+          join(home, ".local", "lib", "pkgconfig"), join(cwd, "external", name), join(cwd, "external", short),
+          ...(repoRoot ? [join(repoRoot, "external", name), join(repoRoot, "external", short)] : []),
+          join(home, name), ...DEFAULT_PC_DIRS,
+        ]
+      : []),
+  ];
+  const minRequired = MIN_ENGINE_VERSIONS[name];
+  const pc = findPcFile(PC_ALIASES[name] ?? [`${name}.pc`], searchDirs);
+  if (pc) return buildReport(name, minRequired, pc, "pkgconfig");
+  const npmPkg = findNpmPackageJsonVersion(npmDirs);
+  if (npmPkg) return buildReport(name, minRequired, npmPkg, "npm");
+  if (includeDefaults) {
+    const git = findGitVersion(name, cwd, home);
+    if (git) return buildReport(name, minRequired, git, "git");
+  }
+  return buildReport(name, minRequired, null, null);
+}
+
 export function checkAllEngineVersions(opts: VersionDetectOptions = {}): ComponentVersionReport[] {
   const names = Object.keys(MIN_ENGINE_VERSIONS) as EngineName[];
   return names.map((name) => detectComponentVersion(name, opts)!);
 }
 
-/**
- * Generates exact, actionable commands to update an outdated or missing component.
- */
 export function generateRemediationAdvice(report: ComponentVersionReport): string {
   const guide = DOCS_ENGINE_GUIDES[report.name] ?? "https://github.com/tty-pt";
+  const npmShort = NPM_SHORT_NAMES[report.name];
   if (report.status === "satisfied") {
     return `${report.name} is up to date (${report.version} >= ${report.minRequired}).`;
   }
-
   if (report.status === "outdated") {
     return [
       `[!] ${report.name} is outdated: installed version is ${report.version}, but >= ${report.minRequired} is required.`,
+      ...(npmShort ? [`    -> NPM update: npm install @tty-pt/${npmShort}@latest`] : []),
       `    -> Package update: sudo apt update && sudo apt --only-upgrade install -y ${report.name}`,
       `    -> Source build: cd external/${report.name} && git pull && sudo make install`,
       `    -> Guide: ${guide}`,
     ].join("\n");
   }
-
   return [
     `[!] ${report.name} is not installed (requires >= ${report.minRequired}).`,
+    ...(npmShort ? [`    -> NPM install: npm install @tty-pt/${npmShort}`] : []),
     `    -> Package install: sudo apt update && sudo apt install -y ${report.name}`,
     `    -> Guide: ${guide}`,
   ].join("\n");
 }
 
-/**
- * Formats a concise, single-line remediation toast for proactive TUI session_start notices.
- */
 export function formatRemediationToast(report: ComponentVersionReport): string {
   const guide = DOCS_ENGINE_GUIDES[report.name] ?? "https://github.com/tty-pt";
+  const npmShort = NPM_SHORT_NAMES[report.name];
+  const npmHint = npmShort ? `npm install @tty-pt/${npmShort}@latest or ` : "";
   if (report.status === "satisfied") return "";
   if (report.status === "outdated") {
-    return `${report.name} is outdated (${report.version} < ${report.minRequired}). Upgrade: cd external/${report.name} && git pull && make install. See: ${guide}`;
+    return `${report.name} is outdated (${report.version} < ${report.minRequired}). Upgrade: ${npmHint}cd external/${report.name} && git pull && make install. See: ${guide}`;
   }
-  return `${report.name} is not installed (requires >= ${report.minRequired}). See: ${guide}`;
+  return `${report.name} is not installed (requires >= ${report.minRequired}). ${npmShort ? `Install: npm install @tty-pt/${npmShort}. ` : ""}See: ${guide}`;
 }
-

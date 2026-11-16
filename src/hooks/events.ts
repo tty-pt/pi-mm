@@ -6,14 +6,14 @@ import type { JudgeDecision } from "../judge/types.ts";
 import { filespecFor, buildStoreInvocation, buildGetInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { allocateNextRef } from "../tools/ref_allocator.ts";
 import { parseBareRefs } from "../resolve.ts";
-import { encodePayload, decodePayload } from "../payload.ts";
+import { encodePayload, decodeResult } from "../payload.ts";
 import { withLock } from "../lock.ts";
 import type { MemoryEnvelope, EpisodeRecord, MemoryContext, EpisodeApproach, LifecycleState } from "../types.ts";
 import { executeStore } from "../tools/store.ts";
 import { handleBeforeAgentStart, isMemoryRecallPrompt, type BeforeAgentStartEvent } from "./auto_recall.ts";
 import { validateEvidenceRef } from "../tools/lifecycle.ts";
 import { executeHybridScan } from "../tools/scan.ts";
-import { runAutoConsolidation, runDeferredConsolidation } from "../tools/consolidate.ts";
+import { drainL0Backlog, runAutoConsolidation, runDeferredConsolidation } from "../tools/consolidate.ts";
 import { recordNewL0InJournal } from "../tools/consolidation_journal.ts";
 import { debugLog, traceEvent } from "../debug.ts";
 import { isDaemonLockHeld } from "../daemon.ts";
@@ -21,7 +21,16 @@ import { recordAssociations } from "../associative.ts";
 import { ReinforcementScheduler, synthesizeReinforcementBlockFromDirectives, isStandingDirective, evaluateStandingDirective, STANDING_DIRECTIVE_PATTERN } from "./reinforcement.ts";
 import { DEFAULT_REINFORCEMENT_CONFIG } from "../config.ts";
 import { detectSubsystemMentions } from "./auto_recall.ts";
-import { extractAssistantThoughtsAndText, evaluateAssistantWondering } from "./wondering.ts";
+import { extractAssistantThoughtsAndText, evaluateAssistantWondering, isStandbyOrYieldMessage } from "./wondering.ts";
+import { getSessionInstances } from "../session/manager.ts";
+import { buildMipmapCompactionAsync, buildRecentInteractionsBlock, createModelSummarizerFromCtx, type BranchEntryLike } from "../session/compaction.ts";
+import { evaluateCounterfactualGuardrail, shouldEmitSessionGuardrail } from "./guardrails.ts";
+import { observeBashVerificationOutcome, recordFileMutationInLedger } from "./verification_ledger.ts";
+import { recordSwarmAttentionLease } from "../code/stigmergy.ts";
+import { verifyLoreBindingsForSymbols, formatLoreDriftSection } from "../code/lore_binding.ts";
+import { synthesizeFirstTouchModuleDossier } from "../code/dossier.ts";
+import { resolveSymbolCandidates } from "../code/graph.ts";
+import { checkSessionContextDrift, formatContextDriftNotice, recordSessionFileSnapshot } from "../code/context_sync.ts";
 import { readFile, writeFile, unlink, mkdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -117,13 +126,21 @@ export class ConsolidationQueue {
     try {
       while (this.queue.length > 0) {
         const next = this.queue.shift()!;
+        setMmBusy(next.ctx, true);
         try {
           const env = await envSource(next.ctx);
           await runAutoConsolidation(env, next.ctx, { newL0Refs: next.capturedL0Refs, incrementalOnly: true });
+          // Idle backlog drain: only once live turns are consolidated, bounded by wall-clock budget.
+          const drainMs = env.cfg.consolidateDrainMs ?? 0;
+          if (this.queue.length === 0 && drainMs > 0) {
+            await drainL0Backlog(env, next.ctx, { timeBudgetMs: drainMs });
+          }
         } catch (err) {
           debugLog("consolidation", "Incremental consolidation error", {
             error: err instanceof Error ? err.message : String(err),
           });
+        } finally {
+          setMmBusy(next.ctx, false);
         }
       }
     } finally {
@@ -138,9 +155,70 @@ export class ConsolidationQueue {
 
 export const consolidationQueue = new ConsolidationQueue();
 
+type MmUi = {
+  setStatus?: (id: string, text: string | undefined) => void;
+  theme?: { fg?: (name: string, text: string) => string };
+};
+
 let sessionSavedCount = 0;
 let mmStatusTimer: ReturnType<typeof setTimeout> | undefined;
 let mmDownloadSuffix: string | undefined;
+let mmAurenOnline = false;
+let mmBusyDepth = 0;
+let mmLastUi: MmUi | undefined;
+
+function extractMmUi(ctx?: PiCtx): MmUi | undefined {
+  const ui = (ctx as { ui?: MmUi } | undefined)?.ui;
+  if (ui?.setStatus) mmLastUi = ui;
+  return ui ?? mmLastUi;
+}
+
+/** Build the unified steady-state pi-mm status text (e.g. "🧠 2 ⏳ ⚡" or "🧠 0 🔌"). */
+export function formatMmStatusText(): string {
+  const parts: string[] = [`🧠 ${sessionSavedCount}`];
+  if (mmBusyDepth > 0) parts.push("⏳");
+  if (mmDownloadSuffix) {
+    parts.push(mmDownloadSuffix);
+  } else {
+    parts.push(mmAurenOnline ? "⚡" : "🔌");
+  }
+  return parts.join(" ");
+}
+
+function renderSteadyMmStatus(ui?: MmUi): void {
+  if (!ui?.setStatus || mmStatusTimer !== undefined) return;
+  const txt = formatMmStatusText();
+  ui.setStatus("pi-mm", ui.theme?.fg ? ui.theme.fg("muted", txt) : txt);
+}
+
+/** Reset session-level status counters at session_start and render initial state. */
+export function resetMmStatus(ctx?: PiCtx, aurenOnline = false): void {
+  if (mmStatusTimer !== undefined) {
+    clearTimeout(mmStatusTimer);
+    mmStatusTimer = undefined;
+  }
+  sessionSavedCount = 0;
+  mmDownloadSuffix = undefined;
+  mmAurenOnline = aurenOnline;
+  mmBusyDepth = 0;
+  const ui = extractMmUi(ctx);
+  if (ui?.setStatus) {
+    ui.setStatus("auren-model", undefined);
+    renderSteadyMmStatus(ui);
+  }
+}
+
+/** Update local embedding daemon online state (⚡ when online, 🔌 when offline). */
+export function setMmAurenOnline(ctx: PiCtx | undefined, online: boolean): void {
+  mmAurenOnline = online;
+  renderSteadyMmStatus(extractMmUi(ctx));
+}
+
+/** Toggle transient hourglass (⏳) while indexing codebase or consolidating memories. */
+export function setMmBusy(ctx: PiCtx | undefined, busy: boolean): void {
+  mmBusyDepth = busy ? mmBusyDepth + 1 : Math.max(0, mmBusyDepth - 1);
+  renderSteadyMmStatus(extractMmUi(ctx));
+}
 
 /** Show (or clear) a model-download progress suffix next to the brain indicator. */
 export function setMmDownloadProgress(
@@ -148,10 +226,7 @@ export function setMmDownloadProgress(
   text: string | undefined,
 ): void {
   mmDownloadSuffix = text;
-  const ui = (ctx as { ui?: { setStatus?: (id: string, text: string | undefined) => void; theme?: { fg?: (name: string, text: string) => string } } })?.ui;
-  if (!ui?.setStatus || mmStatusTimer !== undefined) return;
-  const base = `🧠 ${sessionSavedCount}${mmDownloadSuffix ? ` ${mmDownloadSuffix}` : ""}`;
-  ui.setStatus("pi-mm", ui.theme?.fg ? ui.theme.fg("muted", base) : base);
+  renderSteadyMmStatus(extractMmUi(ctx));
 }
 
 export function notifyMmEvent(
@@ -159,7 +234,7 @@ export function notifyMmEvent(
   type: "saved" | "degraded" | "recalled",
   count?: number,
 ): void {
-  const ui = (ctx as { ui?: { setStatus?: (id: string, text: string | undefined) => void; theme?: { fg?: (name: string, text: string) => string } } })?.ui;
+  const ui = extractMmUi(ctx);
   if (!ui?.setStatus) return;
 
   if (mmStatusTimer !== undefined) {
@@ -167,33 +242,44 @@ export function notifyMmEvent(
     mmStatusTimer = undefined;
   }
 
-  const renderIdleOrCount = () => {
-    const txt = `🧠 ${sessionSavedCount}${mmDownloadSuffix ? ` ${mmDownloadSuffix}` : ""}`;
-    return ui.theme?.fg ? ui.theme.fg("muted", txt) : txt;
-  };
+  const tailParts: string[] = [];
+  if (mmBusyDepth > 0) tailParts.push("⏳");
+  if (mmDownloadSuffix) tailParts.push(mmDownloadSuffix);
+  else tailParts.push(mmAurenOnline ? "⚡" : "🔌");
+  const tail = tailParts.length > 0 ? ` ${tailParts.join(" ")}` : "";
 
   if (type === "saved") {
-    sessionSavedCount += (count ?? 1);
-    const flash = ui.theme?.fg ? ui.theme.fg("success", "🧠 +1") : "🧠 +1";
+    const added = count ?? 1;
+    sessionSavedCount += added;
+    const label = `🧠 +${added}${tail}`;
+    const flash = ui.theme?.fg ? ui.theme.fg("success", label) : label;
     ui.setStatus("pi-mm", flash);
     mmStatusTimer = setTimeout(() => {
-      ui.setStatus?.("pi-mm", renderIdleOrCount());
+      mmStatusTimer = undefined;
+      renderSteadyMmStatus(ui);
     }, 2500);
     return;
   }
 
   if (type === "degraded") {
-    const warn = ui.theme?.fg ? ui.theme.fg("error", "⚠️") : "⚠️";
+    const label = `🧠 ⚠️${tail}`;
+    const warn = ui.theme?.fg ? ui.theme.fg("error", label) : label;
     ui.setStatus("pi-mm", warn);
     mmStatusTimer = setTimeout(() => {
-      ui.setStatus?.("pi-mm", renderIdleOrCount());
+      mmStatusTimer = undefined;
+      renderSteadyMmStatus(ui);
     }, 3500);
     return;
   }
 
-  if (type === "recalled" && count && count > 0 && sessionSavedCount === 0) {
-    const txt = ui.theme?.fg ? ui.theme.fg("muted", `🧠 ${count}`) : `🧠 ${count}`;
-    ui.setStatus("pi-mm", txt);
+  if (type === "recalled" && count && count > 0) {
+    const label = `🧠 ↑${count}${tail}`;
+    const flash = ui.theme?.fg ? ui.theme.fg("accent", label) : label;
+    ui.setStatus("pi-mm", flash);
+    mmStatusTimer = setTimeout(() => {
+      mmStatusTimer = undefined;
+      renderSteadyMmStatus(ui);
+    }, 2500);
   }
 }
 
@@ -250,6 +336,9 @@ export class SessionEventBuffer {
   public isJournaled(id: string): boolean { return this.journaledEventIds.has(id); }
   public record(event: SignificantEvent): void {
     if (this.flushedEventIds.has(event.id) || this.journaledEventIds.has(event.id)) return;
+    // Same-session deduplication for distinct events: ignore identical summary on the same path
+    const isDup = this.events.some((e) => e.id !== event.id && e.summary === event.summary && JSON.stringify(e.toolArgs) === JSON.stringify(event.toolArgs));
+    if (isDup) return;
     const alreadyBuffered = this.events.some((e) => e.id === event.id);
     if (!alreadyBuffered) {
       if (this.events.length >= this.maxEvents) {
@@ -264,6 +353,9 @@ export class SessionEventBuffer {
   }
   public async recordAsync(event: SignificantEvent): Promise<void> {
     if (this.flushedEventIds.has(event.id) || this.journaledEventIds.has(event.id)) return;
+    // Same-session deduplication for distinct events: ignore identical summary on the same path
+    const isDup = this.events.some((e) => e.id !== event.id && e.summary === event.summary && JSON.stringify(e.toolArgs) === JSON.stringify(event.toolArgs));
+    if (isDup) return;
     const alreadyBuffered = this.events.some((e) => e.id === event.id);
     if (!alreadyBuffered) {
       if (this.events.length >= this.maxEvents) {
@@ -412,8 +504,9 @@ export function isInformativeExecution(event: ToolResultEvent): boolean {
   }
 
   const isTrivialOutput = !text || /^(?:\(no output\)|0|true|done|ok)$/i.test(text);
+  const isSearchOrRead = /search|read|find|get_code|view_file/i.test(toolName);
 
-  const hasErrorWord = /\b(?:FAIL|failed|error|fatal|panic)\b/i.test(text.replace(/0\s+failed/gi, ""));
+  const hasErrorWord = !isSearchOrRead && /\b(?:FAIL|failed|error|fatal|panic)\b/i.test(text.replace(/0\s+failed/gi, ""));
   const failed = isErr || hasErrorWord;
 
   const isVerification = /test|check|verify|smoke/i.test(toolName) ||
@@ -438,7 +531,6 @@ export function isInformativeExecution(event: ToolResultEvent): boolean {
   }
 
   // Dedicated search and read tools (search_code, read, search_graph, get_code_snippet, etc.)
-  const isSearchOrRead = /search|read|find|get_code/i.test(toolName);
   if (isSearchOrRead) {
     if (isTrivialOutput || /^(?:0 matches|no matches|0 results|found 0|empty)/i.test(text)) {
       return false;
@@ -447,7 +539,13 @@ export function isInformativeExecution(event: ToolResultEvent): boolean {
   }
 
   // Memory introspection and session recall tools are not software engineering modifications
-  if (/^(?:memory_|vcc_recall)/.test(toolName)) {
+  if (/^(?:memory_|vcc_)/.test(toolName)) {
+    return false;
+  }
+
+  // Shell commands that query or decode pi-mm's own database (which caused memory to record itself)
+  if (cmd && (/(?:corm\s+.*\.pi\/mm|\.pi\/mm\/mem\.db|decodePayload|isCodeOrDocArtifact)/.test(cmd) ||
+             /deno\s+eval\s+.*pi-mm/.test(cmd))) {
     return false;
   }
 
@@ -459,15 +557,45 @@ export function isInformativeExecution(event: ToolResultEvent): boolean {
   return true;
 }
 
+export function formatToolEventSummary(event: ToolResultEvent): string {
+  const tool = event.toolName || "tool";
+  const text = event.content?.map((c) => c.text || "").join(" ").trim() || "";
+  const path = typeof event.input?.["path"] === "string" ? event.input["path"]
+             : typeof event.args?.["path"] === "string" ? event.args["path"]
+             : typeof event.input?.["file"] === "string" ? event.input["file"]
+             : typeof event.args?.["file"] === "string" ? event.args["file"]
+             : undefined;
+  const cmd = typeof event.input?.["command"] === "string" ? event.input["command"]
+            : typeof event.args?.["command"] === "string" ? event.args["command"]
+            : undefined;
+
+  if (tool === "edit" || tool === "write" || tool === "patch") {
+    return path ? `${tool} ${path}` : `Executed ${tool}`;
+  }
+  if (tool === "read") {
+    const firstLine = text.split("\n")[0]?.slice(0, 140) || "";
+    return path ? (firstLine ? `read ${path}: ${firstLine}` : `read ${path}`) : (firstLine || "read");
+  }
+  if (tool === "bash") {
+    const shortCmd = (cmd || "").slice(0, 60);
+    const firstLine = text.split("\n")[0]?.slice(0, 100) || "";
+    return shortCmd ? (firstLine ? `bash \`${shortCmd}\`: ${firstLine}` : `bash \`${shortCmd}\``) : (firstLine || "bash");
+  }
+  const firstLine = text.split("\n")[0]?.slice(0, 140) || `Executed ${tool}`;
+  return path ? `${tool} ${path}: ${firstLine}` : firstLine;
+}
+
 export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | null {
   if (!isInformativeExecution(event)) {
     return null;
   }
 
+  const toolName = event.toolName || "";
   const isErr = Boolean(event.isError);
   const text = event.content?.map((c) => c.text || "").join(" ").trim() || "";
   const cmd = String(event.input?.["command"] || event.args?.["command"] || "");
-  const hasErrorWord = /\b(?:FAIL|failed|error|fatal|panic)\b/i.test(text.replace(/0\s+failed/gi, ""));
+  const isNonCommandTool = /search|read|find|get_code|view_file|edit|write|patch/i.test(toolName);
+  const hasErrorWord = !isNonCommandTool && /\b(?:FAIL|failed|error|fatal|panic)\b/i.test(text.replace(/0\s+failed/gi, ""));
   const failed = isErr || hasErrorWord;
 
   const isVerification = /test|check|verify|smoke/i.test(event.toolName) ||
@@ -476,7 +604,7 @@ export function summarizeToolEvent(event: ToolResultEvent): SignificantEvent | n
   const verifiedWorked = !failed && isVerification && (/PASS|passed|all green|ok\s+-|0 failed/i.test(text));
 
   const outcome: "worked" | "failed" | undefined = failed ? "failed" : verifiedWorked ? "worked" : undefined;
-  const firstLine = text.split("\n")[0]?.slice(0, 160) || `Executed ${event.toolName}`;
+  const firstLine = formatToolEventSummary(event);
   const id = event.toolCallId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const toolArgs = event.input ? { ...event.input } : event.args ? { ...event.args } : undefined;
 
@@ -582,6 +710,11 @@ export async function distillQuestArchiveEvent(
   const lifecycle: LifecycleState = isCompleted ? (hasPassingTest ? "supported" : "tested") : "observed";
 
   const projectContext = extractReliableProjectContext(ctx);
+  const questSessionId = extractSessionId(ctx);
+  const questSessionFile = ctx?.sessionManager?.getSessionFile?.() ||
+    (typeof process !== "undefined" ? process.env?.["PI_SESSION_FILE"] : undefined) ||
+    (typeof Deno !== "undefined" ? Deno.env.get("PI_SESSION_FILE") : undefined);
+  const questLeafId = ctx?.sessionManager?.getLeafId?.();
 
   const episode: EpisodeRecord = {
     problem: objective,
@@ -590,6 +723,10 @@ export async function distillQuestArchiveEvent(
     findings: rawFindings.length > 0 ? rawFindings : undefined,
     diffs: modifiedFiles.length > 0 ? modifiedFiles : undefined,
     outcome: isCompleted ? "success" : "failure",
+    sessionId: questSessionId !== "default-session" ? questSessionId : undefined,
+    sessionFile: questSessionFile ?? undefined,
+    leafId: questLeafId ?? undefined,
+    toolCallId: event.toolCallId ?? undefined,
   };
 
   const summary = `Quest ${qid ? `${qid} ` : ""}(${kind}, ${difficulty}${isFailed ? " failed" : ""}): ${objective}`;
@@ -652,8 +789,8 @@ export function extractReliableProjectContext(
     }
   }
 
+  const touchedPaths: string[] = [];
   if (batch && batch.length > 0) {
-    const touchedPaths: string[] = [];
     for (const e of batch) {
       if (typeof e.toolArgs?.path === "string") touchedPaths.push(e.toolArgs.path);
       if (typeof e.toolArgs?.file === "string") touchedPaths.push(e.toolArgs.file);
@@ -682,11 +819,17 @@ export function extractReliableProjectContext(
     }
   }
 
-  if (project || subsystem || moduleName) {
+  const primaryPath = touchedPaths[0];
+  if (project || subsystem || moduleName || primaryPath) {
+    // If subsystem was 'external' or 'mods', use the specific component name as subsystem
+    const resolvedSubsystem = (subsystem === "external" || subsystem === "mods" || subsystem === "packages")
+      ? moduleName
+      : (subsystem || moduleName);
     return {
       project,
-      subsystem,
+      subsystem: resolvedSubsystem,
       module: moduleName,
+      path: primaryPath,
     };
   }
   return undefined;
@@ -993,7 +1136,7 @@ export async function enrichActiveMemory(
       const getRes = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, activeRef, axes, cwd, eEnv));
       if (getRes.code !== 0 || !getRes.stdout.trim()) return false;
 
-      const decoded = decodePayload(getRes.stdout.trim());
+      const decoded = decodeResult(getRes);
       if (!decoded.envelope.episode) {
         decoded.envelope.episode = {
           problem: decoded.envelope.summary,
@@ -1103,7 +1246,7 @@ export async function handleMemoryUpdate(
         const getRes = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, targetRefNum, axes, cwd, eEnv));
         if (getRes.code === 0 && getRes.stdout.trim()) {
           try {
-            const oldDecoded = decodePayload(getRes.stdout.trim());
+            const oldDecoded = decodeResult(getRes);
             // Reject missing, contradicted or superseded targets
             if (oldDecoded.envelope.lifecycle !== "superseded" && oldDecoded.envelope.lifecycle !== "contradicted") {
               validTarget = true;
@@ -1216,9 +1359,11 @@ export async function handleMemoryUpdate(
 
 export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { fetchFn?: typeof fetch }): void {
   let turnWonderingSteered = false;
+  let postCompactionPending = false;
   pi.on("session_start", async (_event: unknown, ctxUnknown?: unknown) => {
     activeSessionBuffer.onSessionStart();
     reinforcementScheduler.onSessionStart();
+    postCompactionPending = false;
     activeConversationTurn.activeMemoryRef = undefined;
     activeConversationTurn.activeSessionId = undefined;
     if (envSource && ctxUnknown) {
@@ -1281,30 +1426,74 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           }
         }
 
-        const list = await env.runner.run(buildListInvocation(env.cfg.cormBin, fspec, axes, cwd));
-        for (const r of parseBareRefs(list.stdout)) {
-          const res = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, r, axes, cwd));
-          if (res.code === 0 && res.stdout.trim()) {
-            const { envelope } = decodePayload(res.stdout.trim());
-            for (const id of envelope.episode?.eventIds || []) committedIds.add(id);
-            if (!hasDirectivesFile && (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant"))) {
-              if (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") {
-                reinforcementScheduler.registerDirective({
-                  ref: r,
-                  summary: envelope.summary,
-                  subsystem: envelope.context?.subsystem,
-                  project: envelope.context?.project,
-                });
+        // Pre-configure session store with resolved runtime cwd and MmConfig
+        const sessInst = getSessionInstances(sessionId, {
+          cwd: ctx.cwd,
+          cormBin: env.cfg.cormBin,
+          axisLibs: env.cfg.axisLibs,
+          embedUrl: embed ? env.cfg.embedUrl : undefined,
+          embedModel: env.cfg.embedModel,
+          embedKey: env.cfg.embedKey,
+          ephemeralSepal: env.cfg.ephemeralSepal,
+        });
+        if (ctx.sessionManager) {
+          sessInst.store.hydrateFromSessionManager(ctx.sessionManager, sessInst.tracker);
+        }
+
+        const hasPendingJournal = existsSync(join(cwd, ".pending_events.json"));
+        if (!hasDirectivesFile || hasPendingJournal) {
+          const list = await env.runner.run(buildListInvocation(env.cfg.cormBin, fspec, axes, cwd));
+          const allRefs = parseBareRefs(list.stdout);
+          const scanRecord = async (r: number) => {
+            const res = await env.runner.run(buildGetInvocation(env.cfg.cormBin, fspec, r, axes, cwd));
+            if (res.code === 0 && res.stdout.trim()) {
+              const { envelope } = decodeResult(res);
+              for (const id of envelope.episode?.eventIds || []) committedIds.add(id);
+              if (!hasDirectivesFile && (envelope.standing || (envelope.level === "L2" && envelope.type === "invariant"))) {
+                if (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") {
+                  reinforcementScheduler.registerDirective({
+                    ref: r,
+                    summary: envelope.summary,
+                    subsystem: envelope.context?.subsystem,
+                    project: envelope.context?.project,
+                  });
+                }
               }
             }
-          }
-        }
-        if (!hasDirectivesFile) {
-          try {
-            const dirs = reinforcementScheduler.getDirectives();
-            await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
-          } catch {
-            // Best-effort disk persistence
+          };
+
+          if (allRefs.length <= 100) {
+            for (const r of allRefs) {
+              await scanRecord(r);
+            }
+            if (!hasDirectivesFile) {
+              try {
+                const dirs = reinforcementScheduler.getDirectives();
+                await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+              } catch {
+                // Best-effort disk persistence
+              }
+            }
+          } else {
+            // Bounded tail scan so huge databases (70k+ refs) never freeze Pi startup
+            if (hasPendingJournal) {
+              for (const r of allRefs.slice(-50)) {
+                await scanRecord(r);
+              }
+            }
+            if (!hasDirectivesFile) {
+              void (async () => {
+                try {
+                  for (const r of allRefs.slice(-200)) {
+                    await scanRecord(r);
+                  }
+                  const dirs = reinforcementScheduler.getDirectives();
+                  await writeFile(directivesFile, JSON.stringify(dirs, null, 2), "utf8").catch(() => {});
+                } catch {
+                  // Best-effort background directive backfill
+                }
+              })();
+            }
           }
         }
         await activeSessionBuffer.restoreJournal(cwd, committedIds);
@@ -1316,17 +1505,12 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
             theme?: { fg?: (name: string, text: string) => string };
           };
         })?.ui;
-        if (ui?.setStatus) {
-          sessionSavedCount = 0;
-          const idleTxt = ui.theme?.fg ? ui.theme.fg("muted", "🧠 0") : "🧠 0";
-          ui.setStatus("pi-mm", idleTxt);
-          ui.setStatus("auren-model", ui.theme?.fg ? ui.theme.fg("muted", "🔌 off") : "🔌 off");
-        }
+        resetMmStatus(ctxUnknown as PiCtx, false);
 
         const isProject = Boolean(ctx.cwd && (existsSync(join(ctx.cwd, ".pi")) || existsSync(join(ctx.cwd, "mem.db")) || existsSync(cwd)));
         if (isProject) {
           try {
-            const { findSepalLib, ensureAuren, describeProgress, describeModelStatus, DOCS_SEPAL } = await import("../auren.ts");
+            const { findSepalLib, ensureAuren, describeProgress, DOCS_SEPAL } = await import("../auren.ts");
             const { checkAllEngineVersions, formatRemediationToast } = await import("../versions.ts");
             const notify = typeof ui?.notify === "function" ? ui.notify.bind(ui) : undefined;
             const told = new Set<string>();
@@ -1355,10 +1539,18 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                 settings: { autoStart: env.cfg.autoStartAuren, autoDownloadModels: env.cfg.autoDownloadModels },
                 confirm: confirmFn ? (m: string) => confirmFn.call((ctxUnknown as { ui: object }).ui, "pi-mm: local model", m) : undefined,
                 onUpdate: (st) => {
+                  const online = Boolean(st.running && st.activeModel);
+                  setMmAurenOnline(ctxUnknown as PiCtx, online);
                   setMmDownloadProgress(ctxUnknown as PiCtx, describeProgress(st));
-                  const statusText = describeModelStatus(st);
-                  if (ui?.setStatus) {
-                    ui.setStatus("auren-model", statusText ? (ui.theme?.fg ? ui.theme.fg("muted", statusText) : statusText) : undefined);
+                  if (online && env.cfg.semanticSearch !== false && findSepalLib(ctx.cwd)) {
+                    sessInst.store.configure({
+                      cwd: ctx.cwd,
+                      cormBin: env.cfg.cormBin,
+                      axisLibs: env.cfg.axisLibs,
+                      embedUrl: env.cfg.embedUrl || "http://127.0.0.1:4242/v1/embeddings",
+                      embedModel: env.cfg.embedModel || st.activeModel || "bge-base",
+                      embedKey: env.cfg.embedKey,
+                    });
                   }
                   if (st.downloads.length > 0) {
                     const dl = st.downloads[0];
@@ -1400,7 +1592,111 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     }
 
     const sig = summarizeToolEvent(event);
-    if (sig) await activeSessionBuffer.recordAsync(sig);
+    const recordPromise = sig ? activeSessionBuffer.recordAsync(sig) : null;
+
+    try {
+      const sessionId = extractSessionId(ctx);
+      const sessionInst = getSessionInstances(sessionId, { cwd: ctx?.cwd });
+      await sessionInst.sink.recordToolResult(event).catch(() => {});
+    } catch { /* best effort */ }
+
+    if (event.toolName === "read") {
+      try {
+        const rawPath = (event.input as Record<string, unknown> | undefined)?.["path"]
+          ?? (event.args as Record<string, unknown> | undefined)?.["path"];
+        if (typeof rawPath === "string" && rawPath.trim() !== "") {
+          const sessionId = extractSessionId(ctx);
+          const { hasCodeInstances, getCodeInstances } = await import("../code/manager.ts");
+          if (hasCodeInstances(ctx?.cwd)) {
+            const codeInst = getCodeInstances({ projectRoot: ctx?.cwd });
+            recordSessionFileSnapshot(codeInst.store, sessionId, rawPath.trim());
+            if (typeof pi.sendMessage === "function") {
+              const dossier = synthesizeFirstTouchModuleDossier(codeInst.store, sessionId, rawPath.trim());
+              if (dossier) {
+                pi.sendMessage?.({ customType: "memory_hint", content: dossier }, { deliverAs: "nextTurn" });
+              }
+            }
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
+    if (event.toolName === "edit" || event.toolName === "write") {
+      try {
+        const rawPath = (event.input as Record<string, unknown> | undefined)?.["path"]
+          ?? (event.args as Record<string, unknown> | undefined)?.["path"];
+        if (typeof rawPath === "string" && rawPath.trim() !== "") {
+          const cleanPath = rawPath.trim();
+          const sessionId = extractSessionId(ctx);
+          recordFileMutationInLedger(sessionId, cleanPath);
+          const { getCodeInstances } = await import("../code/manager.ts");
+          const codeInst = getCodeInstances({ projectRoot: ctx?.cwd });
+          recordSwarmAttentionLease(codeInst.store.indexDir, {
+            sessionId,
+            filePath: cleanPath,
+            action: "mutating",
+          });
+          setMmBusy(ctx, true);
+          try {
+            await codeInst.store.refreshFile(cleanPath).catch(() => {});
+            recordSessionFileSnapshot(codeInst.store, sessionId, cleanPath);
+            if (typeof pi.sendMessage === "function") {
+              const syms = resolveSymbolCandidates(codeInst.store, { file: cleanPath });
+              const drift = verifyLoreBindingsForSymbols(codeInst.store, syms).filter((d) => d.status === "stale_suspect");
+              const freshDrift = drift.filter((d) => shouldEmitSessionGuardrail(sessionId, `drift:${d.memoryRef}:${cleanPath}`));
+              if (freshDrift.length > 0) {
+                const msg = `⚠️ [pi-mm Epistemic Drift Detected on ${cleanPath}]:\n${formatLoreDriftSection(freshDrift)}\nUse \`memory_review\` to re-verify or supersede drifted invariants if behavior changed intentionally.`;
+                pi.sendMessage?.({ customType: "memory_hint", content: msg }, { deliverAs: "nextTurn" });
+              }
+            }
+          } finally {
+            setMmBusy(ctx, false);
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
+    if (event.toolName === "bash") {
+      try {
+        const sessionId = extractSessionId(ctx);
+        await observeBashVerificationOutcome(sessionId, event, envSource, ctx);
+      } catch { /* best effort */ }
+    }
+
+    if (event.isError && envSource && typeof pi.sendMessage === "function" && (event.toolName === "edit" || event.toolName === "write" || event.toolName === "bash")) {
+      try {
+        const sessionId = extractSessionId(ctx);
+        const env = await envSource(ctx);
+        const rawPath = (event.input as Record<string, unknown> | undefined)?.["path"]
+          ?? (event.args as Record<string, unknown> | undefined)?.["path"];
+        const errText = Array.isArray(event.content)
+          ? event.content.map((p) => p.text ?? "").join(" ").slice(0, 300)
+          : "";
+        const cmdText = String(
+          (event.input as Record<string, unknown> | undefined)?.["command"]
+          ?? (event.args as Record<string, unknown> | undefined)?.["command"]
+          ?? "",
+        ).slice(0, 200);
+        const intentText = `${cmdText} ${errText}`.trim();
+        if (intentText.length >= 6) {
+          const { getCodeInstances } = await import("../code/manager.ts");
+          const codeInst = getCodeInstances({ projectRoot: ctx?.cwd });
+          const guard = await evaluateCounterfactualGuardrail(env, {
+            toolName: event.toolName,
+            filePath: typeof rawPath === "string" ? rawPath : undefined,
+            intentText,
+          }, codeInst.store);
+          const freshWarnings = guard.warnings.filter((w) =>
+            shouldEmitSessionGuardrail(sessionId, `guard:${w.ref}:${w.kind}`)
+          );
+          if (freshWarnings.length > 0) {
+            pi.sendMessage?.({ customType: "memory_hint", content: guard.rendered }, { deliverAs: "nextTurn" });
+          }
+        }
+      } catch { /* best effort */ }
+    }
+
+    if (recordPromise) await recordPromise;
   });
 
   pi.on("message_end", async (eventUnknown: unknown, ctxUnknown?: unknown) => {
@@ -1419,10 +1715,17 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           .join("\n")
           .trim();
       }
+      text = text.replace(/^\[Antigravity tool(?: update)?: [^\n]+\]$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
       if (text) {
         activeConversationTurn.response = text;
         if (!activeConversationTurn.responses) activeConversationTurn.responses = [];
         activeConversationTurn.responses.push(text);
+        try {
+          const mCtx = ctxUnknown as PiCtx | undefined;
+          const sessionId = extractSessionId(mCtx);
+          const sessionInst = getSessionInstances(sessionId, { cwd: mCtx?.cwd });
+          await sessionInst.sink.recordAssistantResponse(text, fullText !== text ? fullText : undefined).catch(() => {});
+        } catch { /* best effort */ }
         debugLog("capture", "Assistant response collected", {
           responseLength: text.length,
           responsePreview: text.slice(0, 100),
@@ -1435,7 +1738,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
       }
 
       // Cognitive wondering detection & epistemic steering
-      if (!turnWonderingSteered && fullText.length >= 10 && envSource && typeof pi.sendMessage === "function") {
+      if (!turnWonderingSteered && fullText.length >= 10 && !isStandbyOrYieldMessage(fullText) && envSource && typeof pi.sendMessage === "function") {
         try {
           const ctx = (ctxUnknown as PiCtx) ?? { cwd: process.cwd(), hasUI: false, mode: "agent" };
           const env = await envSource(ctx);
@@ -1443,7 +1746,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
           if (isWondering && !turnWonderingSteered) {
             turnWonderingSteered = true;
             const hint = "💡 [Memory Hint]: You are exploring how this subsystem, convention, or architecture works. Check `memory_recall` to consult past technical decisions and lore.";
-            pi.sendMessage?.({ customType: "memory_hint", content: hint }, { deliverAs: "steer" });
+            pi.sendMessage?.({ customType: "memory_hint", content: hint }, { deliverAs: "nextTurn" });
             traceEvent("assistant_wondering_steered", "info", {
               preview: fullText.slice(0, 100),
             });
@@ -1620,6 +1923,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
               const firstFinding = response.trim().split("\n\n")[0].trim().slice(0, 300);
               const summary = `${prompt.slice(0, 100).trim()}: ${firstFinding.slice(0, 150)}`;
               const episodeContext = extractReliableProjectContext(ctx);
+              const discSessionFile = ctx?.sessionManager?.getSessionFile?.() ||
+                (typeof process !== "undefined" ? process.env?.["PI_SESSION_FILE"] : undefined) ||
+                (typeof Deno !== "undefined" ? Deno.env.get("PI_SESSION_FILE") : undefined);
+              const discLeafId = ctx?.sessionManager?.getLeafId?.();
               const l1Episode: MemoryEnvelope = {
                 level: "L1",
                 type: "episode",
@@ -1639,6 +1946,10 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
                   ],
                   findings: [firstFinding],
                   outcome: "success",
+                  sessionId: sessionId !== "default-session" ? sessionId : undefined,
+                  sessionFile: discSessionFile ?? undefined,
+                  leafId: discLeafId ?? undefined,
+                  runId: activeConversationTurn.activeRunId,
                 },
               };
               const l1Payload = encodePayload(env.nowProvider().toISOString().slice(0, 10), l1Episode);
@@ -1705,6 +2016,17 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
         activeConversationTurn.prompt = event.prompt;
         activeConversationTurn.response = undefined;
         activeConversationTurn.responses = undefined;
+        try {
+          const sessionInst = getSessionInstances(sessionId, { cwd: ctx?.cwd });
+          if (ctx?.sessionManager) {
+            sessionInst.store.hydrateFromSessionManager(ctx.sessionManager, sessionInst.tracker);
+          }
+          const leafId = ctx?.sessionManager?.getLeafId?.();
+          const existingPrompt = sessionInst.store.findMatchingEvent("user", event.prompt);
+          const nextTurn = existingPrompt ? existingPrompt.event.turnIndex : sessionInst.store.getMaxTurnIndex() + 1;
+          sessionInst.sink.setTurn(nextTurn, leafId);
+          await sessionInst.sink.recordUserPrompt(event.prompt, leafId).catch(() => {});
+        } catch { /* best effort */ }
         debugLog("capture", "before_agent_start user prompt captured", {
           promptPreview: event.prompt.slice(0, 100),
           length: event.prompt.length,
@@ -1748,37 +2070,218 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
       debugLog("reinforcement", "Reinforcement check failed", { error: String(err) });
     }
 
+    if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+      if (!event.systemPromptOptions.sections) {
+        event.systemPromptOptions.sections = {};
+      }
+      event.systemPromptOptions.sections["mm_tool_priming"] = [
+        "[Codebase & Memory Tool Priority (pi-mm)]",
+        "- Prefer `memory_recall` (or MCP `call_mcp_tool` -> ServerName: \"pi-bridge\", ToolName: \"pi_memory_recall\") over grep/rg for code & lore lookup:",
+        "  • Symbol search: { scope: \"code\", query: \"<symbol|concept>\", file?: \"<path>\", kind?: \"<Function|Struct|...>\" }",
+        "  • Read symbol AST + callers/callees: { symbol: \"<name>\", file?: \"<path>\", neighbors?: \"both\" } (or { symbols: [\"...\"] })",
+        "  • Call graph trace: { trace: \"<name>\", direction: \"inbound\" | \"outbound\" | \"both\", depth: 3 }",
+        "  • Git diff impact: { diff: true, depth: 2 }",
+        "  • Failure trace fault localization: { diagnose: \"<stack trace|compiler error>\", depth?: 2 }",
+        "  • Counterfactual guardrail pre-flight: { guardrail: \"<planned edit|command>\", file?: \"<path>\", symbol?: \"<name>\" }",
+        "  • Session transcript recall: { scope: \"session\", query: \"<topic>\", session?: \"current\" | \"<id|slot|parallel|all>\" } or { scope: \"session\", session: \"current\", zoomTurn: <N> }",
+        "  • Persistent lore recall: { scope: \"persistent\", query: \"<topic>\" } or { zoomRef: <id>, zoomTurn?: <N>, lineRange?: [s, e] }",
+        "- Session boundary: Distinguish current active session (`[Current Session]`) from parallel (`[Parallel Session ...]`) and past sessions (`[Past Session ...]`).",
+      ].join("\n");
+    }
+
     const recallRes = await handleBeforeAgentStart(event, ctxUnknown as PiCtx, envSource);
-    const details = recallRes?.message?.details as { refs?: unknown[]; recallIntent?: boolean } | undefined;
+    const details = recallRes?.message?.details as { refs?: unknown[]; recallIntent?: boolean; sessionRecent?: boolean } | undefined;
     if (details?.refs && details.refs.length > 0) {
       notifyMmEvent(ctxUnknown as PiCtx, "recalled", details.refs.length);
     }
     if (details?.recallIntent) {
       debugLog("recall", "recall_intent_classified", { prompt: event.prompt });
     }
+
+    // Post-compaction continuity injection: on the first user turn after compaction,
+    // surface the last few interactions (User + Assistant turns), the last assistant message,
+    // and the explicit memory_recall hint for zooming into pre-compaction turns.
+    if (postCompactionPending && event.messageType === "user") {
+      postCompactionPending = false;
+      if (!details?.sessionRecent) {
+        try {
+          const sessionInst = getSessionInstances(sessionId, { cwd: ctx?.cwd });
+          if (ctx?.sessionManager) {
+            sessionInst.store.hydrateFromSessionManager(ctx.sessionManager, sessionInst.tracker);
+          }
+          const postCompactionBlock = buildRecentInteractionsBlock({
+            sessionStore: sessionInst.store,
+            currentPrompt: typeof event.prompt === "string" ? event.prompt : undefined,
+            maxTurns: 3,
+            postCompaction: true,
+          });
+          if (postCompactionBlock) {
+            if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+              if (!event.systemPromptOptions.sections) {
+                event.systemPromptOptions.sections = {};
+              }
+              const existingCtx = event.systemPromptOptions.sections["memory_context"];
+              event.systemPromptOptions.sections["memory_context"] = existingCtx
+                ? `${postCompactionBlock}\n\n${existingCtx}`
+                : postCompactionBlock;
+            }
+            if (recallRes?.message) {
+              recallRes.message.content = `${postCompactionBlock}\n\n${recallRes.message.content}`;
+            } else if (!event.systemPromptOptions) {
+              return {
+                message: {
+                  role: "custom",
+                  customType: "memory_context",
+                  content: postCompactionBlock,
+                  display: true,
+                  details: { postCompactionContinuity: true },
+                  timestamp: Date.now(),
+                },
+              };
+            }
+          }
+        } catch {
+          // Best-effort post-compaction continuity injection
+        }
+      }
+    }
+
+    try {
+      const { hasCodeInstances, getCodeInstances } = await import("../code/manager.ts");
+      if (hasCodeInstances(ctx?.cwd)) {
+        const codeInst = getCodeInstances({ projectRoot: ctx?.cwd });
+        const driftReports = await checkSessionContextDrift(codeInst.store, sessionId);
+        const driftNotice = formatContextDriftNotice(driftReports);
+        if (driftNotice) {
+          if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+            if (!event.systemPromptOptions.sections) event.systemPromptOptions.sections = {};
+            const existingCtx = event.systemPromptOptions.sections["memory_context"];
+            event.systemPromptOptions.sections["memory_context"] = existingCtx
+              ? `${driftNotice}\n\n${existingCtx}`
+              : driftNotice;
+          } else if (recallRes?.message) {
+            recallRes.message.content = `${driftNotice}\n\n${recallRes.message.content}`;
+          } else {
+            return {
+              message: {
+                role: "custom",
+                customType: "memory_context",
+                content: driftNotice,
+                display: true,
+                details: { contextSyncDrift: driftReports },
+                timestamp: Date.now(),
+              },
+            };
+          }
+        }
+      }
+    } catch { /* best-effort context sync */ }
+
+    if (event.systemPromptOptions && typeof event.systemPromptOptions === "object") {
+      return undefined;
+    }
     return recallRes;
   });
 
   const onBeforeCompact = async (eventUnknown: unknown, ctxUnknown?: unknown) => {
-    // 0. Signal compaction reset to reinforcement scheduler
+    // 0. Signal compaction reset to reinforcement scheduler and arm post-compaction continuity
     reinforcementScheduler.onCompaction();
+    postCompactionPending = true;
 
     // 1. Ensure any in-flight turn is captured and settled into L0/L1
     await onRunSettled(eventUnknown, ctxUnknown);
 
     // 2. Execute deferred consolidation so pending L2/L3 abstractions are committed
     // to CORM before compaction summarization reads existing abstractions.
-    if (!envSource || !ctxUnknown) return;
-    const ctx = ctxUnknown as PiCtx;
+    if (envSource && ctxUnknown) {
+      const ctx = ctxUnknown as PiCtx;
+      try {
+        const env = await envSource(ctx);
+        await runDeferredConsolidation(env, ctx);
+      } catch (err) {
+        debugLog("consolidation", "Deferred consolidation failed during before_compact", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // 3. Construct Mipmap Compaction
     try {
-      const env = await envSource(ctx);
-      await runDeferredConsolidation(env, ctx);
-    } catch (err) {
-      debugLog("consolidation", "Deferred consolidation failed during before_compact", {
-        error: err instanceof Error ? err.message : String(err),
+      const ctx = ctxUnknown as PiCtx;
+      const sessionId = extractSessionId(ctx);
+      const instances = getSessionInstances(sessionId, { cwd: ctx?.cwd });
+      const evObj = eventUnknown as {
+        branchEntries?: BranchEntryLike[]; session?: BranchEntryLike[]; tokensBefore?: number;
+        signal?: AbortSignal; preparation?: { previousSummary?: string; tokensBefore?: number };
+      };
+      const branchEntries = evObj?.branchEntries
+        || (ctx as { sessionManager?: { getBranch?: () => BranchEntryLike[] } })?.sessionManager?.getBranch?.()
+        || [];
+      if (branchEntries.length > 0) instances.store.hydrateFromRawEntries(branchEntries as unknown as Parameters<typeof instances.store.hydrateFromRawEntries>[0], instances.tracker);
+
+      const directives = reinforcementScheduler.getDirectives().map((d) => d.summary);
+      const modelSummarizer = createModelSummarizerFromCtx(ctx, evObj?.signal);
+      const compactionResult = await buildMipmapCompactionAsync({
+        branchEntries, sessionStore: instances.store, directives, sessionId,
+        tokensBefore: evObj?.tokensBefore ?? evObj?.preparation?.tokensBefore,
+        previousSummary: evObj?.preparation?.previousSummary,
+        modelSummarizer, signal: evObj?.signal, recordEpoch: false,
       });
+
+      if (compactionResult) {
+        await instances.store.recordCompactionEpoch({
+          summary: compactionResult.epochSummary, turnStart: compactionResult.epochStartTurn,
+          turnEnd: compactionResult.lastSummarizedTurn, filesTouched: compactionResult.filesTouched,
+          epochIndex: compactionResult.epochIndex,
+        });
+        debugLog("session", "Emitted Mipmap Compaction result", {
+          reductionPct: compactionResult.reductionPct, kept: compactionResult.firstKeptEntryId, epochIndex: compactionResult.epochIndex,
+        });
+        return {
+          compaction: {
+            summary: compactionResult.summary,
+            firstKeptEntryId: compactionResult.firstKeptEntryId,
+            tokensBefore: compactionResult.tokensBeforeEst,
+            details: {
+              compactor: "pi-mm-mipmap",
+              reductionPct: compactionResult.reductionPct,
+              summarizedCount: compactionResult.summarizedCount,
+              keptCount: compactionResult.keptCount,
+              epochIndex: compactionResult.epochIndex,
+              epochStartTurn: compactionResult.epochStartTurn,
+              lastSummarizedTurn: compactionResult.lastSummarizedTurn,
+              modifiedFiles: compactionResult.filesTouched,
+            },
+          },
+        };
+      }
+    } catch (err) {
+      debugLog("session", "Mipmap Compaction error", { error: err instanceof Error ? err.message : String(err) });
     }
   };
+
+  pi.on("session_compact", async (eventUnknown: unknown, ctxUnknown?: unknown) => {
+    reinforcementScheduler.onCompaction();
+    postCompactionPending = true;
+    try {
+      const ctx = ctxUnknown as PiCtx;
+      const compEntry = (eventUnknown as {
+        compactionEntry?: {
+          id?: string; parentId?: string; timestamp?: string; summary?: string;
+          details?: { modifiedFiles?: string[]; epochStartTurn?: number; lastSummarizedTurn?: number; epochIndex?: number };
+        };
+      })?.compactionEntry;
+      if (compEntry?.summary) {
+        const instances = getSessionInstances(extractSessionId(ctx), { cwd: ctx?.cwd });
+        const maxTurn = Math.max(1, instances.store.getMaxTurnIndex());
+        await instances.store.recordCompactionEpoch({
+          entryId: compEntry.id, parentId: compEntry.parentId, timestamp: compEntry.timestamp, summary: compEntry.summary,
+          turnStart: compEntry.details?.epochStartTurn ?? 1, turnEnd: compEntry.details?.lastSummarizedTurn ?? maxTurn,
+          filesTouched: compEntry.details?.modifiedFiles, epochIndex: compEntry.details?.epochIndex,
+        });
+      }
+    } catch { /* non-fatal */ }
+  });
 
   pi.on("turn_end", (event: unknown, ctxUnknown?: unknown) => {
     turnWonderingSteered = false;
@@ -1814,6 +2317,7 @@ export function installSessionHooks(pi: Pi, envSource?: EnvSource, options?: { f
     if (!envSource || !ctxUnknown) return;
     try {
       const env = await envSource(ctxUnknown as PiCtx);
+      await drainL0Backlog(env, ctxUnknown as PiCtx, { timeBudgetMs: Math.min(2000, (env.cfg.consolidateDrainMs ?? 0) * 8) });
       await runDeferredConsolidation(env, ctxUnknown as PiCtx);
     } catch { /* ignore shutdown errors */ }
     try {

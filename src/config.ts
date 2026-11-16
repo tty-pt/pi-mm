@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 export type CaptureMode = "all" | "keyword" | "judge" | "off";
 export type JudgeMode = "auto" | "off";
@@ -106,6 +108,8 @@ export interface MmConfig {
   consolidateL3Threshold?: number;
   consolidateMaxAgeHours?: number;
   consolidateBatchLimit?: number;
+  /** Wall-clock budget (ms) for draining the L0 backlog after each turn's consolidation; 0 disables. */
+  consolidateDrainMs?: number;
   synthUrl?: string;
   synthModel?: string;
   synthKey?: string;
@@ -155,6 +159,7 @@ export const DEFAULT_CONFIG: MmConfig = {
   consolidateL3Threshold: 2,
   consolidateMaxAgeHours: undefined,
   consolidateBatchLimit: 20,
+  consolidateDrainMs: 250,
   synthUrl: undefined,
   synthModel: undefined,
   synthKey: undefined,
@@ -226,6 +231,7 @@ export function loadConfig(raw: unknown): MmConfig {
   const l3Thresh = record["consolidateL3Threshold"];
   const maxAge = record["consolidateMaxAgeHours"];
   const batchLim = record["consolidateBatchLimit"];
+  const drainMs = record["consolidateDrainMs"];
   const sUrl = record["synthUrl"];
   const sModel = record["synthModel"];
   const sKey = record["synthKey"];
@@ -345,6 +351,7 @@ export function loadConfig(raw: unknown): MmConfig {
     consolidateL3Threshold: typeof l3Thresh === "number" && l3Thresh > 0 ? l3Thresh : DEFAULT_CONFIG.consolidateL3Threshold,
     consolidateMaxAgeHours: typeof maxAge === "number" && maxAge > 0 ? maxAge : undefined,
     consolidateBatchLimit: typeof batchLim === "number" && batchLim > 0 ? batchLim : DEFAULT_CONFIG.consolidateBatchLimit,
+    consolidateDrainMs: typeof drainMs === "number" && drainMs >= 0 ? drainMs : DEFAULT_CONFIG.consolidateDrainMs,
     synthUrl: typeof sUrl === "string" && sUrl.trim() !== "" ? sUrl.trim() : undefined,
     synthModel: typeof sModel === "string" && sModel.trim() !== "" ? sModel.trim() : undefined,
     synthKey: typeof sKey === "string" && sKey.trim() !== "" ? sKey.trim() : undefined,
@@ -506,6 +513,8 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
   const l3ThreshNum = envL3Thresh ? parseInt(envL3Thresh, 10) : undefined;
   const maxAgeNum = envMaxAge ? parseFloat(envMaxAge) : undefined;
   const batchLimNum = envBatchLim ? parseInt(envBatchLim, 10) : undefined;
+  const envDrain = env["PI_MM_CONSOLIDATE_DRAIN_MS"] ?? env["MM_CONSOLIDATE_DRAIN_MS"];
+  const drainNum = envDrain !== undefined && envDrain.trim() !== "" ? parseInt(envDrain, 10) : undefined;
   const synthTimeoutNum = envSynthTimeout ? parseInt(envSynthTimeout, 10) : undefined;
 
   const currentBin = cfg.cormBin || "";
@@ -571,8 +580,9 @@ export function applyEnv(cfg: MmConfig, env: Record<string, string | undefined>)
     consolidateL3Threshold: l3ThreshNum && !isNaN(l3ThreshNum) && l3ThreshNum > 0 ? l3ThreshNum : cfg.consolidateL3Threshold,
     consolidateMaxAgeHours: maxAgeNum && !isNaN(maxAgeNum) && maxAgeNum > 0 ? maxAgeNum : cfg.consolidateMaxAgeHours,
     consolidateBatchLimit: batchLimNum && !isNaN(batchLimNum) && batchLimNum > 0 ? batchLimNum : cfg.consolidateBatchLimit,
-    synthUrl: cfg.synthUrl ?? (typeof defaultSynthUrl === "string" && defaultSynthUrl.trim() !== "" ? defaultSynthUrl.trim() : undefined),
-    synthModel: cfg.synthModel ?? (typeof defaultSynthModel === "string" && defaultSynthModel.trim() !== "" ? defaultSynthModel.trim() : undefined),
+    consolidateDrainMs: drainNum !== undefined && !isNaN(drainNum) && drainNum >= 0 ? drainNum : cfg.consolidateDrainMs,
+    synthUrl: cfg.synthUrl ?? (typeof defaultSynthUrl === "string" && defaultSynthUrl.trim() !== "" ? defaultSynthUrl.trim() : defaultLocalSynthUrl(resolvedJudgeUrl)),
+    synthModel: cfg.synthModel ?? (typeof defaultSynthModel === "string" && defaultSynthModel.trim() !== "" ? defaultSynthModel.trim() : (resolvedJudgeUrl ? DEFAULT_LOCAL_SYNTH_MODEL : undefined)),
     synthKey: cfg.synthKey ?? (typeof defaultSynthKey === "string" && defaultSynthKey.trim() !== "" ? defaultSynthKey.trim() : undefined),
     synthTimeoutMs: synthTimeoutNum && !isNaN(synthTimeoutNum) && synthTimeoutNum > 0 ? synthTimeoutNum : cfg.synthTimeoutMs,
     ephemeralSepal,
@@ -706,7 +716,7 @@ function parseDirectiveExemplars(raw: unknown): Record<string, string[]> | undef
 function parseOverviewExemplars(raw: unknown): Record<string, string[]> | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
   const out: Record<string, string[]> = {};
-  for (const kind of ["overview_query", "specific_query"]) {
+  for (const kind of ["overview_query", "session_recent", "specific_query"]) {
     const list = (raw as Record<string, unknown>)[kind];
     if (!Array.isArray(list)) continue;
     const items = list.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
@@ -753,7 +763,36 @@ export function judgeConfigured(cfg: MmConfig): boolean {
   return typeof cfg.judgeUrl === "string" && cfg.judgeUrl.trim() !== "";
 }
 
+/** Chat model used for L2/L3 synthesis when it is auto-defaulted to the local auren server. */
+export const DEFAULT_LOCAL_SYNTH_MODEL = "smollm";
+
+/**
+ * Zero-config synthesis: whenever the judge endpoint resolved (explicitly or to the default local
+ * auren server), synthesis uses the same server's OpenAI-compatible chat endpoint. Without this,
+ * L2/L3 consolidation silently stalls while judge and embeddings work. Opt out with synthUrl "off".
+ */
+export function defaultLocalSynthUrl(judgeUrl: string | undefined): string | undefined {
+  if (!judgeUrl || judgeUrl.trim() === "") return undefined;
+  try {
+    return `${new URL(judgeUrl.trim()).origin}/v1/chat/completions`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Human-readable synthesis status for diagnostics. */
+export function synthStatus(cfg: MmConfig): { on: boolean; detail: string } {
+  if (typeof cfg.synthUrl === "string" && cfg.synthUrl.trim().toLowerCase() === "off") {
+    return { on: false, detail: "disabled (synthUrl: off)" };
+  }
+  if (!synthConfigured(cfg)) {
+    return { on: false, detail: "not configured: set synthUrl/synthModel, PI_MM_SYNTH_URL, or AUREN_URL" };
+  }
+  return { on: true, detail: `${cfg.synthModel} @ ${cfg.synthUrl}` };
+}
+
 export function synthConfigured(cfg: MmConfig): boolean {
+  if (typeof cfg.synthUrl === "string" && cfg.synthUrl.trim().toLowerCase() === "off") return false;
   return typeof cfg.synthUrl === "string" && cfg.synthUrl.trim() !== "" &&
          typeof cfg.synthModel === "string" && cfg.synthModel.trim() !== "";
 }
@@ -821,6 +860,16 @@ export function resolveCormBin(
   }
   const inSiteCorm = join(cwd, "external", "libcorm", "bin", "corm");
   if (probe(inSiteCorm)) return { source: "insite", path: inSiteCorm };
+  if (probe === existsSync) {
+    let curr = cwd;
+    for (let i = 0; i < 4; i++) {
+      const parent = dirname(curr);
+      if (!parent || parent === curr) break;
+      const parentCorm = join(parent, "external", "libcorm", "bin", "corm");
+      if (probe(parentCorm)) return { source: "insite", path: parentCorm };
+      curr = parent;
+    }
+  }
   return { source: "none", path: "" };
 }
 
@@ -870,6 +919,127 @@ export function resolveSocketPath(cfg: MmConfig, memDir: string): string {
   return join(memDir, "cormd.sock");
 }
 
+function getPrebuildPlatformKeys(probe: (p: string) => boolean = existsSync): string[] {
+  if (typeof process === "undefined") return ["linux-x64"];
+  const base = `${process.platform}-${process.arch}`;
+  if (process.platform === "linux") {
+    try {
+      if (
+        probe("/etc/alpine-release") ||
+        probe(`/lib/ld-musl-${process.arch}.so.1`) ||
+        probe("/lib/ld-musl-x86_64.so.1") ||
+        probe("/lib/ld-musl-aarch64.so.1")
+      ) {
+        return [`${base}-musl`, base];
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return [base];
+}
+
+function hasAxisSharedLib(dir: string, axis: string, probe: (p: string) => boolean): boolean {
+  return (
+    probe(join(dir, `lib${axis}.so`)) ||
+    probe(join(dir, `lib${axis}.dylib`)) ||
+    probe(join(dir, `lib${axis}.dll`))
+  );
+}
+
+export function resolveNodeModulesAxisDirs(
+  cwd: string,
+  axes: string[],
+  probe: (p: string) => boolean = existsSync,
+): string[] {
+  const keys = getPrebuildPlatformKeys(probe);
+  const found: string[] = [];
+  const seen = new Set<string>();
+
+  const candidatePkgRootsForAxis = (axis: string): string[] => {
+    const roots: string[] = [];
+    const addRoot = (r: string) => {
+      if (r && !roots.includes(r)) roots.push(r);
+    };
+
+    // 1. Walk upward from cwd (0..3 levels)
+    let curr = cwd;
+    for (let i = 0; i < 4; i++) {
+      addRoot(join(curr, "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "npm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "extensions", "pi-mm", "node_modules", "@tty-pt", axis));
+      addRoot(join(curr, ".pi", "extensions", "pi-quest", "node_modules", "@tty-pt", axis));
+      const parent = dirname(curr);
+      if (!parent || parent === curr) break;
+      curr = parent;
+    }
+
+    // 2. When using real filesystem probe, also check module-relative, user-home, and require.resolve paths
+    if (probe === existsSync) {
+      try {
+        const home = homedir();
+        if (home) {
+          addRoot(join(home, "node_modules", "@tty-pt", axis));
+          addRoot(join(home, ".pi", "agent", "npm", "node_modules", "@tty-pt", axis));
+          addRoot(join(home, ".pi", "npm", "node_modules", "@tty-pt", axis));
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const req = createRequire(import.meta.url);
+        try {
+          addRoot(dirname(req.resolve(`@tty-pt/${axis}/package.json`)));
+        } catch {
+          for (let d = dirname(req.resolve(`@tty-pt/${axis}`)), i = 0; i < 4; i++, d = dirname(d)) {
+            if (existsSync(join(d, "package.json"))) { addRoot(d); break; }
+          }
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const here = dirname(fileURLToPath(import.meta.url));
+        addRoot(resolve(here, "..", "node_modules", "@tty-pt", axis));
+        addRoot(resolve(here, "..", "..", axis));
+        addRoot(resolve(here, "..", "..", "node_modules", "@tty-pt", axis));
+        addRoot(resolve(here, "..", "..", "..", "node_modules", "@tty-pt", axis));
+        addRoot(resolve(here, "..", "..", "..", "..", "node_modules", "@tty-pt", axis));
+        addRoot(resolve(here, "..", "..", "..", "..", "..", "node_modules", "@tty-pt", axis));
+      } catch {
+        // ignore
+      }
+    }
+    return roots;
+  };
+
+  for (const axis of axes) {
+    let matchedForAxis = false;
+    for (const pkgRoot of candidatePkgRootsForAxis(axis)) {
+      const candidateDirs: string[] = [];
+      for (const key of keys) {
+        candidateDirs.push(join(pkgRoot, "prebuilds", key));
+      }
+      candidateDirs.push(join(pkgRoot, "build", "Release"));
+      candidateDirs.push(join(pkgRoot, "lib"));
+      for (const dir of candidateDirs) {
+        if (hasAxisSharedLib(dir, axis, probe)) {
+          if (!seen.has(dir)) {
+            seen.add(dir);
+            found.push(dir);
+          }
+          matchedForAxis = true;
+          break;
+        }
+      }
+      if (matchedForAxis) break;
+    }
+  }
+
+  return found;
+}
+
 export function resolveAxisPath(
   cfg: MmConfig,
   cwd: string,
@@ -878,8 +1048,10 @@ export function resolveAxisPath(
   if (cfg.axisLibs !== null) return cfg.axisLibs;
 
   const env = runtimeEnv();
-  const envAxis = env["CORM_AXIS_PATH"] ?? env["CORM_AXIS_LIBS"];
-  if (envAxis && envAxis.trim() !== "") return envAxis.trim();
+  if (probe === existsSync) {
+    const envAxis = env["CORM_AXIS_PATH"] ?? env["CORM_AXIS_LIBS"];
+    if (envAxis && envAxis.trim() !== "") return envAxis.trim();
+  }
 
   // 1. If project has local monorepo external/lib* checkouts, prefer them
   const localJoint = join(cwd, "external", "libjoint", "lib");
@@ -892,8 +1064,50 @@ export function resolveAxisPath(
     }
     return base;
   }
+  if (probe === existsSync) {
+    let curr = cwd;
+    for (let i = 0; i < 4; i++) {
+      const parent = dirname(curr);
+      if (!parent || parent === curr) break;
+      const parentJoint = join(parent, "external", "libjoint", "lib");
+      if (probe(parentJoint)) {
+        const lemma = join(parent, "external", "liblemma", "lib");
+        const islet = join(parent, "external", "libislet", "lib");
+        let base = `${parentJoint}:${lemma}:${islet}`;
+        if (sepalConfigured(cfg)) {
+          base += `:${join(parent, "external", "libsepal", "lib")}`;
+        }
+        return base;
+      }
+      curr = parent;
+    }
+  }
 
-  // 2. System-wide library directories (standard system installation)
+  // 2. Installed @tty-pt/<axis> npm packages in node_modules (prebuilds/<os>-<cpu>)
+  const wantedAxes = ["joint", "lemma", "islet", ...(sepalConfigured(cfg) ? ["sepal"] : [])];
+  const npmAxisDirs = resolveNodeModulesAxisDirs(cwd, wantedAxes, probe);
+  if (npmAxisDirs.length > 0 && hasAxisSharedLib(npmAxisDirs[0], "joint", probe)) {
+    return npmAxisDirs.join(":");
+  }
+
+  // 3. User-local and system-wide library directories (standard installation)
+  if (probe === existsSync) {
+    let userHome = env["HOME"] || env["USERPROFILE"] || "";
+    if (!userHome) {
+      try {
+        userHome = homedir();
+      } catch {
+        userHome = "";
+      }
+    }
+    if (userHome) {
+      for (const dir of [join(userHome, ".local", "lib", "ttypt"), join(userHome, ".local", "lib")]) {
+        if (hasAxisSharedLib(dir, "joint", probe)) {
+          return dir;
+        }
+      }
+    }
+  }
   const systemCandidates = [
     "/usr/lib/ttypt",
     "/usr/local/lib/ttypt",
@@ -903,16 +1117,18 @@ export function resolveAxisPath(
     "/usr/lib64",
   ];
   for (const dir of systemCandidates) {
-    if (
-      probe(join(dir, "libjoint.so")) ||
-      probe(join(dir, "libjoint.dylib")) ||
-      probe(join(dir, "libjoint.dll"))
-    ) {
+    if (hasAxisSharedLib(dir, "joint", probe)) {
       return dir;
     }
   }
 
-  // 3. Fallback: if nothing exists, default to local monorepo path
+  // 4. Auto-discovered fallback from @tty-pt/corm when running with real filesystem probe
+  if (probe === existsSync) {
+    const defaultAxis = env["CORM_DEFAULT_AXIS_PATH"];
+    if (defaultAxis && defaultAxis.trim() !== "") return defaultAxis.trim();
+  }
+
+  // 5. Fallback: if nothing exists, default to local monorepo path
   const joint = join(cwd, "external", "libjoint", "lib");
   const lemma = join(cwd, "external", "liblemma", "lib");
   const islet = join(cwd, "external", "libislet", "lib");

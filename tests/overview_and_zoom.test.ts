@@ -133,6 +133,35 @@ Deno.test("overview: buildMemoryOverview collates L3, L2, L1 memories across epo
   assert.ok(md.includes("memory_recall({ zoomRef: <ref> })"));
 });
 
+Deno.test("overview: collateOverview prioritizes curated L1 milestones over raw single-tool auto-capture crumbs", async () => {
+  const rawCrumb = JSON.stringify({
+    level: "L1",
+    type: "investigation",
+    lifecycle: "tested",
+    summary: "Investigation: edit /home/quirinpa/site/tests/unit/test_map_noise.c — verified: Executed edit",
+    context: { project: "site" },
+  });
+  const curatedEpisode = JSON.stringify({
+    level: "L1",
+    type: "episode",
+    lifecycle: "supported",
+    summary: "Quest 1xQvcx (feature, complex): Replace pi-cbm with multi-axis codebase mipmap graph",
+    context: { project: "site", subsystem: "pi-mm" },
+  });
+
+  const { runner } = fakeRunner([
+    { stdout: "1\n2\n", stderr: "", code: 0 },
+    { stdout: `2026-11-10:${rawCrumb}\n`, stderr: "", code: 0 },
+    { stdout: `2026-11-11:${curatedEpisode}\n`, stderr: "", code: 0 },
+  ]);
+
+  const env = makeEnv(runner);
+  const overview = await buildMemoryOverview(env);
+  assert.strictEqual(overview.recentMilestones.length, 1);
+  assert.ok(overview.recentMilestones[0].summary.includes("Quest 1xQvcx"));
+  assert.ok(!overview.renderedOverview.includes("Investigation: edit"));
+});
+
 // ---------------------------------------------------------------------------
 // 2. memory_recall - Overview mode tests
 // ---------------------------------------------------------------------------

@@ -2,6 +2,107 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [0.8.0] - 2026-11-15
+
+### Added
+- **Prebuilt `@tty-pt/axil` & `@tty-pt/auren` Daemon Discovery (`package.json`, `src/auren-bootstrap.ts`, `tests/auren_bootstrap.test.ts`)**:
+  - Added `@tty-pt/axil` (`^1.8.1`) and `@tty-pt/auren` (`^1.5.1`) to `package.json` dependencies alongside updated `@tty-pt/{corm,sepal,lemma,islet}` prebuild floors.
+  - Added `findAxilBins()` and `findAurenLibDirs()` in `src/auren-bootstrap.ts` so `findAurenLaunchers()` automatically discovers `@tty-pt/axil/bin/axil.js` and prebuilt `libaxil-auren.{so,dylib}` in `@tty-pt/auren/prebuilds/<os>-<cpu>[-musl]` (as well as local repository checkouts), allowing `pi-mm` to launch and share a background `axil-auren` daemon without requiring system-installed `/usr/bin/axil` or `/usr/lib/libaxil-auren.so`.
+- **Live Epistemic Invalidation via Code-to-Lore Causal Binding (`src/code/lore_binding.ts`, `src/code/manager.ts`, `src/tools/record.ts`, `src/tools/store.ts`)**:
+  - Automatically binds `supported` and `tested` architectural invariants, decisions, and episodes to AST symbol anchors (`symbolName`, `qualifiedName`, `filePath`, `startLine`, `endLine`, `signature`, and a deterministic `fingerprint` over `kind + qualifiedName + signature + sorted(rawCallees)`), persisted atomically in `.pi/mm/code/lore-bindings.json` (shared across `.pi/scratch/slot-*` worktrees).
+  - Verifies bound symbol anchors during `memory_recall` (`verifyLoreBindingsForSymbols`), flagging invariants as `[STALE_SUSPECT]` when an anchored symbol's signature/callees change, when the symbol is deleted, or when an uncommitted `git diff` hunk intersects its `[startLine, endLine]` span.
+  - Isolates generic single-word entrypoints (`xy_install`, `bud_app_render`, `main`, `get`, `set`) so lore only binds or surfaces when corroborated by module/file path or subsystem context (`isAnchorCorroboratedByLore`, `isLoreRelevantToSymbol`).
+- **Execution-Trace & Differential Failure Topology Engine (`diagnose` in `memory_recall`, `src/code/diagnose.ts`)**:
+  - Added zero-regex stack trace and compiler diagnostic parser (`parseFailureTrace`) supporting TypeScript/JavaScript (`at fn (file:line:col)`), C/C++/GDB (`file.c:line:col: error:`), and Python (`File "path.py", line N, in fn`) frames.
+  - Maps stack frames to enclosing AST symbols via `libislet` 2D `[fileHash, line..line]` interval intersection and symbol resolution (`diagnoseFailureTrace`), then intersects the active stack call-cone with `git diff` modified symbols to compute the **Causal Fault Intersection** (`modified_on_stack`, `modified_callee_of_stack`, `caller_of_modified_on_stack`) ranked by hop distance.
+- **Collective Swarm Stigmergy Across Parallel Sessions & Scratch Slots (`src/code/stigmergy.ts`, `src/hooks/events.ts`, `src/code/manager.ts`)**:
+  - Records live spatial attention leases (`SwarmAttentionLease`, 15-minute TTL) in `.pi/mm/code/swarm-leases.json` (resolved across `.pi/scratch/slot-N` worktrees via `resolveSharedCoordinationDir`) whenever sessions inspect symbols or mutate files (`edit`/`write`).
+  - Queries and formats active peer session overlaps (`exact_symbol`, `same_file`, `call_graph_neighbor`) during symbol reads and searches so concurrent agents and subagents have real-time visibility into parallel work.
+- **Pre-Tool Counterfactual Guardrails ("Déjà Vu" Interception) (`guardrail` in `memory_recall`, `src/hooks/guardrails.ts`, `src/hooks/events.ts`)**:
+  - Added `evaluateCounterfactualGuardrail` and `memory_recall({ guardrail: "<planned edit|command>", file?, symbol? })` to pre-flight planned actions against contradicted memories (`contradicted_memory`), previously failed episode approaches (`failed_approach`), prohibitive standing directives in `standing_directives.json` and `mem.db` (`standing_restriction`), and drifted code-bound invariants (`stale_bound_invariant`).
+  - Passively intercepts `edit`, `write`, and failing `bash` tool results in `src/hooks/events.ts`, steering the agent with deduplicated per-session `[pi-mm Déjà Vu Counterfactual Guardrail]` warnings before repeated mistakes compound.
+- **First-Touch Module Dossiers, Cross-Boundary Pairing & XY Contract Flight Checks (`src/code/dossier.ts`, `src/code/recall.ts`, `src/code/graph.ts`)**:
+  - Synthesizes a once-per-session `[pi-mm First-Touch Module Dossier]` when an agent first inspects or edits a module (`mods/<M>`, `external/<L>`, `.pi/extensions/<E>`, `htdocs/`), surfacing the architectural boundary contract, exact Tier-0 verification command (`inferTier0VerificationGate`), key routes/entrypoints, fresh vs. drifted bound invariants, and active swarm leases.
+  - Automatically pairs `XY_DECL` header declarations with `XY_IMPL` implementations and Server-Side C entrypoints (`xy_install`, routes) with Isomorphic UX WASM entrypoints (`bud_app_render`, `STL_WASM_MODULE`) during symbol inspection (`resolveCrossBoundaryPairs`).
+  - Detects `XY_DECL` $\leftrightarrow$ `XY_IMPL` contract mismatches (`missing_impl`, `missing_decl`, `signature_mismatch`) in `memory_recall({ diff: true })` (`detectXyContractMismatches`).
+- **Verification-Attested Epistemic Promotion Ledger & Tier-0 Diff Gate Status (`src/hooks/verification_ledger.ts`, `src/tools/record.ts`)**:
+  - Tracks failing verification commands (`make test*`, `deno test`, `npm test`, `check-*.sh`, `check-complexity.ts`, etc.), subsequent file mutations, and `FAIL -> PASS` transitions per session (`observeBashVerificationOutcome`).
+  - Automatically synthesizes an attested L2 causal fix episode (`tags: ["attested-fix", "fail-to-pass"]`) when mutated files transition a failing test/build command to exit code 0, and upgrades `memory_record` episodes to `lifecycle: "supported"` when `verification.testsPassed` is corroborated by the session's passing verification ledger (`hasAttestedPassingVerification`).
+  - Appends a `[Tier-0 Module Verification Gate Status]` report (`[VERIFIED ✓ after last edit]`, `[UNVERIFIED ⚠️ — modified after last passing test]`, or `[UNVERIFIED ⚠️]`) to `memory_recall({ diff: true })` across `mods/*`, `external/*`, `.pi/extensions/*`, and `htdocs/*` (`evaluateModuleVerificationStatus`).
+- **Higher-Order Call-Graph Stitching Across Callbacks, Designated Initializers & `xy_load` (`src/code/scanner.ts`, `src/code/store.ts`)**:
+  - Extracts function-pointer arguments passed to higher-order calls (`tryCaptureHigherOrderCallbackArgs`), struct designated-initializer callbacks (`.detail = song_detail_handler`, `tryCaptureDesignatedInitCallback`), and `xy_load("./mods/<M>/<M>")` module-to-`xy_install` edges (`MANIFEST_VERSION = 6`).
+  - Resolves outbound and inbound call-graph edges across route registrations (`GET /path` $\rightarrow$ handler), higher-order wrappers (`with_module_item_access` $\rightarrow$ callback), and cross-module `xy_load` boundaries while excluding non-callable `#define` macro constants.
+- **Working-Memory Context-Window Staleness Radar (`src/code/context_sync.ts`, `src/code/manager.ts`, `src/hooks/events.ts`)**:
+  - Snapshots per-session file `mtimeMs`, byte size, and AST symbol spans/fingerprints whenever files or symbols are inspected (`read`, `memory_recall`) or mutated (`edit`, `write`).
+  - Detects external disk modifications to previously inspected files before subsequent tool calls, auto-refreshing `CodeStore` and prepending a surgical `[pi-mm Working-Memory Sync: External Disk Modifications Detected]` delta notice (`modified`, `lines_shifted`, `added`, `removed`).
+- **Evidence DAG Truth Maintenance Cascade (`src/tools/lifecycle.ts`)**:
+  - When `memory_review` / `memory_lifecycle` transitions a memory to `contradicted` or `superseded`, automatically syncs `lore-bindings.json`, unregisters invalidated standing directives from `reinforcementScheduler` and `standing_directives.json`, and cascades down the evidence DAG (`propagateTruthMaintenanceCascade`) to auto-downgrade dependent `supported`/`tested` conclusions to `hypothesized` with full audit history.
+
+### Fixed
+- **Re-Entrant Lock Safety, Quiet Axis Probing & Mid-Session `axil-auren` Bring-Up (`src/lock.ts`, `src/runner.ts`, `src/napi_runner.ts`, `src/cli_runner.ts`, `src/auren-bootstrap.ts`, `src/hooks/events.ts`, `src/tools/store.ts`, `src/versions.ts`)**:
+  - Made `withLock` re-entrant within the same process (`activeLockDepth` counter in `src/lock.ts`), eliminating self-deadlock timeouts when nested memory operations acquire `.mm.lock`.
+  - Set `CORM_QUIET=1` across `NativeAddonCormRunner` and `CliCormRunner` invocations to suppress noisy axis stderr diagnostics during cold-start store initialization, and preferred `cormd` when a daemon lease is active.
+  - Added `-d` when spawning `axil` with `detached: true` in `src/auren-bootstrap.ts` so `axil` stays in the foreground of the detached session and keeps port `:4242` bound, and added `ensureAurenPoweredUp()` on turn/store paths so records embed immediately if `axil-auren` starts mid-session.
+  - Cached git component version lookups and resolved standalone `node_modules/@tty-pt/*` prebuild versions in `src/versions.ts`.
+- **Scanner & Graph Precision Hardening (`src/code/scanner.ts`, `src/code/store.ts`, `src/code/graph.ts`, `src/code/payload_codec.ts`)**:
+  - Fixed C `#define` macro scanning (`tryParseRouteOrMacro`) so parenthesized object-like macros immediately preceding multi-line C functions advance past the macro identifier token and never swallow the following function definition.
+  - Fixed TypeScript/JavaScript parameter and return-type skipping (`skipBalancedParens`, `findBodyOpenBrace`) to handle inline object type annotations (`params: { a: number }`, `Promise<{ ok: boolean }>`) without mistaking type-literal braces for function bodies.
+  - Excluded vendor/third-party git submodules from default codebase scans unless explicitly queried, and filtered built-in JS/TS/Python method names (`get`, `set`, `map`, `filter`, `push`, `slice`, etc.) from bare global call-graph linking.
+  - Coalesced rapid `before_agent_start` turns within a 1500 ms window so consecutive agent turns do not trigger redundant `CodeStore` refreshes.
+
+## [0.7.1] - 2026-11-14
+
+### Added
+- **Standalone Zero-System-Library npm Installation (`package.json`, `src/config.ts`, `src/auren-bootstrap.ts`, `src/napi_runner.ts`, `src/versions.ts`)**:
+  - Added `@tty-pt/{stele,corm,joint,lemma,sepal,islet}` dependencies to `package.json` so `npm install @tty-pt/pi-mm` pulls prebuilt native addons and axis shared libraries automatically.
+  - Updated `resolveAxisPath()`, `findSepalLib()`, `detectComponentVersion()`, and `NativeAddonCormRunner` to resolve `node_modules/@tty-pt/<pkg>/prebuilds/<os>-<cpu>[-musl]` (including hoisted `node_modules`) and load `corm_node.node` with `RTLD_GLOBAL` without requiring `/usr/lib` C libraries or `external/` checkouts.
+  - Added end-to-end standalone verification (`tests/npm_standalone_install.test.ts`).
+
+## [0.7.0] - 2026-11-14
+
+### Added
+- **In-Process Node-API Corm Runner (`NativeAddonCormRunner`) & Engine Version Floor Audit (`src/napi_runner.ts`, `src/versions.ts`)**:
+  - Added `NativeAddonCormRunner` executing `PUT`, `PUT_JSON`, `GET`, `GET_JSON`, `LIST`, `DEL`, `DEL_ALL`, and `QUERY` in-process via `@tty-pt/corm` when no `cormd` UDS socket is active, while respecting `.cormd.lock` leases and `.mm.lock` cross-process serialization.
+  - Audited and locked `MIN_ENGINE_VERSIONS` (`libcorm >= 2.2.0`, `libsepal >= 1.2.0`, `liblemma >= 1.1.0`, `libjoint >= 1.5.0`, `libislet >= 1.2.0`, `axil >= 1.6.0`, `axil-auren >= 1.4.0`) against `REQUIRED_ENGINE_FEATURES`.
+- **Unified Status Bar (`mm-judge`)** (`src/hooks/events.ts`, `src/code/manager.ts`):
+  - Unified model readiness (`⚡ bge-base`), busy hourglass indicator (`⏳`), and transient recall/store/consolidation activity badges into a single `mm-judge` status bar slot.
+- **Multi-Axis Codebase Mipmap Graph & Lore Fusion (`scope: "code"`, replacing `pi-cbm`)** (`src/code/lexer.ts`, `src/code/scanner.ts`, `src/code/store.ts`, `src/code/graph.ts`, `src/code/recall.ts`, `src/code/manager.ts`):
+  - Added zero-regex character-stream lexer and structural scanner (`scanSourceFile`) for C/C++, TypeScript/JavaScript, and Python, extracting `Function`, `Method`, `Class`, `Struct`, `Interface`, `Enum`, `Macro`, `TypeAlias`, and `Route` symbols, doc comments, `#include`/`import`/`xy_load` dependencies, and `rawCallees` while ignoring comments and string literals.
+  - Added library-agnostic structural HTTP route detection based purely on call-argument shape: method calls (`obj.<http_method>("/path"[, handler])`), two-string registrations (`fn("<http_method>", "/path"[, handler])`), and method-prefixed route strings (`fn("<HTTP_METHOD>:/path"[, handler])` / `fn("<HTTP_METHOD> /path"[, handler])`).
+  - Added `CodeStore` backed by `libcorm` (`joint,lemma,sepal`) and `libislet` (`code-islet.db` 2D `[fileHash, startLine..endLine]` interval index) with incremental `mtime` delta indexing, priority root scanning (`mods/`, `src/`, `include/`, `lib/`, `app/`, `bin/` before `external/`, `vendor/`, `tests/`), git submodule change filtering, and single-flight `refreshLock` serialization.
+  - Added call-graph disambiguation (`CodeGraph`): filters C/POSIX stdlib routines (`malloc`, `free`, `memcpy`, etc.) and C struct pointer member calls (`ops->load()`) from `rawCallees`, isolates call edges by language family and module/import affinity, and prioritizes `XY_IMPL` definitions over `XY_DECL` forward declarations (`isDeclaration: true`).
+  - Integrated 5 codebase workflows into `memory_recall`: hybrid symbol search with unambiguous auto-preview (`scope: "code", query`), fail-closed concrete symbol / batch source read (`symbol` / `symbols`, `neighbors`, `lineRange`) with automatic fusion of linked `pi-mm` invariants and past debugging episodes (`queryLinkedLoreForSymbols`), multi-hop call graph trace (`trace`, `direction`, `depth`), L3/L2 architecture overview (`scope: "code", overview: true`), and `libislet`-backed worktree `git diff` blast-radius analysis (`diff: true`).
+- **Ephemeral Semantic Session Memory, Progressive 3-Tier Recall & Mipmap Compaction (`scope: "session"`, replacing `pi-vcc`)** (`src/session/store.ts`, `src/session/sink.ts`, `src/session/lineage.ts`, `src/session/recall.ts`, `src/session/compaction.ts`, `src/session/manager.ts`):
+  - Added asymmetric session ingestion (`SessionSink` & `SessionStore`) indexing settled conversational turns into per-session `libcorm` stores at 3 granularities (`turn` L1, `block` L1, `symbol` L0) alongside raw turn payloads (`turns/turn-<N>.json`).
+  - Serialized all `SessionStore` write and index rebuild operations via `withWriteLock` to eliminate concurrent `corm` CLI races.
+  - Added `LineageTracker` DAG ancestry resolution (`lineage: "active" | "all"`) with automatic linear ancestry reconstruction for persisted turns across mid-session reloads.
+  - Added progressive 3-tier session retrieval (`executeSessionRecall`): Tier 1 Index Cards, Tier 2 Focused Excerpts, and Tier 3 Exact Line Slices (`zoomTurn`, `toolIndex`, `lineRange`), fusing C multi-axis recall with exact symbol matching and unified `scope: "all"` RRF merging.
+  - Added mipmap-driven context compaction (`buildMipmapCompaction` on `session_before_compact`), replacing destructive transcript truncation with structured L2/L1 session mipmaps and `memory_recall({ scope: "session", zoomTurn })` pointers.
+  - Added explicit session provenance boundaries (`[Current Session]`, `[Parallel Session <id> (<slot>)]`, `[Past Session <id>]`), multi-session selector routing (`session: "current" | "parallel" | "all" | "<uuid-prefix>" | "<slot-label>"`), and post-compaction continuity hints (`src/hooks/auto_recall.ts`, `src/session/compaction.ts`, `src/session/recall.ts`, `src/tools/recall.ts`).
+
+
+### Fixed & Improved
+- **L0 Consolidation Queue Unwedging & Idle Backlog Drain** (`src/tools/consolidate.ts`, `src/config.ts`, `tests/consolidation_backlog.test.ts`):
+  - Solved queue stalls where missing, non-L0, superseded, or terminally inactive references blocked the head of the consolidation queue (`disposedL0Refs`).
+  - Added `orderPendingL0Refs`: ensures fresh turns captured in the current turn are processed first (so live work reaches L1 immediately), with remaining backlog ordered newest-first.
+  - Added bounded idle queue draining (`drainL0Backlog`) bounded by `consolidateDrainMs` (default 250ms, env `PI_MM_CONSOLIDATE_DRAIN_MS`), incrementally draining backlogged L0 records without blocking interactive turns.
+- **Zero-Config Local Synthesis Auto-Wiring** (`src/config.ts`, `src/tools/pipeline_status.ts`, `tests/synth_pipeline_status.test.ts`):
+  - Automatically derives the OpenAI-compatible chat completions URL (`defaultLocalSynthUrl`) on the local `axil-auren` server whenever the judge/embedding endpoint is active, defaulting to `smollm` (`DEFAULT_LOCAL_SYNTH_MODEL`).
+  - Prevents L2/L3 abstraction synthesis from silently stalling when users configure a local judge without explicitly configuring synthesis. Opt out cleanly with `synthUrl: "off"`.
+- **Enriched L0 Tool Capture & Self-Introspection Noise Filtering** (`src/hooks/events.ts`, `tests/capture_signal.test.ts`):
+  - Added `formatToolEventSummary` to capture meaningful command names, touched paths, and concise first-line outputs for edit, write, read, and bash executions.
+  - Filtered internal `pi-mm` and `corm` inspection commands to prevent memory introspections from generating self-referential capture records.
+  - Added same-session event deduplication to drop identical repetitive summaries on the same path.
+- **Byte-Exact Payload Decoding** (`src/payload.ts`, `tests/decode_result.test.ts`):
+  - Added `decodeResult` helper preferring raw `Uint8Array` (`stdoutBytes`) over lossy string decodes, preventing corrupted binary HTOK payload deserialization.
+- **Targeted Recall L0 Inclusion & Episode Exemption** (`src/tools/ranking.ts`, `src/tools/recall.ts`, `src/tools/scan.ts`):
+  - Added `includeL0` to hybrid scan and recall, enabling explicit retrieval of L0 task memories while ranking synthesized L1/L2 records above raw tool noise.
+  - Updated `isCodeOrDocArtifact` to strictly exempt structured episodes (`envelope.type === "episode"` or `envelope.episode`) from code artifact pruning.
+- **Consolidation Pipeline Observability in `/mm doctor`** (`src/tools/pipeline_status.ts`, `src/index.ts`):
+  - Added `describeConsolidationPipeline` to `/mm doctor`, providing live visibility into L2/L3 synthesis status, pending L0 and dirty L1 queue depths, drain rate, and backlog or stale L2 alerts.
+- **Retrieval-Quality Benchmark Gate** (`scripts/eval-retrieval.ts`, `tests/retrieval_quality.test.ts`):
+  - Added automated retrieval evaluation asserting recall@5 = 1.0, MRR $\ge$ 0.5, and proper prioritization of synthesized abstractions over raw tool noise across golden benchmark queries.
+
 ## [0.6.0] - 2026-11-01
 
 ### Added

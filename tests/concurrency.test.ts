@@ -9,12 +9,16 @@ import type { CormRunner } from "../src/corm.ts";
 import type { PiExecResult } from "../src/hooks/events.ts";
 import { join } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 
 const homeDir = Deno.env.get("HOME") || "";
-const releases = ["1.4.0", "1.3.0", "1.2.0"];
-const activeRelease = releases.find((r) => existsSync(join(homeDir, `.pi/agent/install/releases/${r}/node_modules/jiti`))) || "1.4.0";
-const nodeModulesPath = join(homeDir, `.pi/agent/install/releases/${activeRelease}/node_modules`);
+const releasesRoot = join(homeDir, ".pi/agent/install/releases");
+const dynamicReleases = existsSync(releasesRoot)
+  ? readdirSync(releasesRoot).sort().reverse()
+  : [];
+const releases = [...dynamicReleases, "1.5.2", "1.4.0", "1.3.0", "1.2.0"];
+const activeRelease = releases.find((r) => existsSync(join(releasesRoot, `${r}/node_modules/jiti`))) || "1.5.2";
+const nodeModulesPath = join(releasesRoot, `${activeRelease}/node_modules`);
 
 class ThreadSafeFakeStore {
   public records = new Map<number, string>();

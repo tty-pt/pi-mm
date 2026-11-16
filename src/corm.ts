@@ -4,6 +4,7 @@ import type { MmConfig } from "./config.ts";
 import { isDaemonLockHeld, resolveLockPath } from "./daemon.ts";
 
 export { DaemonCormRunner, DaemonCormRunner as DaemonQmapRunner, isDaemonLockHeld, resolveLockPath } from "./daemon.ts";
+export { NativeAddonCormRunner, loadCormAddonModule } from "./napi_runner.ts";
 
 export const FILESPEC = "mem.db@joint,lemma:a:b";
 export const SEPAL_MIN_SIM = 0.2;
@@ -75,7 +76,7 @@ export class ShellCormRunner implements CormRunner {
     }
     return this.exec(invocation.command, execArgs, {
       cwd: invocation.cwd,
-      env: invocation.env,
+      env: { CORM_QUIET: "1", ...invocation.env },
       stdin: invocation.payloadBytes,
     });
   }

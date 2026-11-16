@@ -101,7 +101,11 @@ export async function isDaemonLockHeld(lockPath: string): Promise<boolean> {
   // 1. Deno native advisory lock check
   if (typeof Deno !== "undefined" && typeof Deno.open === "function") {
     try {
-      const f = await Deno.open(lockPath, { read: true, write: true });
+      const f = (await Deno.open(lockPath, { read: true, write: true })) as unknown as {
+        tryLock(exclusive?: boolean): Promise<boolean>;
+        unlock(): Promise<void>;
+        close(): void;
+      };
       try {
         const acquired = await f.tryLock(true);
         if (acquired) {
@@ -610,6 +614,7 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
 
     const env: Record<string, string> = {
       ...(runtimeEnv() as Record<string, string>),
+      CORM_QUIET: "1",
       CORM_AXIS_PATH: options.axisPath ?? "",
       CORM_AXIS_LIBS: options.axisPath ?? "",
       ...(options.embedEnv ?? {}),
