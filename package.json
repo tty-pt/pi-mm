@@ -1,7 +1,7 @@
 {
   "name": "@tty-pt/pi-mm",
   "version": "0.8.0",
-  "description": "Memory Mipmaps extension for Pi Coding Agent — persistent, hierarchical recall with automatic bounded context injection and streamlined memory_recall, memory_record, memory_review tools.",
+  "description": "Memory Mipmaps extension for Pi Coding Agent \u2014 persistent, hierarchical recall with automatic bounded context injection and streamlined memory_recall, memory_record, memory_review tools.",
   "keywords": [
     "pi-package",
     "memory",
@@ -10,7 +10,7 @@
     "corm"
   ],
   "license": "BSD-2-Clause",
-  "author": "quirinpa",
+  "author": "Paulo Quirino <quirinpa@gmail.com>",
   "homepage": "https://github.com/tty-pt/pi-mm",
   "repository": {
     "type": "git",
@@ -60,9 +60,15 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-agent-core": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-agent-core": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   },
   "pi": {
     "image": "cover.png",
