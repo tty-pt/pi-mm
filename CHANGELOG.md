@@ -276,10 +276,6 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 
 ## [0.3.3]
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/tty-pt/pi-mm/main/cover.png" alt="pi-mm cover banner" width="100%">
-</p>
-
 ### Added
 - **All-Time Timeline Overview & Multi-Resolution Recall (`src/tools/overview.ts`, `src/tools/recall.ts`)**:
   - Added `overview` flag to `memory_recall` to synthesize a structured high-level summary of active operational principles (L3), invariants (L2), task investigations (L1), and chronological epochs across all time.
