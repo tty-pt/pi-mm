@@ -276,7 +276,7 @@ Deno.test("validation 4: genuine multi-process concurrent startup coordinates sa
 
     const runProcess = (): Promise<{ code: number; stdout: string }> => {
       return new Promise((resolve) => {
-        const p = spawn("deno", ["eval", "--allow-all", "--sloppy-imports", workerScript], {
+        const p = spawn("deno", ["eval", "--sloppy-imports", workerScript], {
           cwd: tmpDir,
           env: { ...process.env, CORM_AXIS_PATH: cormAxisPath },
         });

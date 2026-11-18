@@ -20,6 +20,7 @@ export type EngineName =
   | "liblemma"
   | "libjoint"
   | "libislet"
+  | "libmm"
   | "axil-auren";
 
 export interface EngineFeatureFloor {
@@ -38,6 +39,7 @@ export const REQUIRED_ENGINE_FEATURES: readonly EngineFeatureFloor[] = [
   { engine: "libjoint", feature: "Interval tree temporal axis plugin (rec_axis_fill_interval)", minVersion: "1.0.0" },
   { engine: "libjoint", feature: "rec_axis_store_typed for HTOK v4 temporal interval ingestion", minVersion: "1.5.0" },
   { engine: "libislet", feature: "Morton Z-order 2D/3D spatial index & cormr.h recall axis plugin (rec_axis_fill_bbox_2)", minVersion: "1.2.0" },
+  { engine: "libmm", feature: "Two-tier persistent memory kernel, RRF fusion, AST code scanner & N-API bindings", minVersion: "1.0.0" },
   { engine: "axil", feature: "Browser axil-bridge.js, WebSocket/HTTP transport & /api/v1 proxy endpoints", minVersion: "1.6.0" },
   { engine: "axil-auren", feature: "POST /v1/embeddings (128D) & /v1/rerank HTTP endpoints", minVersion: "1.3.0" },
   { engine: "axil-auren", feature: "Unified non-generative POST /v1/systemone & /api/v1/systemone/ (choice gating, exemplars, Jev)", minVersion: "1.4.0" },
@@ -50,6 +52,7 @@ export const MIN_ENGINE_VERSIONS: Record<EngineName, string> = {
   liblemma: "1.1.0",
   libjoint: "1.5.0",
   libislet: "1.2.0",
+  libmm: "1.0.0",
   "axil-auren": "1.4.0",
 };
 
@@ -60,6 +63,7 @@ export const DOCS_ENGINE_GUIDES: Record<EngineName, string> = {
   liblemma: "https://github.com/tty-pt/liblemma#installation--build",
   libjoint: "https://github.com/tty-pt/libjoint#installation--build",
   libislet: "https://github.com/tty-pt/libislet#installation--build",
+  libmm: "https://github.com/tty-pt/libmm#installation--build",
   "axil-auren": "https://github.com/tty-pt/axil-auren#installation--build",
 };
 
@@ -70,6 +74,7 @@ const PC_ALIASES: Record<EngineName, string[]> = {
   liblemma: ["lemma.pc", "liblemma.pc"],
   libjoint: ["joint.pc", "libjoint.pc"],
   libislet: ["islet.pc", "libislet.pc"],
+  libmm: ["mm.pc", "libmm.pc"],
   "axil-auren": ["auren.pc", "axil-auren.pc", "libaxil-auren.pc"],
 };
 
@@ -80,6 +85,7 @@ const NPM_SHORT_NAMES: Partial<Record<EngineName, string>> = {
   liblemma: "lemma",
   libjoint: "joint",
   libislet: "islet",
+  libmm: "mm",
   "axil-auren": "auren",
 };
 

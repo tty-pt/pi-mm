@@ -2,6 +2,23 @@
 
 All notable changes to the `@tty-pt/pi-mm` package will be documented in this file.
 
+## [Unreleased] (target: v0.9.0)
+
+### Added
+- **In-Process `@tty-pt/mm` (`libmm` `^1.0.0`) Native N-API Integration (`package.json`, `src/mm_native.ts`, `src/tools/ranking.ts`, `src/code/scanner.ts`, `src/hooks/auto_recall.ts`, `src/payload.ts`, `src/window.ts`, `src/versions.ts`, `src/index.ts`, `tests/mm_native.test.ts`)**:
+  - Added `@tty-pt/mm` (`^1.0.0`) dependency and `src/mm_native.ts` (`getMmAddon`, `isMmNativeAvailable`) loading `mm.node` / `mm_node.node` in-process across `prebuilds/<platform>-<arch>[-musl]` and local worktrees.
+  - Accelerated Reciprocal Rank Fusion (`fuseRankingsRRF`, `adaptiveRrfK`), 8-factor epistemic scoring (`computeRankingScore`), hygiene filters (`isTechnicalInquiry`, `isCodeOrDocArtifact`, `isQuestionMemory`, `isAssistantEcho`, `isCleanSummaryText`), temporal window calculation (`levelWindow` $\rightarrow$ `windowForLevel`), prompt intent classification (`classifyPromptIntent`), and source symbol scanning (`scanSourceSymbolsNative`) via the native C `libmm` kernel.
+  - Added `libmm >= 1.0.0` (`mm.pc` / `@tty-pt/mm`) to `REQUIRED_ENGINE_FEATURES`, `MIN_ENGINE_VERSIONS`, and `/mm doctor` status output (`[✓] Native libmm N-API Addon: Active in-process (@tty-pt/mm)`).
+
+### Fixed
+- **Natural "Remember" Capture, Flashbulb Anchor Preservation & Directive Recall (`src/hooks/auto_recall.ts`, `src/hooks/events.ts`, `src/hooks/reinforcement.ts`, `src/synth/adapter.ts`, `src/tools/consolidate.ts`, `src/tools/record.ts`, `src/tools/store.ts`, `tests/natural_remember_and_directives.test.ts`)**:
+  - Captured natural conversational remember requests (`"remember ..."`, `"don't forget ..."`) as flashbulb anchors (`isAnchor: true`) and preserved anchor flags across L0 $\rightarrow$ L1/L2 consolidation and synthesis.
+  - Improved standing directive recall and periodic reinforcement scheduling, filtered non-standing L2 invariants out of the global standing directives block in `buildInjectedContext`, and deduplicated `Additional facts` against rendered session excerpts in `formatCompactMemoryEntry`.
+- **Advisory Lock Coordination, `sepal` CLI Fallback & Classifier Timeout Hardening (`src/lock.ts`, `src/daemon.ts`, `src/napi_runner.ts`, `src/judge/nearest.ts`, `tests/concurrency.test.ts`, `tests/no-live-network.ts`, `tests/validation_fixes.test.ts`)**:
+  - Guarded `Deno.FsFile.tryLock` availability in `src/lock.ts` and `src/daemon.ts` and ran coordinator inspection/removal hooks cleanly when a Node `flock` helper child exits on contention.
+  - Routed `sepal`-indexed store commands in `NativeAddonCormRunner` through the CLI fallback runner so vector embedding hooks execute consistently.
+  - Reduced initial exemplar batch embedding timeout in `src/judge/nearest.ts` from `12000ms` to `2000ms` and canceled unread error response bodies (`res.body?.cancel()`).
+
 ## [0.8.0] - 2026-11-15
 
 ### Added

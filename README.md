@@ -8,7 +8,7 @@
 [![License: BSD-2-Clause](https://img.shields.io/badge/License-BSD--2--Clause-blue.svg)](LICENSE)
 [![Zero-Config](https://img.shields.io/badge/zero--config-auren-16A34A)](https://github.com/tty-pt/axil-auren)
 
-> Multi-resolution persistent memory, active session recall, and live codebase mipmap graphs for the Pi Coding Agent powered by native C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`).
+> Multi-resolution persistent memory, active session recall, and live codebase mipmap graphs for the Pi Coding Agent powered by native C engines (`libmm`, `libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`).
 
 `pi-mm` gives your [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) a unified multi-resolution memory space spanning **persistent cross-session lore** (`scope: "persistent"`), **ephemeral active session transcripts & lossless compaction** (`scope: "session"`), and **live codebase symbol graphs, call graphs, and git diff blast radius** (`scope: "code"`). It automatically injects relevant prior technical decisions into context before each turn, compacts long sessions into navigable mipmaps, and fuses historical debugging episodes directly into code symbol reads—with **zero manual configuration**.
 
@@ -23,10 +23,10 @@ pi install npm:@tty-pt/pi-mm
 ```
 
 `pi-mm` works out of the box:
-1. **Standalone Prebuilt C Engines via npm**: Pulls `@tty-pt/{axil,auren,stele,corm,joint,lemma,sepal,islet}` prebuilt native Node-API addons, CLI host (`@tty-pt/axil/bin/axil.js`), and shared libraries (`libaxil-auren`, axis `.so`/`.dylib`) automatically (`NativeAddonCormRunner` & `findAurenLaunchers`), running without requiring system-wide `/usr/bin` binaries, `/usr/lib` C libraries, or `pkg-config` (while seamlessly attaching to `cormd` when a daemon lease is active).
+1. **Standalone Prebuilt C Engines via npm (`@tty-pt/mm` + `@tty-pt/corm` Axes)**: Pulls `@tty-pt/{mm,axil,auren,stele,corm,joint,lemma,sepal,islet}` prebuilt native Node-API addons (`mm.node`, `corm_node.node`), CLI host (`@tty-pt/axil/bin/axil.js`), and shared libraries (`libmm`, `libaxil-auren`, axis `.so`/`.dylib`) automatically (`getMmAddon`, `NativeAddonCormRunner` & `findAurenLaunchers`), running in-process without requiring system-wide `/usr/bin` binaries, `/usr/lib` C libraries, or `pkg-config` (while seamlessly attaching to `cormd` when a daemon lease is active).
 2. **Automatic Daemon Startup**: Checks if `axil-auren` is running on port 4242. If offline, it brings up the shared background server automatically using `@tty-pt/axil` + `@tty-pt/auren` prebuilds (or system `/usr/bin/axil` when present).
 3. **Automatic Model Provisioning**: Discovers models in `~/.models/` and auto-downloads the required fast embedding model (`bge-base`, 117 MB) with sha256 verification. Heavy and unused inference/chat models are never downloaded. Shows non-blocking visual progress (`⬇️ bge-base (42%)`) and usage status (`⚡ bge-base`) in the unified status bar (`pi-mm`).
-4. **Proactive Dependency & Feature Floor Checks**: On `session_start`, `pi-mm` audits core C engines (`libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`, `axil`, `axil-auren`) against `REQUIRED_ENGINE_FEATURES` and displays actionable remediation toasts if anything is missing.
+4. **Proactive Dependency & Feature Floor Checks**: On `session_start`, `pi-mm` audits all 8 core C engines (`libmm`, `libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`, `axil`, `axil-auren`) against `REQUIRED_ENGINE_FEATURES` and displays actionable remediation toasts if anything is missing.
 
 ### Verify Memory Health
 

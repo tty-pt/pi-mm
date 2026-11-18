@@ -2,6 +2,7 @@ import { open, unlink, stat, readFile, mkdir, writeFile, link } from "node:fs/pr
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { join, resolve as resolvePath } from "node:path";
+import process from "node:process";
 
 const inProcessLocks = new Map<string, Promise<void>>();
 const heldLockDirs = new AsyncLocalStorage<ReadonlySet<string>>();
@@ -96,8 +97,18 @@ function acquireNodeFlock(
       }
     });
 
-    child.on("exit", () => {
-      if (!resolved) { resolved = true; resolve(null); }
+    child.on("exit", async () => {
+      if (!resolved) {
+        resolved = true;
+        const inspected: CoordinatorLockInfo = { pid: 0, token: "", createdAt: 0 };
+        if (opts.onAfterCoordinatorInspection) {
+          await opts.onAfterCoordinatorInspection(inspected);
+        }
+        if (opts.onBeforeCoordinatorRemoval) {
+          await opts.onBeforeCoordinatorRemoval(inspected);
+        }
+        resolve(null);
+      }
     });
     child.on("error", () => {
       if (!resolved) { resolved = true; resolve(null); }
@@ -113,43 +124,46 @@ async function acquireRecoveryCoordinationLock(
   const myToken = crypto.randomUUID();
   const payload = JSON.stringify({ pid: myPid, token: myToken, createdAt: Date.now() });
 
-  // 1. OS-enforced advisory lock (flock) via Deno.open and tryLock(true)
+  // 1. OS-enforced advisory lock (flock) via Deno.open and tryLock(true) when available
   if (typeof Deno !== "undefined" && typeof Deno.open === "function") {
     try {
       const f = (await Deno.open(recoveryLockFile, { create: true, write: true, read: true })) as unknown as {
-        tryLock(exclusive?: boolean): Promise<boolean>;
+        tryLock?(exclusive?: boolean): Promise<boolean>;
         unlock(): Promise<void>;
         truncate(len?: number): Promise<void>;
         write(p: Uint8Array): Promise<number>;
         close(): void;
       };
-      const acquired = await f.tryLock(true);
-      if (acquired) {
-        try {
-          if (opts.onBeforeCoordinatorMetadataWrite) {
-            await opts.onBeforeCoordinatorMetadataWrite();
+      if (typeof f.tryLock === "function") {
+        const acquired = await f.tryLock(true);
+        if (acquired) {
+          try {
+            if (opts.onBeforeCoordinatorMetadataWrite) {
+              await opts.onBeforeCoordinatorMetadataWrite();
+            }
+            await f.truncate(0);
+            await f.write(new TextEncoder().encode(payload));
+            return { token: myToken, filePath: recoveryLockFile, fsFile: f };
+          } catch {
+            try { await f.unlock(); } catch { /* ignore */ }
+            try { f.close(); } catch { /* ignore */ }
+            return null;
           }
-          await f.truncate(0);
-          await f.write(new TextEncoder().encode(payload));
-          return { token: myToken, filePath: recoveryLockFile, fsFile: f };
-        } catch {
-          try { await f.unlock(); } catch { /* ignore */ }
-          try { f.close(); } catch { /* ignore */ }
-          return null;
         }
+        f.close();
+
+        // Coordinator is held by another process: run hooks then strictly fail closed
+        const inspected: CoordinatorLockInfo = { pid: 0, token: "", createdAt: 0 };
+        if (opts.onAfterCoordinatorInspection) {
+          await opts.onAfterCoordinatorInspection(inspected);
+        }
+        if (opts.onBeforeCoordinatorRemoval) {
+          await opts.onBeforeCoordinatorRemoval(inspected);
+        }
+        // Strictly fail closed: never attempt uncoordinated deletion of an existing coordinator lock
+        return null;
       }
       f.close();
-
-      // Coordinator is held by another process: run hooks then strictly fail closed
-      const inspected: CoordinatorLockInfo = { pid: 0, token: "", createdAt: 0 };
-      if (opts.onAfterCoordinatorInspection) {
-        await opts.onAfterCoordinatorInspection(inspected);
-      }
-      if (opts.onBeforeCoordinatorRemoval) {
-        await opts.onBeforeCoordinatorRemoval(inspected);
-      }
-      // Strictly fail closed: never attempt uncoordinated deletion of an existing coordinator lock
-      return null;
     } catch {
       return null;
     }

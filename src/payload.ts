@@ -10,6 +10,7 @@ import type {
   LifecycleTransition,
 } from "./types.ts";
 import { encodeTokens, decodeTokens, packTokens, unpackTokens } from "./tok.ts";
+import { getMmAddon } from "./mm_native.ts";
 
 export const HTOK_MAGIC = 0x48544f4b;
 export const HTOK_VERSION = 4;
@@ -1096,6 +1097,9 @@ export function isCleanSummaryText(text?: string): boolean {
   if (!text || typeof text !== "string") return false;
   const trimmed = text.trim();
   if (trimmed.length === 0) return false;
+  if (trimmed.includes("\0")) return false;
+  const addon = getMmAddon();
+  if (addon && !addon.isCleanSummaryText(trimmed)) return false;
   if (trimmed.includes("\uFFFD")) return false; // Replacement character from invalid UTF-8
   if (trimmed.startsWith("[Corrupted payload")) return false;
 

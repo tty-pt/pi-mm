@@ -74,7 +74,7 @@ function exemplarIndex(cfg: MmConfig, base: string, examples: readonly Exemplar[
   let hit = indexes.get(key);
   if (hit === undefined) {
     // First use embeds every example in one batch; a slow cold start must not abort it.
-    hit = embedTexts(cfg, examples.map((e) => e.text), { timeoutMs: 12_000, fetchFn }).then((vectors) =>
+    hit = embedTexts(cfg, examples.map((e) => e.text), { timeoutMs: 2_000, fetchFn }).then((vectors) =>
       vectors === null ? null : { kinds: examples.map((e) => e.kind), vectors }
     );
     indexes.set(key, hit);
@@ -109,10 +109,14 @@ async function classifyViaEndpoint(
         signal,
       });
       if (res.status >= 500) {
+        await res.body?.cancel().catch(() => {});
         recordCircuitFailure(base);
         return null;
       }
-      if (!res.ok) return null;
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        return null;
+      }
       const body = await res.json() as {
         choice?: string;
         decision?: string;

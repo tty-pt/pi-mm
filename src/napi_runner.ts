@@ -258,6 +258,10 @@ export class NativeAddonCormRunner implements CormRunner {
       resolvedFilespec = join(inv.cwd, resolvedFilespec);
     }
 
+    if (resolvedFilespec.includes("sepal")) {
+      return this.fallback.run(inv);
+    }
+
     const payload =
       parsed.op === "PUT" && cmd.bodyBytes !== undefined
         ? cmd.bodyBytes

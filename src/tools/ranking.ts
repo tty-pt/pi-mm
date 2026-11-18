@@ -1,6 +1,7 @@
 import { decodePayload, isCleanSummaryText } from "../payload.ts";
 import type { ResultLine } from "../corm.ts";
 import type { LifecycleState, MemoryEnvelope, MipmapLevel } from "../types.ts";
+import { getMmAddon } from "../mm_native.ts";
 
 export type CandidateOrigin = "lemma" | "sepal" | "both";
 
@@ -33,6 +34,11 @@ export interface FilterCriteria {
 }
 
 export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
+  const addon = getMmAddon();
+  if (addon) {
+    const safeRec = cand.record && !cand.record.includes("\0") ? cand.record : "";
+    return addon.isCodeOrDocArtifact(safeRec, JSON.stringify(envelope));
+  }
   if (envelope.type === "episode" || envelope.episode) {
     return false;
   }
@@ -47,6 +53,10 @@ export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelo
 }
 
 export function isQuestionMemory(_cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
+  const addon = getMmAddon();
+  if (addon) {
+    return addon.isQuestionMemory(JSON.stringify(envelope));
+  }
   const s = (envelope.summary || "").trim();
   if (s.endsWith("?")) return true;
   if (/^(?:investigation:\s*)?(?:remember\s+anything|anything\s+about|do\s+you\s+remember|can\s+you\s+remember|what\s+did\s+i\s+say|did\s+i\s+mention|what\s+do\s+you\s+remember|what\s+do\s+you\s+recall|what\s+did\s+i\s+tell)\b/i.test(s)) {
@@ -60,6 +70,10 @@ export function isQuestionMemory(_cand: FusedCandidate, envelope: MemoryEnvelope
 }
 
 export function isAssistantEcho(_cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
+  const addon = getMmAddon();
+  if (addon) {
+    return addon.isAssistantEcho(JSON.stringify(envelope));
+  }
   const s = (envelope.summary || "").trim();
   if (/^(?:you\s+mentioned|you\s+said|i\s+remember\s+that\s+you|as\s+you\s+said)\s*[:\-—]/i.test(s)) {
     return true;
@@ -72,6 +86,10 @@ export function isAssistantEcho(_cand: FusedCandidate, envelope: MemoryEnvelope)
 
 export function isTechnicalInquiry(query?: string): boolean {
   if (!query) return false;
+  const addon = getMmAddon();
+  if (addon) {
+    return addon.isTechnicalInquiry(query);
+  }
   const q = query.trim();
   if (/[/\\._#:]/.test(q)) return true; // file paths, extensions, symbols
   if (/\b(?:function|class|const|let|var|import|export|include|err|error|crash|bug|fix|build|make|socket|corm|db)\b/i.test(q)) return true;
@@ -85,6 +103,10 @@ export function isTechnicalInquiry(query?: string): boolean {
  * Handles edge cases |candidates| in {0, 1} cleanly.
  */
 export function adaptiveRrfK(candidateCount: number): number {
+  const addon = getMmAddon();
+  if (addon) {
+    return addon.adaptiveRrfK(candidateCount);
+  }
   if (candidateCount <= 1) return 10;
   return Math.max(10, Math.min(60, candidateCount * 2));
 }
@@ -99,6 +121,41 @@ export function fuseRankingsRRF(
   semantic: ResultLine[],
   k?: number,
 ): FusedCandidate[] {
+  const addon = getMmAddon();
+  if (addon) {
+    const recMap = new Map<number, string>();
+    const lexScoreMap = new Map<number, string | undefined>();
+    const lexRefs = lexical.map((l) => {
+      if (!recMap.has(l.ref) && l.record) recMap.set(l.ref, l.record);
+      if (!lexScoreMap.has(l.ref)) lexScoreMap.set(l.ref, l.score);
+      return { ref: l.ref, score: l.score, record: "" };
+    });
+    const semScoreMap = new Map<number, string | undefined>();
+    const semRefs = semantic.map((s) => {
+      if (!recMap.has(s.ref) && s.record) recMap.set(s.ref, s.record);
+      if (!semScoreMap.has(s.ref)) semScoreMap.set(s.ref, s.score);
+      return { ref: s.ref, score: s.score, record: "" };
+    });
+    const raw = addon.fuseRankingsRRF(lexRefs, semRefs, k ?? 0);
+    return raw.map((r) => {
+      const out: FusedCandidate = {
+        ref: r.ref,
+        record: recMap.get(r.ref) ?? "",
+        origin: r.origin,
+        rrfScore: r.rrfScore,
+      };
+      if (r.lexicalRank !== undefined) {
+        out.lexicalRank = r.lexicalRank;
+        out.lexicalScore = lexScoreMap.get(r.ref);
+      }
+      if (r.semanticRank !== undefined) {
+        out.semanticRank = r.semanticRank;
+        out.semanticScore = semScoreMap.get(r.ref);
+      }
+      return out;
+    });
+  }
+
   const effectiveK = k !== undefined ? k : adaptiveRrfK(lexical.length + semantic.length);
   const candidateMap = new Map<number, FusedCandidate>();
 
@@ -161,6 +218,21 @@ const MIPMAP_WEIGHTS: Record<MipmapLevel, number> = {
 };
 
 export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria): number {
+  const addon = getMmAddon();
+  if (addon && cand.envelope) {
+    const safeRec = cand.record && !cand.record.includes("\0") ? cand.record : "";
+    return addon.computeRankingScore(
+      {
+        ref: cand.ref,
+        record: safeRec,
+        origin: cand.origin,
+        rrfScore: cand.rrfScore,
+        score: cand.score,
+        envelopeJson: JSON.stringify(cand.envelope),
+      },
+      crit as unknown as Record<string, unknown>,
+    );
+  }
   let score = cand.rrfScore > 0 ? cand.rrfScore : (cand.score ? parseFloat(cand.score) : 1.0);
   if (isNaN(score) || score <= 0) score = 1.0;
 

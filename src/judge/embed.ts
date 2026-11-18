@@ -99,10 +99,14 @@ export async function embedTexts(
         signal,
       });
       if (res.status >= 500) {
+        await res.body?.cancel().catch(() => {});
         recordCircuitFailure(base);
         return null;
       }
-      if (!res.ok) return null;
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        return null;
+      }
       const body: unknown = await res.json();
       const data = typeof body === "object" && body !== null ? (body as { data?: unknown }).data : undefined;
       if (!Array.isArray(data) || data.length !== texts.length) return null;

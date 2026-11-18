@@ -10,6 +10,9 @@ import { parseBareRefs } from "./resolve.ts";
 import { existsSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findSepalLib, ensureAuren, getBootstrapState, findUserConfig, serverLogPath, MODEL_CATALOG, DOCS_SEPAL, DOCS_PIMM_PREREQUISITES } from "./auren.ts";
+import { getMmAddon, isMmNativeAvailable } from "./mm_native.ts";
+
+export { getMmAddon, isMmNativeAvailable };
 
 export interface MmReportData {
   title: string;
@@ -144,6 +147,11 @@ async function runDoctorReport(
     const ver = rep.version ? `${rep.version} (${rep.source})` : "not installed";
     lines.push(`  ${symbol} ${rep.name.padEnd(11)}: ${ver} (requires >= ${rep.minRequired})`);
   }
+  lines.push(
+    isMmNativeAvailable()
+      ? "[✓] Native libmm N-API Addon: Active in-process (@tty-pt/mm)"
+      : "[-] Native libmm N-API Addon: Fallback (JS)",
+  );
 
   lines.push(`[-] Pipeline: ${describeCapabilities(cfg)}`);
   try {

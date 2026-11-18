@@ -17,8 +17,14 @@ const dynamicReleases = existsSync(releasesRoot)
   ? readdirSync(releasesRoot).sort().reverse()
   : [];
 const releases = [...dynamicReleases, "1.5.2", "1.4.0", "1.3.0", "1.2.0"];
-const activeRelease = releases.find((r) => existsSync(join(releasesRoot, `${r}/node_modules/jiti`))) || "1.5.2";
-const nodeModulesPath = join(releasesRoot, `${activeRelease}/node_modules`);
+const activeRelease = releases.find((r) => existsSync(join(releasesRoot, `${r}/node_modules/jiti`)));
+const candidateNodeModules = [
+  ...(activeRelease ? [join(releasesRoot, `${activeRelease}/node_modules`)] : []),
+  join(homeDir, ".pi/agent/npm/node_modules"),
+  join(homeDir, ".bun/install/global/node_modules"),
+  join(releasesRoot, "1.5.2/node_modules"),
+];
+const nodeModulesPath = candidateNodeModules.find((p) => existsSync(join(p, "jiti"))) || candidateNodeModules[0];
 
 class ThreadSafeFakeStore {
   public records = new Map<number, string>();
@@ -1146,8 +1152,8 @@ Deno.test("concurrency: Node production runtime automatically recovers coordinat
   const p1Cmd = new Deno.Command("node", {
     args: [c1File, tmpDir, logFile, b1, coordFile],
     env,
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const p1Child = p1Cmd.spawn();
 
@@ -1347,8 +1353,8 @@ Deno.test("concurrency: live initializer paused beyond staleThresholdMs preserve
 
   const p1Cmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-all", "--sloppy-imports", p1File, tmpDir, b1],
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const p1Child = p1Cmd.spawn();
 
@@ -1445,8 +1451,8 @@ Deno.test("concurrency: process killed before lock publication allows immediate 
 
   const p1Cmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-all", "--sloppy-imports", p1File, tmpDir, b1],
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const p1Child = p1Cmd.spawn();
 
@@ -1509,8 +1515,8 @@ Deno.test("concurrency: process killed after lock publication is recovered once 
 
   const p1Cmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-all", "--sloppy-imports", p1File, tmpDir, b1],
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const p1Child = p1Cmd.spawn();
 
@@ -1660,8 +1666,8 @@ Deno.test("concurrency: pre-publication barrier race prevents lock replacement a
 
   const aCmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-all", "--sloppy-imports", aFile, tmpDir, aReady, resumeA, logFile],
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const aChild = aCmd.spawn();
 
@@ -1676,8 +1682,8 @@ Deno.test("concurrency: pre-publication barrier race prevents lock replacement a
 
   const bCmd = new Deno.Command(Deno.execPath(), {
     args: ["run", "--allow-all", "--sloppy-imports", bFile, tmpDir, bHolding, releaseB, logFile],
-    stdout: "piped",
-    stderr: "piped",
+    stdout: "null",
+    stderr: "null",
   });
   const bChild = bCmd.spawn();
 

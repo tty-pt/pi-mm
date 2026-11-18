@@ -17,6 +17,7 @@ import { classifyOverviewByEmbedding, classifyRecallByEmbedding } from "../judge
 import { overviewEmbed, overviewFallback, recallEmbed, recallFallback, recallAction, type MmConfig } from "../config.ts";
 import { getSessionInstances, ensureSessionIndexed, type SessionContextInstances } from "../session/manager.ts";
 import { buildRecentInteractionsBlock } from "../session/compaction.ts";
+import { getMmAddon } from "../mm_native.ts";
 
 export interface EpisodeSessionProvenance {
   sessionId?: string;
@@ -126,6 +127,19 @@ export async function primeSubsystemInvariants(
   } finally {
     if (timerId !== undefined) clearTimeout(timerId);
   }
+}
+
+export function classifyPromptIntent(
+  prompt?: string,
+): "standalone" | "recall" | "directive" | "overview" | "wondering" {
+  if (!prompt || !prompt.trim()) return "standalone";
+  const addon = getMmAddon();
+  if (addon) {
+    return addon.classifyPrompt(prompt);
+  }
+  if (isDirectMemoryQuestion(prompt)) return "overview";
+  if (isMemoryRecallPrompt(prompt)) return "recall";
+  return "standalone";
 }
 
 export function isMemoryRecallPrompt(prompt?: string): boolean {
@@ -241,6 +255,7 @@ export function formatSessionOriginTag(
 export function formatCompactMemoryEntry(
   cand: FusedCandidate,
   currentSessionId?: string,
+  excerpts?: SessionExcerpt[],
 ): string {
   const ref = cand.ref;
   const env = cand.envelope;
@@ -259,8 +274,17 @@ export function formatCompactMemoryEntry(
 
   if (env?.episode?.findings && env.episode.findings.length > 1) {
     const sumLower = summary.toLowerCase();
+    const excerptsLower = excerpts && excerpts.length > 0
+      ? excerpts.map((e) => e.text.toLowerCase()).join(" ")
+      : "";
     const extraFindings = env.episode.findings
-      .filter((f) => typeof f === "string" && f.trim().length > 0 && !sumLower.includes(f.trim().toLowerCase().slice(0, 40)))
+      .filter((f) => {
+        if (typeof f !== "string" || f.trim().length === 0) return false;
+        const probe = f.trim().toLowerCase().slice(0, 40);
+        if (sumLower.includes(probe)) return false;
+        if (excerptsLower && excerptsLower.includes(probe)) return false;
+        return true;
+      })
       .slice(0, 3);
     if (extraFindings.length > 0) {
       line += `\n  Additional facts: ${extraFindings.join(" | ").slice(0, 300)}`;
@@ -282,7 +306,7 @@ export function formatMemoryEntryWithExcerpts(
   excerpts?: SessionExcerpt[],
   currentSessionId?: string,
 ): string {
-  let line = formatCompactMemoryEntry(cand, currentSessionId);
+  let line = formatCompactMemoryEntry(cand, currentSessionId, excerpts);
   if (excerpts && excerpts.length > 0) {
     const epSessionId = cand.envelope?.episode?.sessionId;
     const isPastSession = Boolean(
@@ -681,7 +705,7 @@ export function buildInjectedContext(
   const globalInvariants = valid.filter(
     (c) =>
       !personaItems.includes(c) &&
-      (c.envelope?.standing === true || (c.envelope?.level === "L2" && c.envelope?.type === "invariant")) &&
+      c.envelope?.standing === true &&
       !c.envelope?.context?.subsystem,
   );
 

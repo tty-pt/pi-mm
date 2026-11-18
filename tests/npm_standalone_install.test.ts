@@ -35,6 +35,7 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
       { short: "lemma", repo: "liblemma", version: "1.4.0", addonFile: "lemma_node.node", libFile: "liblemma.so" },
       { short: "sepal", repo: "libsepal", version: "1.5.0", addonFile: "sepal_node.node", libFile: "libsepal.so" },
       { short: "islet", repo: "libislet", version: "1.6.0", addonFile: "islet_node.node", libFile: "libislet.so" },
+      { short: "mm", repo: "libmm", version: "1.0.0", addonFile: "mm_node.node", libFile: "libmm.so" },
     ];
 
     for (const pkg of packages) {
@@ -103,9 +104,9 @@ Deno.test("standalone npm install: pi-mm works with node_modules/@tty-pt/* prebu
       `Expected findSepalLib to resolve node_modules libsepal.so, got ${sepalLib}`,
     );
 
-    // 3. Verify checkAllEngineVersions satisfies all 7 engines strictly from node_modules/@tty-pt/*
+    // 3. Verify checkAllEngineVersions satisfies all 8 engines strictly from node_modules/@tty-pt/*
     const reports = checkAllEngineVersions({ cwd: tmp, home: tmp, includeDefaultDirs: false });
-    for (const eng of ["axil", "axil-auren", "libcorm", "libjoint", "liblemma", "libsepal", "libislet"] as const) {
+    for (const eng of ["axil", "axil-auren", "libcorm", "libjoint", "liblemma", "libsepal", "libislet", "libmm"] as const) {
       const rep = reports.find((r) => r.name === eng)!;
       check(
         rep.installed && rep.status === "satisfied",

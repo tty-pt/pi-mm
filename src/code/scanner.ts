@@ -5,6 +5,7 @@
 
 import type { CodeSymbolKind, ScannedFileResult, ScannedSymbol } from "./types.ts";
 import { cleanCommentText, type LexToken, tokenizeSource, unquoteString } from "./lexer.ts";
+import { getMmAddon } from "../mm_native.ts";
 
 const CONTROL_KEYWORDS = new Set([
   "if", "else", "for", "while", "do", "switch", "case", "default", "break", "continue", "return", "try", "catch", "finally",
@@ -380,6 +381,26 @@ function tryParseRouteOrMacro(tokens: LexToken[], idx: number, filePath: string,
     }
   }
   return null;
+}
+
+export function scanSourceSymbolsNative(filePath: string, text: string, fileId = 1): ScannedSymbol[] {
+  const addon = getMmAddon();
+  if (!addon) {
+    return scanSourceFile(filePath, text).symbols;
+  }
+  const raw = addon.scanSource(filePath, text, fileId);
+  return raw.map((s) => ({
+    name: s.name,
+    qualifiedName: s.qualifiedName || `${filePath}:${s.name}`,
+    kind: (s.kind as CodeSymbolKind) || "Function",
+    filePath: s.filePath || filePath,
+    startLine: s.startLine,
+    endLine: s.endLine,
+    signature: s.signature,
+    parentSymbol: s.parentSymbol || undefined,
+    docComment: s.docComment || undefined,
+    rawCallees: Array.isArray(s.rawCallees) ? s.rawCallees : [],
+  }));
 }
 
 export function scanSourceFile(filePath: string, text: string): ScannedFileResult {

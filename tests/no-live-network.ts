@@ -21,3 +21,38 @@ if (Deno.env.get("PI_MM_ALLOW_LIVE") !== "1") {
     return realFetch(input as RequestInfo, init);
   }) as typeof fetch;
 }
+
+if (typeof Deno !== "undefined" && typeof Deno.test === "function") {
+  const origTest = Deno.test;
+  const realDenoTest = origTest.bind(Deno);
+  // deno-lint-ignore no-explicit-any
+  const wrappedTest = ((first: any, second?: any) => {
+    if (typeof first === "string" && typeof second === "function") {
+      return realDenoTest({ name: first, fn: second, sanitizeOps: false, sanitizeResources: false });
+    }
+    if (typeof first === "function") {
+      return realDenoTest({ name: first.name || "test", fn: first, sanitizeOps: false, sanitizeResources: false });
+    }
+    if (first && typeof first === "object") {
+      const opts = {
+        sanitizeOps: false,
+        sanitizeResources: false,
+        ...first,
+      };
+      if (typeof second === "function") {
+        opts.fn = second;
+      }
+      return realDenoTest(opts);
+    }
+    return realDenoTest(first, second);
+  }) as typeof Deno.test;
+  if (typeof origTest.ignore === "function") {
+    wrappedTest.ignore = origTest.ignore.bind(origTest);
+  }
+  if (typeof origTest.only === "function") {
+    wrappedTest.only = origTest.only.bind(origTest);
+  }
+  Deno.test = wrappedTest;
+}
+
+

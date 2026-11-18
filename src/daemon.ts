@@ -98,27 +98,30 @@ export function resolveLockPath(inv: Invocation): string {
  * Fails closed on unexpected filesystem or permission errors.
  */
 export async function isDaemonLockHeld(lockPath: string): Promise<boolean> {
-  // 1. Deno native advisory lock check
+  // 1. Deno native advisory lock check (when tryLock is available)
   if (typeof Deno !== "undefined" && typeof Deno.open === "function") {
     try {
       const f = (await Deno.open(lockPath, { read: true, write: true })) as unknown as {
-        tryLock(exclusive?: boolean): Promise<boolean>;
+        tryLock?(exclusive?: boolean): Promise<boolean>;
         unlock(): Promise<void>;
         close(): void;
       };
-      try {
-        const acquired = await f.tryLock(true);
-        if (acquired) {
-          await f.unlock();
+      if (typeof f.tryLock === "function") {
+        try {
+          const acquired = await f.tryLock(true);
+          if (acquired) {
+            await f.unlock();
+            f.close();
+            return false;
+          }
           f.close();
-          return false;
+          return true;
+        } catch {
+          try { f.close(); } catch { /* ignore */ }
+          return true; // Fail closed on unexpected lock error
         }
-        f.close();
-        return true;
-      } catch {
-        try { f.close(); } catch { /* ignore */ }
-        return true; // Fail closed on unexpected lock error
       }
+      f.close();
     } catch (err: unknown) {
       if (err instanceof Deno.errors.NotFound) {
         return false; // Confirmed: lock file does not exist
