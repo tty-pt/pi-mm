@@ -49,9 +49,12 @@ export function isRawToolTelemetryText(text: string): boolean {
   return !s || RAW_TELEMETRY_PREFIXES.some((p) => s.startsWith(p));
 }
 
-export function isBindableArchitecturalLore(envelope: MemoryEnvelope): boolean {
-  if (envelope.level === "L0" || (envelope.lifecycle !== "supported" && envelope.lifecycle !== "tested")) return false;
-  return !isRawToolTelemetryText(envelope.summary || "");
+export function isBindableArchitecturalLore(envelope: MemoryEnvelope, hasExplicitAnchors = false): boolean {
+  if (!hasExplicitAnchors && envelope.level === "L0") return false;
+  if (envelope.lifecycle !== "supported" && envelope.lifecycle !== "tested") return false;
+  if (isRawToolTelemetryText(envelope.summary || "")) return false;
+  if (!hasExplicitAnchors && isRawToolTelemetryText(envelope.episode?.problem || "") && envelope.level === "L0") return false;
+  return true;
 }
 
 export function computeSymbolAnchorFingerprint(sym: {
@@ -64,7 +67,7 @@ export function computeSymbolAnchorFingerprint(sym: {
   return `${sym.kind}\x1f${sym.qualifiedName}\x1f${sym.signature.trim()}\x1f${sortedCallees}`;
 }
 
-export function toSymbolAnchor(sym: CodeSymbolRecord): CodeSymbolAnchor {
+export function toSymbolAnchor(sym: CodeSymbolRecord): CodeSymbolRecord extends never ? never : CodeSymbolAnchor {
   return {
     symbolName: sym.name,
     qualifiedName: sym.qualifiedName,
@@ -120,7 +123,7 @@ function loadBindingsMap(rawIndexDir: string): Map<number, LoreCodeBinding> {
         for (const item of raw) {
           if (item && typeof item.memoryRef === "number" && Array.isArray(item.anchors)) {
             const sum = String(item.summary || "");
-            if (item.level === "L0" || isRawToolTelemetryText(sum)) { pruned = true; continue; }
+            if (isRawToolTelemetryText(sum)) { pruned = true; continue; }
             const validAnchors = (item.anchors as CodeSymbolAnchor[]).filter(
               (a) => isAnchorCorroboratedByLore(a, sum, item.subsystem),
             );
@@ -257,7 +260,8 @@ export function bindMemoryToCode(
   envelope: MemoryEnvelope,
   options?: { timestampIso?: string; explicitSymbols?: string[]; explicitFile?: string },
 ): LoreCodeBinding | null {
-  if (!isBindableArchitecturalLore(envelope)) return null;
+  const hasExplicit = Boolean((options?.explicitSymbols && options.explicitSymbols.length > 0) || options?.explicitFile);
+  if (!isBindableArchitecturalLore(envelope, hasExplicit)) return null;
   const anchors = extractMemorySymbolAnchors(store, envelope, options?.explicitSymbols, options?.explicitFile);
   if (anchors.length === 0) return null;
   const binding: LoreCodeBinding = {
@@ -275,10 +279,22 @@ export function getLoreBindings(storeOrIndexDir: CodeStore | string): LoreCodeBi
   return Array.from(loadBindingsMap(dir).values());
 }
 
+export function getLoreBindingForRef(storeOrIndexDir: CodeStore | string, memoryRef: number): LoreCodeBinding | null {
+  const dir = typeof storeOrIndexDir === "string" ? storeOrIndexDir : storeOrIndexDir.indexDir;
+  return loadBindingsMap(dir).get(memoryRef) ?? null;
+}
+
 export function updateLoreBindingLifecycle(indexDir: string, memoryRef: number, lifecycle: LoreCodeBinding["lifecycle"]): void {
   const map = loadBindingsMap(indexDir);
   const existing = map.get(memoryRef);
   if (existing) { existing.lifecycle = lifecycle; saveBindingsMap(indexDir, map); }
+}
+
+function resolveLiveSymbolForAnchor(store: CodeStore, anchor: CodeSymbolAnchor): CodeSymbolRecord | undefined {
+  const liveByQn = store.getSymbolByQualifiedName(anchor.qualifiedName);
+  return !liveByQn
+    ? store.getSymbolsByName(anchor.symbolName).find((s) => s.filePath === anchor.filePath)
+    : liveByQn;
 }
 
 function evaluateSingleAnchorDrift(
@@ -286,10 +302,7 @@ function evaluateSingleAnchorDrift(
   anchor: CodeSymbolAnchor,
   diffHunks: CodeDiffHunk[],
 ): DriftedAnchorDetail | null {
-  const liveByQn = store.getSymbolByQualifiedName(anchor.qualifiedName);
-  const liveByName = !liveByQn
-    ? store.getSymbolsByName(anchor.symbolName).find((s) => s.filePath === anchor.filePath)
-    : liveByQn;
+  const liveByName = resolveLiveSymbolForAnchor(store, anchor);
 
   if (!liveByName) {
     return { anchor, reason: "deleted_symbol" };
@@ -323,6 +336,44 @@ function evaluateSingleAnchorDrift(
   return null;
 }
 
+export function verifyLoreBindingForRef(
+  store: CodeStore,
+  memoryRef: number,
+  envelope?: MemoryEnvelope,
+  diffHunks: CodeDiffHunk[] = [],
+): LoreDriftReport | null {
+  let binding = getLoreBindingForRef(store, memoryRef);
+  if (!binding && envelope && isBindableArchitecturalLore(envelope) && store.getStats().symbols > 0) {
+    binding = bindMemoryToCode(store, memoryRef, envelope);
+  }
+  if (!binding) return null;
+  if (binding.lifecycle === "contradicted" || binding.lifecycle === "superseded") return null;
+  if (isRawToolTelemetryText(binding.summary)) return null;
+
+  const driftedAnchors: DriftedAnchorDetail[] = [];
+  const matchedAnchors: CodeSymbolAnchor[] = [];
+  for (const anchor of binding.anchors) {
+    const live = resolveLiveSymbolForAnchor(store, anchor);
+    const updatedAnchor = live
+      ? { ...anchor, startLine: live.startLine, endLine: live.endLine }
+      : anchor;
+    matchedAnchors.push(updatedAnchor);
+    const drift = evaluateSingleAnchorDrift(store, anchor, diffHunks);
+    if (drift) driftedAnchors.push(drift);
+  }
+
+  return {
+    memoryRef: binding.memoryRef,
+    summary: binding.summary,
+    level: binding.level,
+    lifecycle: binding.lifecycle,
+    boundAt: binding.boundAt,
+    status: driftedAnchors.length > 0 ? "stale_suspect" : "fresh",
+    matchedAnchors,
+    driftedAnchors,
+  };
+}
+
 export function verifyLoreBindingsForSymbols(
   store: CodeStore,
   targetSymbols: CodeSymbolRecord[],
@@ -338,7 +389,7 @@ export function verifyLoreBindingsForSymbols(
   const reports: LoreDriftReport[] = [];
   for (const b of bindings) {
     if (b.lifecycle === "contradicted" || b.lifecycle === "superseded") continue;
-    if (b.level === "L0" || isRawToolTelemetryText(b.summary)) continue;
+    if (isRawToolTelemetryText(b.summary)) continue;
     const matchedAnchors = filterToTargets
       ? b.anchors.filter(
           (a) => targetQns.has(a.qualifiedName) || targetFileNames.has(`${a.filePath}:${a.symbolName}`),
@@ -367,6 +418,58 @@ export function verifyLoreBindingsForSymbols(
   return reports;
 }
 
+export function formatBoundCodeAnchorsForLore(
+  report: LoreDriftReport,
+  options?: { verbose?: boolean; indent?: string },
+): string {
+  const anchors = report.matchedAnchors;
+  if (anchors.length === 0) return "";
+  const ind = options?.indent ?? "  ";
+  const verbose = options?.verbose === true;
+  const driftByQn = new Map<string, DriftedAnchorDetail>();
+  for (const d of report.driftedAnchors) {
+    driftByQn.set(`${d.anchor.filePath}:${d.anchor.qualifiedName}`, d);
+  }
+
+  const headerStatus = report.status === "stale_suspect"
+    ? `⚠️ STALE_SUSPECT — AST drifted since ${report.boundAt}`
+    : "AST-verified ✓";
+  const lines: string[] = [`${ind}Bound Code Symbols (${headerStatus}):`];
+
+  const displayAnchors = verbose ? anchors : anchors.slice(0, 4);
+  for (const a of displayAnchors) {
+    const drift = driftByQn.get(`${a.filePath}:${a.qualifiedName}`);
+    const span = drift?.currentLines
+      ? `${a.filePath}:${drift.currentLines[0]}-${drift.currentLines[1]}`
+      : `${a.filePath}:${a.startLine}-${a.endLine}`;
+    if (drift) {
+      let reasonText = "AST signature/callees mutated";
+      if (drift.reason === "deleted_symbol") reasonText = "symbol deleted or renamed";
+      else if (drift.reason === "in_diff_hunk") reasonText = "modified in uncommitted git diff";
+      lines.push(`${ind}  • ${a.symbolName} (${span}) — ⚠️ ${reasonText}`);
+      if (verbose && drift.currentSignature && drift.currentSignature !== a.signature) {
+        lines.push(`${ind}    Bound signature:   ${a.signature}`);
+        lines.push(`${ind}    Current signature: ${drift.currentSignature}`);
+      }
+    } else {
+      const sigPart = verbose && a.signature ? ` — \`${a.signature}\`` : "";
+      lines.push(`${ind}  • ${a.symbolName} (${span})${sigPart}`);
+    }
+  }
+
+  if (anchors.length === 1) {
+    const first = anchors[0];
+    lines.push(
+      `${ind}  • Inspect Code: memory_recall({ scope: "code", symbol: "${first.symbolName}", file: "${first.filePath}" })`,
+    );
+  } else {
+    const symList = anchors.slice(0, 4).map((a) => `"${a.symbolName}"`).join(", ");
+    lines.push(`${ind}  • Inspect Code: memory_recall({ scope: "code", symbols: [${symList}] })`);
+  }
+
+  return lines.join("\n");
+}
+
 export function formatLoreDriftSection(reports: LoreDriftReport[]): string {
   if (reports.length === 0) return "";
   const lines: string[] = [];
@@ -384,11 +487,11 @@ export function formatLoreDriftSection(reports: LoreDriftReport[]): string {
         })
         .join("; ");
       lines.push(
-        `  • [Ref ${r.memoryRef}] (${r.level}, STALE_SUSPECT — was ${r.lifecycle}): ${r.summary}\n    ⚠️ Epistemic Drift: ${reasons} [Bound to: ${anchorLabels}]`,
+        `  • [Ref ${r.memoryRef}] (${r.level}, STALE_SUSPECT — was ${r.lifecycle}): ${r.summary}\n    ⚠️ Epistemic Drift: ${reasons} [Bound to: ${anchorLabels}] (Zoom: memory_recall({ zoomRef: ${r.memoryRef} }))`,
       );
     } else {
       lines.push(
-        `  • [Ref ${r.memoryRef}] (${r.level}, ${r.lifecycle} · AST-verified ✓): ${r.summary} [Bound to: ${anchorLabels}]`,
+        `  • [Ref ${r.memoryRef}] (${r.level}, ${r.lifecycle} · AST-verified ✓): ${r.summary} [Bound to: ${anchorLabels}] (Zoom: memory_recall({ zoomRef: ${r.memoryRef} }))`,
       );
     }
   }

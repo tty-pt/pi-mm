@@ -2,11 +2,13 @@ import assert from "node:assert";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { makeRecallTool } from "../src/tools/recall.ts";
+import { makeRecordTool } from "../src/tools/record.ts";
 import { makeStoreTool } from "../src/tools/store.ts";
 import { give, type ToolEnv } from "../src/tools/index.ts";
 import { DEFAULT_CONFIG, type MmConfig } from "../src/config.ts";
 import { ShellCormRunner } from "../src/corm.ts";
 import { clearCodeInstances } from "../src/code/manager.ts";
+import { clearLoreBindingsCache } from "../src/code/lore_binding.ts";
 
 const cormBinPath = (await Deno.stat("/home/quirinpa/.local/bin/corm").then(() => true, () => false))
   ? "/home/quirinpa/.local/bin/corm"
@@ -14,6 +16,7 @@ const cormBinPath = (await Deno.stat("/home/quirinpa/.local/bin/corm").then(() =
 
 Deno.test("code_recall_integration: unified memory_recall code scope, auto-preview, trace, batch symbols, and episodic lore fusion", async () => {
   clearCodeInstances();
+  clearLoreBindingsCache();
   const tmpDir = await Deno.makeTempDir({ prefix: "mm-code-recall-int-" });
 
   try {
@@ -79,6 +82,7 @@ Deno.test("code_recall_integration: unified memory_recall code scope, auto-previ
 
     const ctx = { cwd: tmpDir, hasUI: false, mode: "test" };
     const storeTool = makeStoreTool(give(env));
+    const recordTool = makeRecordTool(give(env));
     const recallTool = makeRecallTool(give(env));
 
     // 1. Store an L2 Standing Invariant about processAudioChunk in persistent memory
@@ -133,8 +137,74 @@ Deno.test("code_recall_integration: unified memory_recall code scope, auto-previ
     const ovText = ovRes.content[0].text || "";
     assert.ok(ovText.includes("Codebase Architecture Overview (L3/L2 Mipmap)"));
     assert.ok(ovText.includes("Indexed Files: 1 | Total Symbols: 2"));
+
+    // 6. Bidirectional Code↔Lore: Record an invariant with explicit symbols + path via memory_record
+    const recRes = await recordTool.execute("6", {
+      problem: "decodeFrame always doubles sampleRate for stereo interleaving",
+      standing: true,
+      project: "site",
+      subsystem: "audio",
+      path: "audio.c",
+      symbols: ["decodeFrame"],
+    }, undefined, undefined, ctx);
+    const recText = recRes.content[0].text || "";
+    assert.ok(recText.includes("Bound Code Symbols (1): decodeFrame (audio.c:"), "memory_record should confirm bound code symbols");
+    const recDetails = recRes.details as { ref: number };
+
+    // 7. Reverse Lore → Code: Persistent recall surfaces bound code anchors & jump command
+    const persRes = await recallTool.execute("7", {
+      scope: "persistent",
+      query: "stereo interleaving",
+    }, undefined, undefined, ctx);
+    const persText = persRes.content[0].text || "";
+    assert.ok(persText.includes("Bound Code Symbols (AST-verified ✓):"), "persistent recall should show AST-verified bound symbols");
+    assert.ok(persText.includes("decodeFrame (audio.c:"), "persistent recall should list bound symbol span");
+    assert.ok(
+      persText.includes('Inspect Code: memory_recall({ scope: "code", symbol: "decodeFrame", file: "audio.c" })'),
+      "persistent recall should emit copy-pasteable code recall jump hint",
+    );
+
+    // 8. Reverse Lore → Code on zoomRef: shows verbose signature and code jump command
+    const zoomRes = await recallTool.execute("8", {
+      zoomRef: recDetails.ref,
+    }, undefined, undefined, ctx);
+    const zoomText = zoomRes.content[0].text || "";
+    assert.ok(zoomText.includes("Bound Code Symbols (AST-verified ✓):"), "zoomRef should show bound code symbols");
+    assert.ok(zoomText.includes("static int decodeFrame(int sampleRate)"), "zoomRef should include bound symbol signature");
+
+    // 9. Mutate decodeFrame signature on disk -> persistent recall & zoomRef immediately detect STALE_SUSPECT drift
+    writeFileSync(audioFile, [
+      '#include "audio.h"',
+      "",
+      "/** Decode incoming FLAC frame with channel count */",
+      "static int decodeFrame(int sampleRate, int channels) {",
+      "  return sampleRate * channels;",
+      "}",
+      "",
+      "/** Process audio ringbuffer chunk */",
+      "int processAudioChunk(int frames) {",
+      "  int decoded = decodeFrame(frames, 2);",
+      "  return decoded;",
+      "}",
+    ].join("\n"), "utf-8");
+
+    const driftedPersRes = await recallTool.execute("9", {
+      scope: "persistent",
+      query: "stereo interleaving",
+    }, undefined, undefined, ctx);
+    const driftedPersText = driftedPersRes.content[0].text || "";
+    assert.ok(driftedPersText.includes("STALE_SUSPECT"), "persistent recall should flag STALE_SUSPECT after symbol mutation");
+    assert.ok(driftedPersText.includes("AST signature/callees mutated"), "persistent recall should explain drift reason");
+
+    const driftedZoomRes = await recallTool.execute("10", {
+      zoomRef: recDetails.ref,
+    }, undefined, undefined, ctx);
+    const driftedZoomText = driftedZoomRes.content[0].text || "";
+    assert.ok(driftedZoomText.includes("Bound signature:   static int decodeFrame(int sampleRate)"), "zoomRef should show original bound signature");
+    assert.ok(driftedZoomText.includes("Current signature: static int decodeFrame(int sampleRate, int channels)"), "zoomRef should show mutated current signature");
   } finally {
     clearCodeInstances();
+    clearLoreBindingsCache();
     await Deno.remove(tmpDir, { recursive: true });
   }
 });

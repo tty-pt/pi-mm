@@ -168,6 +168,9 @@ export class CodeStore {
     this.shellRunner = createDefaultRunner();
     this.hasCustomRunner = Boolean(customRunner);
     this.runner = customRunner ?? (this.cormdBin ? new DaemonCormRunner(this.socketPath, this.shellRunner) : this.shellRunner);
+    if (existsSync(this.manifestPath)) {
+      this.loadManifestFromDisk();
+    }
   }
 
   configure(options: Partial<CodeStoreOptions>): void {
@@ -201,7 +204,9 @@ export class CodeStore {
       if (!existsSync(this.indexDir)) {
         await mkdir(this.indexDir, { recursive: true });
       }
-      this.loadManifestFromDisk();
+      if (this.filesByPath.size === 0) {
+        this.loadManifestFromDisk();
+      }
       if (this.persistToCorm && !this.hasCustomRunner && !this.projectRoot.includes("fake")) {
         if (!this.cormdBin && this.explicitCormdBin === undefined) {
           const envMap = runtimeEnv();

@@ -67,6 +67,8 @@ const STORE_PARAMS = {
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
     anchor: { type: "boolean", description: "Whether this record is an anchored memory." },
     isAnchor: { type: "boolean", description: "Whether this record is an anchored memory." },
+    symbols: { type: "array", items: { type: "string" }, description: "Concrete code symbol names or qualified names to bind this memory to." },
+    path: { type: "string", description: "Primary source file path associated with this memory." },
     timestamp: { type: "string", description: "ISO timestamp (used as DATE prefix); default now." },
   },
   additionalProperties: false,
@@ -132,24 +134,41 @@ async function performPostStoreSideEffects(
   ref: number,
   date: string,
   envelope: MemoryEnvelope,
-): Promise<void> {
+  explicitSymbols?: string[],
+  explicitFile?: string,
+): Promise<import("../code/lore_binding.ts").LoreCodeBinding | null> {
+  let createdBinding: import("../code/lore_binding.ts").LoreCodeBinding | null = null;
+  const hasExplicit = Boolean((explicitSymbols && explicitSymbols.length > 0) || explicitFile);
   if (
     (envelope.lifecycle === "supported" || envelope.lifecycle === "tested") &&
-    (envelope.context?.path || envelope.episode?.diffs || envelope.type === "invariant" || envelope.level === "L2")
+    (hasExplicit || envelope.context?.path || envelope.episode?.diffs || envelope.type === "invariant" || envelope.level === "L2")
   ) {
     try {
       const { hasCodeInstances, getCodeInstances } = await import("../code/manager.ts");
       const { bindMemoryToCode, getLoreBindings, updateLoreBindingLifecycle } = await import("../code/lore_binding.ts");
       const root = ctx?.cwd || env.cwd;
-      if (hasCodeInstances(root)) {
-        const codeInst = getCodeInstances({ projectRoot: root });
+      if (hasCodeInstances(root) || hasExplicit || envelope.context?.path || envelope.episode?.diffs) {
+        const codeInst = hasCodeInstances(root)
+          ? getCodeInstances({ projectRoot: root })
+          : getCodeInstances({ projectRoot: root, persistToCorm: false });
+        const targetPath = explicitFile || envelope.context?.path;
+        if (targetPath) {
+          await codeInst.store.refreshFile(targetPath).catch(() => {});
+        }
+        if (codeInst.store.getStats().symbols === 0 && hasExplicit) {
+          await codeInst.store.ensureIndexed(250).catch(() => {});
+        }
         if (codeInst.store.getStats().symbols > 0) {
           if (typeof envelope.supersedes === "number") {
             updateLoreBindingLifecycle(codeInst.store.indexDir, envelope.supersedes, "superseded");
           }
-          const created = bindMemoryToCode(codeInst.store, ref, envelope, { timestampIso: date });
-          if (created && (envelope.type === "invariant" || envelope.standing)) {
-            const newSyms = new Set(created.anchors.map((a) => a.qualifiedName));
+          createdBinding = bindMemoryToCode(codeInst.store, ref, envelope, {
+            timestampIso: date,
+            explicitSymbols,
+            explicitFile: targetPath,
+          });
+          if (createdBinding && (envelope.type === "invariant" || envelope.standing)) {
+            const newSyms = new Set(createdBinding.anchors.map((a) => a.qualifiedName));
             for (const oldB of getLoreBindings(codeInst.store.indexDir)) {
               if (oldB.memoryRef === ref || oldB.lifecycle === "superseded" || oldB.lifecycle === "contradicted") continue;
               if (oldB.anchors.some((a) => newSyms.has(a.qualifiedName)) && oldB.summary === envelope.summary) {
@@ -174,6 +193,7 @@ async function performPostStoreSideEffects(
       await syncDirectivesFile(cwd, reinforcementScheduler, removed);
     } catch { /* best effort */ }
   }
+  return createdBinding;
 }
 
 function defaultLifecycle(level: MipmapLevel, type: string | undefined): LifecycleState {
@@ -185,22 +205,27 @@ function buildEnvelope(params: Record<string, unknown>, summary: string, ep?: Ep
   const level: MipmapLevel = (params["level"] as MipmapLevel) || (ep ? "L0" : "L2");
   const type = (params["type"] as MemoryEnvelope["type"]) || (ep ? "episode" : "note");
   const lifecycle: LifecycleState = (params["lifecycle"] as LifecycleState) || defaultLifecycle(level, type);
+  const rawContext = params["context"] as MemoryContext | undefined;
+  const topPath = typeof params["path"] === "string" && params["path"].trim() ? params["path"].trim() : undefined;
+  const context = topPath
+    ? { ...(rawContext || {}), path: rawContext?.path || topPath }
+    : rawContext;
   const envelope: MemoryEnvelope = {
     level,
     type,
     lifecycle,
     summary,
-    context: params["context"] as MemoryContext | undefined,
+    context,
     episode: ep,
     evidence: Array.isArray(params["evidence"]) ? (params["evidence"] as number[]) : undefined,
     supersedes: typeof params["supersedes"] === "number" ? params["supersedes"] : undefined,
     tags: Array.isArray(params["tags"]) ? (params["tags"] as string[]) : undefined,
     constraints: Array.isArray(params["constraints"]) ? (params["constraints"] as string[]) : undefined,
-    isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || isNaturalAnchor(summary) || (params["context"] as MemoryContext | undefined)?.project === "user") || undefined,
+    isAnchor: Boolean(params["anchor"] || params["isAnchor"] || summary.includes("@remember") || summary.toLowerCase().startsWith("remember:") || isNaturalAnchor(summary) || context?.project === "user") || undefined,
     standing: typeof params["standing"] === "boolean" ? params["standing"] : (type === "invariant" ? true : undefined),
   };
   const isStructured = Boolean(
-    ep || params["level"] || params["context"] || params["evidence"] ||
+    ep || params["level"] || context || params["evidence"] ||
     params["supersedes"] || params["tags"] || params["constraints"] || params["lifecycle"] || params["standing"]
   );
   return { envelope, isStructured };
@@ -226,6 +251,12 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
     const embed = sepalConfigured(env.cfg);
     const fspec = filespecFor(cwd, embed);
     const eEnv = embedEnv(env.cfg);
+    const explicitSymbols = Array.isArray(params["symbols"])
+      ? (params["symbols"] as unknown[]).filter((s): s is string => typeof s === "string" && s.trim() !== "")
+      : undefined;
+    const explicitFile = typeof params["path"] === "string" && params["path"].trim()
+      ? params["path"].trim()
+      : undefined;
     return await withLock(cwd, async () => {
       const ref = await allocateNextRef(cwd, env.runner, bin, fspec, axes, eEnv);
       const { envelope } = buildEnvelope(params, summary, ep);
@@ -259,12 +290,19 @@ export async function executeStore(envSource: EnvSource, params: Record<string, 
       }
       if (envelope.context?.grid) await storeSpatialGrid(env, axes, cwd, ref, envelope.context.grid);
       void recordAssociations(cwd, summary).catch(() => {});
-      await performPostStoreSideEffects(env, ctx, cwd, ref, date, envelope);
+      const bound = await performPostStoreSideEffects(env, ctx, cwd, ref, date, envelope, explicitSymbols, explicitFile);
       try {
         const { notifyMmEvent } = await import("../hooks/events.ts");
         notifyMmEvent(ctx, "saved");
       } catch { /* best effort */ }
-      return exportDetail({ ref, key: `@${date}`, level: envelope.level, lifecycle: envelope.lifecycle, summary });
+      return exportDetail({
+        ref,
+        key: `@${date}`,
+        level: envelope.level,
+        lifecycle: envelope.lifecycle,
+        summary,
+        ...(bound ? { boundAnchors: bound.anchors } : {}),
+      });
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

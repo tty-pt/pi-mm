@@ -394,3 +394,78 @@ Deno.test("code_store_and_graph: .pi/extensions traversal, symlink cycle safety,
   }
 });
 
+Deno.test("code_store_and_graph: Feature 3 Interactive Ambiguity Resolution ranks by session context, emits copy-paste selectors & top-1 preview, and resolves via symRef", async () => {
+  const { clearContextSnapshots, recordSessionFileSnapshot } = await import("../src/code/context_sync.ts");
+  clearContextSnapshots();
+  const tmpDir = await Deno.makeTempDir({ prefix: "mm-ambig-f3-" });
+  try {
+    await Deno.mkdir(join(tmpDir, "mods", "alpha"), { recursive: true });
+    await Deno.mkdir(join(tmpDir, "mods", "beta"), { recursive: true });
+
+    writeFileSync(join(tmpDir, "mods", "alpha", "alpha.c"), [
+      "int bud_app_render(const char *state) {",
+      "  return 100;",
+      "}",
+    ].join("\n"), "utf-8");
+
+    writeFileSync(join(tmpDir, "mods", "beta", "beta.c"), [
+      "int helper_beta(int v) { return v * 2; }",
+      "int bud_app_render(const char *state) {",
+      "  return helper_beta(200);",
+      "}",
+    ].join("\n"), "utf-8");
+
+    const store = new CodeStore({
+      projectRoot: tmpDir,
+      indexDir: join(tmpDir, ".pi", "cache", "code-index"),
+      persistToCorm: false,
+    });
+    const engine = new CodeRecallEngine(store);
+    await store.indexProject();
+
+    // Record session context on mods/beta/beta.c so beta's bud_app_render has active session context proximity
+    recordSessionFileSnapshot(store, "sess-f3-test", "mods/beta/beta.c");
+
+    const ambigRes = await engine.execute({
+      symbol: "bud_app_render",
+      sessionId: "sess-f3-test",
+    });
+
+    assert.ok(ambigRes.rendered.includes('=== Ambiguous Symbol "bud_app_render" (2 candidates — fail-closed) ==='));
+    assert.ok(
+      ambigRes.rendered.includes("#1 [SymRef ") && ambigRes.rendered.indexOf("mods/beta/beta.c") < ambigRes.rendered.indexOf("mods/alpha/alpha.c"),
+      "candidate in active session context file (mods/beta/beta.c) must rank #1",
+    );
+    assert.ok(
+      ambigRes.rendered.includes("★ Recommended: active file in session context"),
+      "should display recommendation reason badge on #1 candidate",
+    );
+    assert.ok(
+      ambigRes.rendered.includes('→ Select: memory_recall({ scope: "code", symbol: "bud_app_render", file: "mods/beta/beta.c" })'),
+      "should include copy-pasteable disambiguation selector for beta",
+    );
+    assert.ok(
+      ambigRes.rendered.includes('→ Select: memory_recall({ scope: "code", symbol: "bud_app_render", file: "mods/alpha/alpha.c" })'),
+      "should include copy-pasteable disambiguation selector for alpha",
+    );
+    assert.ok(
+      ambigRes.rendered.includes("=== Top Contextual Match Preview (#1: mods/beta/beta.c:bud_app_render"),
+      "should auto-preview top contextual match when #1 has decisive session context lead",
+    );
+    assert.ok(
+      ambigRes.rendered.includes("return helper_beta(200);"),
+      "top contextual match preview should slice #1 body",
+    );
+
+    // Direct O(1) resolution via symRef
+    const alphaSym = store.getSymbolsByName("bud_app_render").find((s) => s.filePath === "mods/alpha/alpha.c")!;
+    const bySymRef = await engine.execute({ symRef: alphaSym.ref });
+    assert.ok(!bySymRef.rendered.includes("Ambiguous Symbol"), "symRef must resolve unambiguously");
+    assert.ok(bySymRef.rendered.includes("Function mods/alpha/alpha.c:bud_app_render"));
+    assert.ok(bySymRef.rendered.includes("return 100;"));
+  } finally {
+    clearContextSnapshots();
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+

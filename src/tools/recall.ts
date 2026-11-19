@@ -24,7 +24,13 @@ import {
   searchAcrossSessions,
 } from "../session/recall.ts";
 import { extractSessionId, setMmBusy } from "../hooks/events.ts";
-import { executeCodeRecallWithLore, getCodeInstances, hasExplicitCodeParams } from "../code/manager.ts";
+import { executeCodeRecallWithLore, getCodeInstances, hasCodeInstances, hasExplicitCodeParams } from "../code/manager.ts";
+import {
+  formatBoundCodeAnchorsForLore,
+  getLoreBindingForRef,
+  type LoreDriftReport,
+  verifyLoreBindingForRef,
+} from "../code/lore_binding.ts";
 
 function parseInlineZoomRef(rawQuery: string): number | null {
   const lower = rawQuery.trim().toLowerCase();
@@ -101,6 +107,7 @@ const RECALL_PARAMS = {
     lineage: { type: "string", enum: ["active", "all"], description: "Lineage scope for session recall ('active' branch vs 'all' branches)." },
     symbol: { type: "string", description: "Concrete code symbol name or qualified_name to resolve and read (fails closed with candidates if ambiguous)." },
     symbols: { type: "array", items: { type: "string" }, description: "Batch array of concrete code symbol names or qualified_names to resolve and read in one call." },
+    symRef: { type: "number", description: "Exact numeric code symbol reference ID ([SymRef N]) to inspect or trace unambiguously." },
     file: { type: "string", description: "File path substring or suffix filter/disambiguator for code recall." },
     kind: { type: "string", description: "Code symbol kind filter ('Function'|'Method'|'Class'|'Struct'|'Interface'|'Type'|'Enum'|'Macro'|'Route')." },
     parentSymbol: { type: "string", description: "Enclosing class/struct/interface name disambiguator for code methods." },
@@ -113,9 +120,35 @@ const RECALL_PARAMS = {
     guardrail: { type: "string", description: "Planned edit, command, or approach to pre-flight against contradicted memories, failed approaches, standing restrictions, and stale-bound invariants." },
     maxLines: { type: "number", description: "Maximum source lines returned per code symbol before compacting (default 120)." },
     fullOutput: { type: "boolean", description: "If true, returns complete uncompacted code symbol source blocks." },
+    filter: { type: "object", description: "Advanced filter for persistent memory: { lifecycle, minLevel, origin, subsystem, project, excludeRawTelemetry }", properties: { lifecycle: { type: "string", enum: ["observed", "hypothesized", "tested", "supported", "contradicted", "superseded", "all"] }, minLevel: { type: "string", enum: ["L0", "L1", "L2", "L3"] }, origin: { type: "string", enum: ["lemma", "sepal", "both"] }, subsystem: { type: "string" }, project: { type: "string" }, excludeRawTelemetry: { type: "boolean" } } },
   },
   additionalProperties: false,
 };
+
+async function resolveCodeBindingForMemory(
+  projectRoot: string,
+  ref: number,
+  envelope?: import("../types.ts").MemoryEnvelope,
+): Promise<LoreDriftReport | null> {
+  if (!projectRoot) return null;
+  try {
+    const codeInst = hasCodeInstances(projectRoot)
+      ? getCodeInstances({ projectRoot })
+      : getCodeInstances({ projectRoot, persistToCorm: false });
+    const existing = getLoreBindingForRef(codeInst.store, ref);
+    const filesToCheck = new Set<string>();
+    if (existing) {
+      for (const a of existing.anchors) filesToCheck.add(a.filePath);
+    }
+    if (envelope?.context?.path) filesToCheck.add(envelope.context.path);
+    for (const fp of Array.from(filesToCheck).slice(0, 4)) {
+      await codeInst.store.refreshFile(fp).catch(() => {});
+    }
+    return verifyLoreBindingForRef(codeInst.store, ref, envelope);
+  } catch {
+    return null;
+  }
+}
 
 function formatResult(
   cand: FusedCandidate,
@@ -123,6 +156,7 @@ function formatResult(
   excerpts?: SessionExcerpt[],
   indexedSession?: IndexedSessionSummary,
   currentSessionId?: string,
+  codeBinding?: LoreDriftReport | null,
 ): string {
   const ref = cand.ref;
   const env = cand.envelope;
@@ -133,7 +167,9 @@ function formatResult(
   if (env?.context?.project) scopeParts.push(env.context.project);
   if (env?.context?.subsystem) scopeParts.push(env.context.subsystem);
   const scopeStr = scopeParts.length > 0 ? ` [${scopeParts.join("/")}]` : "";
-  const lifecycleLabel = isHypothesis ? "[HYPOTHESIS]" : lifecycle;
+  const lifecycleLabel = isHypothesis
+    ? "[HYPOTHESIS]"
+    : (codeBinding?.status === "stale_suspect" ? `${lifecycle} · STALE_SUSPECT` : lifecycle);
   const epSessionId = env?.episode?.sessionId || indexedSession?.sessionId;
   let sessionBadge = "";
   if (epSessionId && epSessionId !== "unknown-session" && epSessionId !== "default-session") {
@@ -144,6 +180,11 @@ function formatResult(
 
   const summary = env?.summary ?? cand.summary ?? cand.record.slice(0, 120);
   let text = `[Ref ${ref}] (${level}, ${lifecycleLabel}${scopeStr})${sessionBadge}: ${summary}\n  Origin: ${cand.origin} (score: ${cand.score ?? "1.0"})`;
+
+  if (codeBinding && codeBinding.matchedAnchors.length > 0) {
+    const codeBlock = formatBoundCodeAnchorsForLore(codeBinding, { verbose: false, indent: "  " });
+    if (codeBlock) text += `\n${codeBlock}`;
+  }
 
   if (evidenceText) {
     text += `\n  Supporting Evidence:\n${evidenceText.split("\n").map((l) => "    " + l).join("\n")}`;
@@ -214,18 +255,23 @@ async function zoomInMemory(
   }
 
   const { envelope, date } = item;
+  const projectRoot = cwd || env.cwd;
   const tree = await traverseDown(env, fspec, axes, memCwd, eEnv, ref, 0, 3, new Set());
   const treeText = tree ? renderTree(tree).trim() : `[${envelope.level}] Ref ${ref}: ${envelope.summary}`;
-  const indexedSession = await indexSingleMemorySession(env, ref, envelope, undefined, cwd || env.cwd);
+  const indexedSession = await indexSingleMemorySession(env, ref, envelope, undefined, projectRoot);
+  const codeBinding = await resolveCodeBindingForMemory(projectRoot, ref, envelope);
 
   const scopeParts: string[] = [];
   if (envelope.context?.project) scopeParts.push(envelope.context.project);
   if (envelope.context?.subsystem) scopeParts.push(envelope.context.subsystem);
   const scopeStr = scopeParts.length > 0 ? ` [${scopeParts.join("/")}]` : "";
+  const lifecycleText = codeBinding?.status === "stale_suspect"
+    ? `${envelope.lifecycle} (⚠️ STALE_SUSPECT)`
+    : envelope.lifecycle;
 
   const lines = [
     `=== Memory Zoom-In: Ref ${ref} ===`,
-    `Level: ${envelope.level} | Lifecycle: ${envelope.lifecycle} | Type: ${envelope.type ?? "note"}${scopeStr}`,
+    `Level: ${envelope.level} | Lifecycle: ${lifecycleText} | Type: ${envelope.type ?? "note"}${scopeStr}`,
     `Date: ${date} | Summary: ${envelope.summary}`,
   ];
 
@@ -260,6 +306,10 @@ async function zoomInMemory(
     }
   }
 
+  if (codeBinding && codeBinding.matchedAnchors.length > 0) {
+    lines.push(`\n${formatBoundCodeAnchorsForLore(codeBinding, { verbose: true, indent: "" })}`);
+  }
+
   if (indexedSession) {
     lines.push(`\n${formatIndexedSessionBlock(ref, indexedSession).trimStart()}`);
   }
@@ -283,7 +333,14 @@ async function zoomInMemory(
 
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    details: { ref, envelope, date, tree, indexedSession: serializableSession },
+    details: {
+      ref,
+      envelope,
+      date,
+      tree,
+      indexedSession: serializableSession,
+      ...(codeBinding ? { codeBinding } : {}),
+    },
   };
 }
 
@@ -315,16 +372,25 @@ async function executeTargetedHybridRecall(
   const limit = Math.min(Math.max(Number(params["limit"]) || 5, 1), 20);
   const filterLevel = params["level"];
   const includeL0 = filterLevel === undefined || filterLevel === "L0";
+  const filterObj = typeof params["filter"] === "object" && params["filter"] !== null
+    ? (params["filter"] as import("./ranking.ts").FilterCriteria)
+    : undefined;
+  const projectParam = typeof params["project"] === "string" ? params["project"].trim() : filterObj?.project?.trim();
+  const subsystemParam = typeof params["subsystem"] === "string" ? params["subsystem"].trim() : filterObj?.subsystem?.trim();
   const { records, details } = await executeHybridScan(env, {
     topic: query,
-    project: typeof params["project"] === "string" ? params["project"].trim() : undefined,
-    subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
+    project: projectParam,
+    subsystem: subsystemParam,
     level: filterLevel,
     includeL0,
     limit,
     embed: true,
     overfetch: true,
     dedupe: true,
+    minLevel: filterObj?.minLevel,
+    origin: filterObj?.origin,
+    excludeRawTelemetry: filterObj?.excludeRawTelemetry,
+    lifecycle: filterObj?.lifecycle,
   });
 
   if (records.length === 0) {
@@ -339,8 +405,16 @@ async function executeTargetedHybridRecall(
     evidenceMap = await attachEvidence(env, records);
   }
 
-  const excerptsMap = await enrichCandidatesWithSessionHistory(records, query, cwd);
-  const indexedSessionsMap = await indexCandidateSessions(env, records, query, cwd);
+  const projectRoot = cwd || env.cwd;
+  const excerptsMap = await enrichCandidatesWithSessionHistory(records, query, projectRoot);
+  const indexedSessionsMap = await indexCandidateSessions(env, records, query, projectRoot);
+  const codeBindingsMap = new Map<number, LoreDriftReport>();
+  for (const rec of records) {
+    const report = await resolveCodeBindingForMemory(projectRoot, rec.ref, rec.envelope);
+    if (report && report.matchedAnchors.length > 0) {
+      codeBindingsMap.set(rec.ref, report);
+    }
+  }
 
   const lines = [`Found ${records.length} relevant memory record(s) for "${query}":\n`];
   for (const rec of records) {
@@ -351,6 +425,7 @@ async function executeTargetedHybridRecall(
         excerptsMap.get(rec.ref),
         indexedSessionsMap.get(rec.ref),
         currentSessionId,
+        codeBindingsMap.get(rec.ref),
       ),
     );
   }

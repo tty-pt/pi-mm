@@ -12,15 +12,43 @@ import type {
   CodeSymbolRecord,
   CodeTraceNode,
   CodeTraceResult,
+  RankedSymbolCandidate,
 } from "./types.ts";
 import { isAsciiDigit } from "./lexer.ts";
 import { isTestOrMockRelPath, normalizeRelPath } from "./payload_codec.ts";
 import { detectXyContractMismatches } from "./dossier.ts";
+import { getSessionContextSnapshots } from "./context_sync.ts";
+import { getLoreBindings } from "./lore_binding.ts";
+
+function parseInlineSymRef(raw?: string): number | null {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  let digits = "";
+  if (s.startsWith("symref:")) digits = s.slice(7).trim();
+  else if (s.startsWith("symref ")) digits = s.slice(7).trim();
+  else if (s.startsWith("#")) digits = s.slice(1).trim();
+  if (!digits) return null;
+  for (let i = 0; i < digits.length; i++) {
+    if (!isAsciiDigit(digits.charCodeAt(i))) return null;
+  }
+  const n = Number(digits);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 
 export function resolveSymbolCandidates(
   store: CodeStore,
-  opts: { name?: string; qualifiedName?: string; file?: string; kind?: string; parentSymbol?: string },
+  opts: { name?: string; qualifiedName?: string; file?: string; kind?: string; parentSymbol?: string; symRef?: number },
 ): CodeSymbolRecord[] {
+  if (typeof opts.symRef === "number" && Number.isInteger(opts.symRef) && opts.symRef > 0) {
+    const byRef = store.getSymbolSync(opts.symRef);
+    return byRef ? [byRef] : [];
+  }
+  const inlineRef = parseInlineSymRef(opts.name) ?? parseInlineSymRef(opts.qualifiedName);
+  if (inlineRef !== null) {
+    const byRef = store.getSymbolSync(inlineRef);
+    return byRef ? [byRef] : [];
+  }
+
   const qn = opts.qualifiedName?.trim();
   const name = opts.name?.trim();
 
@@ -41,7 +69,12 @@ export function resolveSymbolCandidates(
       if (exactSuffix.length > 0) cands = exactSuffix;
       else {
         const lower = name.toLowerCase();
-        cands = all.filter((s) => s.name.toLowerCase().includes(lower) || s.qualifiedName.toLowerCase().includes(lower));
+        const caseInsensitiveExact = all.filter((s) => s.name.toLowerCase() === lower);
+        if (caseInsensitiveExact.length > 0) {
+          cands = caseInsensitiveExact;
+        } else {
+          cands = all.filter((s) => s.name.toLowerCase().includes(lower) || s.qualifiedName.toLowerCase().includes(lower));
+        }
       }
     }
   } else {
@@ -69,6 +102,142 @@ export function resolveSymbolCandidates(
     }
   }
   return cands;
+}
+
+function extractDirPrefix(filePath: string): string {
+  const idx = filePath.lastIndexOf("/");
+  return idx >= 0 ? filePath.slice(0, idx + 1) : "";
+}
+
+function buildSelectCommandForCandidate(
+  sym: CodeSymbolRecord,
+  allCands: CodeSymbolRecord[],
+  mode: "symbol" | "trace",
+): string {
+  const targetKey = mode === "trace" ? "trace" : "symbol";
+  const sameFileAndName = allCands.filter((c) => c.filePath === sym.filePath && c.name === sym.name);
+  if (sameFileAndName.length === 1) {
+    return `memory_recall({ scope: "code", ${targetKey}: "${sym.name}", file: "${sym.filePath}" })`;
+  }
+  if (sym.parentSymbol) {
+    const sameParent = sameFileAndName.filter((c) => c.parentSymbol === sym.parentSymbol);
+    if (sameParent.length === 1) {
+      return `memory_recall({ scope: "code", ${targetKey}: "${sym.name}", file: "${sym.filePath}", parentSymbol: "${sym.parentSymbol}" })`;
+    }
+  }
+  const sameKind = sameFileAndName.filter((c) => c.kind === sym.kind);
+  if (sameKind.length === 1) {
+    return `memory_recall({ scope: "code", ${targetKey}: "${sym.name}", file: "${sym.filePath}", kind: "${sym.kind}" })`;
+  }
+  return `memory_recall({ scope: "code", ${targetKey}: "${sym.name}", symRef: ${sym.ref} })`;
+}
+
+export function rankAmbiguousCandidates(
+  store: CodeStore,
+  target: string,
+  cands: CodeSymbolRecord[],
+  options?: { sessionId?: string; mode?: "symbol" | "trace" },
+): RankedSymbolCandidate[] {
+  const mode = options?.mode ?? "symbol";
+  const sessionId = options?.sessionId || "";
+  const snapshots = sessionId ? getSessionContextSnapshots(sessionId) : [];
+  const activeFiles = new Set(snapshots.map((s) => s.filePath));
+  const activeDirs = new Set(snapshots.map((s) => extractDirPrefix(s.filePath)).filter(Boolean));
+  const activeNeighborRefs = new Set<number>();
+
+  for (const snap of snapshots) {
+    const entry = store.getFileEntry(snap.filePath);
+    if (!entry) continue;
+    for (const ref of entry.symbolRefs) {
+      const s = store.getSymbolSync(ref);
+      if (!s) continue;
+      for (const cr of s.callers) activeNeighborRefs.add(cr);
+      for (const ce of s.callees) activeNeighborRefs.add(ce);
+    }
+  }
+
+  const loreByQn = new Map<string, number[]>();
+  try {
+    for (const b of getLoreBindings(store)) {
+      if (b.lifecycle === "contradicted" || b.lifecycle === "superseded") continue;
+      for (const a of b.anchors) {
+        const key = `${a.filePath}:${a.symbolName}`;
+        const list = loreByQn.get(key) ?? [];
+        if (!list.includes(b.memoryRef)) list.push(b.memoryRef);
+        loreByQn.set(key, list);
+      }
+    }
+  } catch { /* ignore */ }
+
+  const targetTrimmed = target.trim();
+  const targetLower = targetTrimmed.toLowerCase();
+
+  const ranked: RankedSymbolCandidate[] = cands.map((sym) => {
+    let score = 0;
+    const reasons: string[] = [];
+
+    if (sym.name === targetTrimmed || sym.qualifiedName === targetTrimmed) {
+      score += 40;
+    } else if (sym.name.toLowerCase() === targetLower) {
+      score += 25;
+    } else if (sym.name.toLowerCase().startsWith(targetLower)) {
+      score += 15;
+    } else {
+      score += 5;
+    }
+
+    if (activeFiles.has(sym.filePath)) {
+      score += 30;
+      reasons.push("active file in session context");
+    } else {
+      const dir = extractDirPrefix(sym.filePath);
+      if (dir && activeDirs.has(dir)) {
+        score += 12;
+        reasons.push("active module in session context");
+      }
+    }
+
+    if (activeNeighborRefs.has(sym.ref)) {
+      score += 20;
+      reasons.push("1-hop call neighbor of session context");
+    }
+
+    const loreRefs = loreByQn.get(`${sym.filePath}:${sym.name}`);
+    if (loreRefs && loreRefs.length > 0) {
+      score += 15;
+      reasons.push(`bound lore [Ref ${loreRefs.join(", ")}]`);
+    }
+
+    const degree = sym.callers.length * 2 + sym.callees.length;
+    if (degree > 0) {
+      score += Math.min(15, degree);
+      if (sym.callers.length >= 2 || degree >= 4) {
+        reasons.push(`call-graph hotspot (callers:${sym.callers.length} callees:${sym.callees.length})`);
+      }
+    }
+
+    if (!isTestOrMockRelPath(sym.filePath)) {
+      score += 5;
+    }
+
+    return {
+      symbol: sym,
+      score,
+      reasons,
+      selectCommand: buildSelectCommandForCandidate(sym, cands, mode),
+      boundLoreRefs: loreRefs,
+    };
+  });
+
+  ranked.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const degA = a.symbol.callers.length * 2 + a.symbol.callees.length;
+    const degB = b.symbol.callers.length * 2 + b.symbol.callees.length;
+    if (degB !== degA) return degB - degA;
+    return a.symbol.filePath.localeCompare(b.symbol.filePath) || (a.symbol.startLine - b.symbol.startLine);
+  });
+
+  return ranked;
 }
 
 function buildTraceSubtree(
@@ -102,6 +271,7 @@ export function traceSymbolPath(
     file: opts.file,
     kind: opts.kind,
     parentSymbol: opts.parentSymbol,
+    symRef: opts.symRef,
   });
 
   if (candidates.length === 0) {

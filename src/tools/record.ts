@@ -43,6 +43,8 @@ const RECORD_PARAMS = {
     standing: { type: "boolean", description: "Whether this record expresses a standing operational directive or invariant." },
     anchor: { type: "boolean", description: "Whether this record is a permanent anchored fact or preference to recall automatically." },
     type: { type: "string", enum: ["episode", "invariant", "decision", "note"], description: "Memory record type (defaults to invariant if standing=true, else episode)." },
+    symbols: { type: "array", items: { type: "string" }, description: "Concrete code symbol names or qualified names to bind this memory to." },
+    path: { type: "string", description: "Primary source file path associated with this memory." },
   },
   required: ["problem"],
   additionalProperties: false,
@@ -152,9 +154,10 @@ async function executeRecord(
     outcome: overallOutcome,
   };
 
-  const context = (params["project"] || params["subsystem"]) ? {
+  const context = (params["project"] || params["subsystem"] || params["path"]) ? {
     project: typeof params["project"] === "string" ? params["project"].trim() : undefined,
     subsystem: typeof params["subsystem"] === "string" ? params["subsystem"].trim() : undefined,
+    path: typeof params["path"] === "string" ? params["path"].trim() : undefined,
   } : undefined;
 
   const targetLevel: MipmapLevel = isStanding
@@ -180,14 +183,29 @@ async function executeRecord(
     constraints: params["constraints"],
     standing: isStanding,
     anchor: isAnchor || undefined,
+    symbols: params["symbols"],
+    path: params["path"],
   }, ctx);
 
-  const d = storeRes.details as { ref?: number; key?: string } | undefined;
+  const d = storeRes.details as {
+    ref?: number;
+    key?: string;
+    boundAnchors?: Array<{ symbolName: string; filePath: string; startLine: number; endLine: number }>;
+  } | undefined;
   if (d?.ref) {
     activeConversationTurn.explicitlyRecordedInTurn = true;
+    const boundNote = d.boundAnchors && d.boundAnchors.length > 0
+      ? `\n  Bound Code Symbols (${d.boundAnchors.length}): ${d.boundAnchors.map((a) => `${a.symbolName} (${a.filePath}:${a.startLine}-${a.endLine})`).join(", ")}`
+      : "";
     return {
-      content: [{ type: "text", text: `Recorded episode at Ref ${d.ref} (${overallOutcome}): ${summary}` }],
-      details: { ref: d.ref, summary, outcome: overallOutcome, approachesCount: rawApproaches.length },
+      content: [{ type: "text", text: `Recorded episode at Ref ${d.ref} (${overallOutcome}): ${summary}${boundNote}` }],
+      details: {
+        ref: d.ref,
+        summary,
+        outcome: overallOutcome,
+        approachesCount: rawApproaches.length,
+        ...(d.boundAnchors ? { boundAnchors: d.boundAnchors } : {}),
+      },
     };
   }
   return storeRes;

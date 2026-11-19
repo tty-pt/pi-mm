@@ -8,6 +8,7 @@ import type {
   CodeArchitectureOverview, CodeDiffImpactResult, CodeQueryOptions,
   CodeSymbolRecord, CodeTraceNode, CodeTraceResult,
 } from "./types.ts";
+import { rankAmbiguousCandidates } from "./graph.ts";
 import { resolveRuntimeCwd } from "../session/store.ts";
 import type { ToolEnv } from "../tools/index.ts";
 import { sepalConfigured } from "../config.ts";
@@ -48,6 +49,7 @@ export function clearCodeInstances(): void { instancesByRoot.clear(); }
 export function hasExplicitCodeParams(params: Record<string, unknown>): boolean {
   return Boolean(
     params["symbol"] || (Array.isArray(params["symbols"]) && params["symbols"].length > 0) ||
+    typeof params["symRef"] === "number" ||
     params["trace"] || params["diff"] === true || params["diagnose"] || params["guardrail"] ||
     params["file"] || params["kind"] || params["parentSymbol"],
   );
@@ -64,6 +66,7 @@ export function buildCodeQueryOptions(params: Record<string, unknown>): CodeQuer
     query: typeof params["query"] === "string" ? params["query"].trim() : undefined,
     symbol: typeof params["symbol"] === "string" ? params["symbol"].trim() : undefined,
     symbols: rawSymbols,
+    symRef: typeof params["symRef"] === "number" && Number.isInteger(params["symRef"]) ? params["symRef"] : undefined,
     file: typeof params["file"] === "string" ? params["file"].trim() : undefined,
     kind: typeof params["kind"] === "string" ? params["kind"].trim() : undefined,
     parentSymbol: typeof params["parentSymbol"] === "string" ? params["parentSymbol"].trim() : undefined,
@@ -172,6 +175,7 @@ function appendStigmergyAndDriftSections(
 function hasOtherPrimaryCodeMode(opts: CodeQueryOptions): boolean {
   return Boolean(
     opts.diagnose || opts.symbol || (opts.symbols && opts.symbols.length > 0) ||
+    typeof opts.symRef === "number" ||
     opts.trace || opts.diff || opts.overview || opts.query,
   );
 }
@@ -211,6 +215,7 @@ export async function executeCodeRecallWithLore(
   }
 
   const sessionId = extractSessionId(ctx);
+  codeOpts.sessionId = sessionId;
   setMmBusy(ctx, true);
   let codeOut: CodeRecallOutput;
   let contextDriftNotice = "";
@@ -275,12 +280,67 @@ export function formatSymbolCard(sym: CodeSymbolRecord): string {
   return `• [SymRef ${sym.ref}] (${sym.kind}) ${sym.filePath}:${sym.startLine}-${sym.endLine} · ${sym.qualifiedName} [${degree}]\n    Sig: ${sym.signature}${doc}`;
 }
 
-export function formatAmbiguousCandidates(target: string, cands: CodeSymbolRecord[]): string {
+export function formatAmbiguousCandidates(
+  target: string,
+  cands: CodeSymbolRecord[],
+  options?: { store?: CodeStore; sessionId?: string; mode?: "symbol" | "trace" },
+): string {
+  const mode = options?.mode ?? "symbol";
+  const store = options?.store;
+  const ranked = store
+    ? rankAmbiguousCandidates(store, target, cands, { sessionId: options?.sessionId, mode })
+    : cands.map((sym) => ({
+        symbol: sym,
+        score: 0,
+        reasons: [] as string[],
+        selectCommand: `memory_recall({ scope: "code", ${mode === "trace" ? "trace" : "symbol"}: "${sym.name}", file: "${sym.filePath}" })`,
+      }));
+
   const lines = [
     `=== Ambiguous Symbol "${target}" (${cands.length} candidates — fail-closed) ===`,
-    `Pass file or kind to disambiguate, e.g. memory_recall({ scope: "code", symbol: "${target}", file: "<path>" }):`,
+    `Pass file, kind, parentSymbol, or symRef to disambiguate (ranked by session context & call-graph centrality):`,
   ];
-  for (const c of cands.slice(0, 12)) lines.push(formatSymbolCard(c));
+
+  const topLead = ranked.length >= 2 && ranked[0].score >= ranked[1].score + 12 && ranked[0].reasons.length > 0;
+
+  for (let i = 0; i < Math.min(ranked.length, 12); i++) {
+    const item = ranked[i];
+    const c = item.symbol;
+    const degree = `callers:${c.callers.length} callees:${c.callees.length}`;
+    const recBadge = i === 0 && topLead
+      ? ` [★ Recommended: ${item.reasons.join(", ")}]`
+      : (item.reasons.length > 0 ? ` [${item.reasons.join(", ")}]` : "");
+    const doc = c.docComment ? `\n    Doc: ${c.docComment}` : "";
+    let microPreview = "";
+    if (store && c.endLine > c.startLine) {
+      const slice = store.sliceSymbolSource(c, { maxLines: 3 });
+      if (slice && slice.lines.length > 1) {
+        const bodyLines = slice.lines
+          .slice(1, 3)
+          .map((l) => l.text.trim())
+          .filter((l) => l.length > 0 && l !== "{" && l !== "}");
+        if (bodyLines.length > 0) {
+          const previewText = bodyLines.join(" | ").slice(0, 110);
+          microPreview = `\n    Body: ${previewText}`;
+        }
+      }
+    }
+    lines.push(
+      `#${i + 1} [SymRef ${c.ref}] (${c.kind}) ${c.filePath}:${c.startLine}-${c.endLine} · ${c.qualifiedName} [${degree}]${recBadge}\n    Sig: ${c.signature}${doc}${microPreview}\n    → Select: ${item.selectCommand}`,
+    );
+  }
+
+  if (topLead && store && mode === "symbol") {
+    const topSym = ranked[0].symbol;
+    const slice = store.sliceSymbolSource(topSym, { maxLines: 25 });
+    if (slice) {
+      const codeLines = slice.lines.map((l) => `${String(l.lineNum).padStart(4, " ")} | ${l.text}`).join("\n");
+      lines.push(
+        `\n=== Top Contextual Match Preview (#1: ${topSym.qualifiedName} · ${topSym.filePath}:${topSym.startLine}-${topSym.endLine}) ===\n${codeLines}`,
+      );
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -295,9 +355,18 @@ function renderTraceTreeLines(node: CodeTraceNode, prefix = "", isLast = true, i
   return out;
 }
 
-export function formatCodeTrace(tr: CodeTraceResult): string {
+export function formatCodeTrace(
+  tr: CodeTraceResult,
+  options?: { store?: CodeStore; sessionId?: string },
+): string {
   if (tr.status === "not_found") return `Trace target "${tr.targetQuery}" not found in code graph.`;
-  if (tr.status === "ambiguous" && tr.candidates) return formatAmbiguousCandidates(tr.targetQuery, tr.candidates);
+  if (tr.status === "ambiguous" && tr.candidates) {
+    return formatAmbiguousCandidates(tr.targetQuery, tr.candidates, {
+      store: options?.store,
+      sessionId: options?.sessionId,
+      mode: "trace",
+    });
+  }
   const root = tr.root!;
   const lines = [`=== Call Graph Trace: ${root.qualifiedName} (${root.filePath}:${root.startLine}-${root.endLine}) ===`];
   if (tr.inboundTree) {

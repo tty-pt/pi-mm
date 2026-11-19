@@ -176,10 +176,19 @@ export interface CodeSliceHit {
   directCallees: CodeSymbolRecord[];
 }
 
+export interface RankedSymbolCandidate {
+  symbol: CodeSymbolRecord;
+  score: number;
+  reasons: string[];
+  selectCommand: string;
+  boundLoreRefs?: number[];
+}
+
 export interface CodeQueryOptions {
   query?: string;
   symbol?: string;
   symbols?: string[];
+  symRef?: number;
   file?: string;
   kind?: string;
   parentSymbol?: string;
@@ -196,4 +205,5 @@ export interface CodeQueryOptions {
   maxLines?: number;
   fullOutput?: boolean;
   limit?: number;
+  sessionId?: string;
 }

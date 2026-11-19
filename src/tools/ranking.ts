@@ -2,6 +2,7 @@ import { decodePayload, isCleanSummaryText } from "../payload.ts";
 import type { ResultLine } from "../corm.ts";
 import type { LifecycleState, MemoryEnvelope, MipmapLevel } from "../types.ts";
 import { getMmAddon } from "../mm_native.ts";
+import { isRawToolTelemetryText } from "../code/lore_binding.ts";
 
 export type CandidateOrigin = "lemma" | "sepal" | "both";
 
@@ -31,6 +32,9 @@ export interface FilterCriteria {
   query?: string;
   dedupe?: boolean;
   includeL0?: boolean;
+  minLevel?: MipmapLevel;
+  origin?: CandidateOrigin;
+  excludeRawTelemetry?: boolean;
 }
 
 export function isCodeOrDocArtifact(cand: FusedCandidate, envelope: MemoryEnvelope): boolean {
@@ -274,6 +278,14 @@ export function computeRankingScore(cand: FusedCandidate, crit: FilterCriteria):
   return score;
 }
 
+const MIPMAP_ORDER: Record<MipmapLevel, number> = { L0: 0, L1: 1, L2: 2, L3: 3 };
+
+function meetsMinLevel(envelope: MemoryEnvelope, minLevel?: MipmapLevel): boolean {
+  if (!minLevel) return true;
+  const envLevel = envelope.level ?? "L0";
+  return MIPMAP_ORDER[envLevel] >= MIPMAP_ORDER[minLevel];
+}
+
 export function filterAndEnrich(
   candidates: FusedCandidate[],
   crit: FilterCriteria,
@@ -284,6 +296,18 @@ export function filterAndEnrich(
   for (const cand of candidates) {
     const envelope = cand.envelope ?? decodePayload(cand.record).envelope;
     if (crit.mipmap && envelope.level !== crit.mipmap) continue;
+
+    // minLevel filter: exclude records below minimum mipmap level
+    if (!meetsMinLevel(envelope, crit.minLevel)) continue;
+
+    // origin filter: filter by candidate origin (lemma, sepal, both)
+    if (crit.origin && cand.origin !== crit.origin) continue;
+
+    // excludeRawTelemetry filter: skip raw tool telemetry L0 entries
+    if (crit.excludeRawTelemetry !== false) {
+      const summary = envelope.summary || "";
+      if (isRawToolTelemetryText(summary)) continue;
+    }
 
     // Strict pruning of code/doc artifacts on conversational queries
     if (crit.mipmap !== "L0" && isCodeOrDocArtifact(cand, envelope)) {

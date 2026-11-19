@@ -79,12 +79,18 @@ export class CodeRecallEngine {
 
     if (typeof options.trace === "string" && options.trace.trim() !== "") {
       const tr = traceSymbolPath(this.store, options.trace.trim(), options);
-      return { mode: "trace", rendered: formatCodeTrace(tr), symbols: tr.root ? [tr.root] : (tr.candidates ?? []) };
+      return {
+        mode: "trace",
+        rendered: formatCodeTrace(tr, { store: this.store, sessionId: options.sessionId }),
+        symbols: tr.root ? [tr.root] : (tr.candidates ?? []),
+      };
     }
 
     const batchTargets = Array.isArray(options.symbols) && options.symbols.length > 0
       ? options.symbols
-      : (typeof options.symbol === "string" && options.symbol.trim() !== "" ? [options.symbol.trim()] : []);
+      : (typeof options.symbol === "string" && options.symbol.trim() !== ""
+        ? [options.symbol.trim()]
+        : (typeof options.symRef === "number" && Number.isInteger(options.symRef) ? [`SymRef:${options.symRef}`] : []));
 
     if (batchTargets.length > 0) {
       return this.executeSymbolRead(batchTargets, options);
@@ -100,7 +106,11 @@ export class CodeRecallEngine {
 
     for (const target of targets.slice(0, 15)) {
       const cands = resolveSymbolCandidates(this.store, {
-        name: target, file: options.file, kind: options.kind, parentSymbol: options.parentSymbol,
+        name: target,
+        file: options.file,
+        kind: options.kind,
+        parentSymbol: options.parentSymbol,
+        symRef: targets.length === 1 ? options.symRef : undefined,
       });
 
       if (cands.length === 0) {
@@ -108,7 +118,13 @@ export class CodeRecallEngine {
         continue;
       }
       if (cands.length > 1) {
-        sections.push(formatAmbiguousCandidates(target, cands));
+        sections.push(
+          formatAmbiguousCandidates(target, cands, {
+            store: this.store,
+            sessionId: options.sessionId,
+            mode: "symbol",
+          }),
+        );
         continue;
       }
 

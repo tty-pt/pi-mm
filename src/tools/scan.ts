@@ -5,7 +5,7 @@ import type { EnvSource, ToolEnv } from "./index.ts";
 import { axisPath, memDir, exportDetail, sepalConfigured } from "./index.ts";
 import { filespecFor, buildScanInvocation, buildGetInvocation, scanLexicalExpr, scanSemanticExpr, parseResultLines, embedEnv, SEPAL_MIN_SIM, scanWindowArgs, type ResultLine } from "../corm.ts";
 import type { MipmapLevel } from "../types.ts";
-import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria } from "./ranking.ts";
+import { fuseRankingsRRF, filterAndEnrich, type FusedCandidate, type FilterCriteria, type CandidateOrigin } from "./ranking.ts";
 import { decodePayload, isCleanSummaryText, isHtokPayload } from "../payload.ts";
 import { debugLog } from "../debug.ts";
 import { getAssociatedTokens } from "../associative.ts";
@@ -31,6 +31,9 @@ const SCAN_PARAMS = {
     until: { type: "string", description: "ISO date upper bound (YYYY-MM-DD)." },
     embed: { type: "boolean", description: "Add semantic (sepal) ranking when configured." },
     limit: { type: "number", description: "Maximum records returned (default 10)." },
+    minLevel: { type: "string", enum: ["L0", "L1", "L2", "L3"], description: "Minimum mipmap level filter (excludes lower levels)." },
+    origin: { type: "string", enum: ["lemma", "sepal", "both"], description: "Filter by candidate origin source." },
+    excludeRawTelemetry: { type: "boolean", description: "Exclude raw tool telemetry L0 entries (default true)." },
   },
   required: ["topic"],
   additionalProperties: false,
@@ -189,6 +192,7 @@ export interface HybridScanOptions {
   topic: string; level?: unknown; timeWindow?: unknown; lifecycle?: string; project?: string;
   subsystem?: string; bbox?: { dim?: number; s: string; l: string }; until?: string;
   embed?: boolean; limit?: number; dedupe?: boolean; overfetch?: boolean; includeL0?: boolean;
+  minLevel?: MipmapLevel; origin?: CandidateOrigin; excludeRawTelemetry?: boolean;
 }
 
 export async function executeHybridScan(
@@ -285,6 +289,9 @@ export async function executeHybridScan(
     query: topic,
     dedupe: opts.dedupe,
     includeL0: opts.includeL0,
+    minLevel: opts.minLevel,
+    origin: opts.origin,
+    excludeRawTelemetry: opts.excludeRawTelemetry,
   };
   let records = filterAndEnrich(fused, filterCrit);
   if (records.length === 0 && mipmapFilter === undefined && opts.includeL0 === false) {
