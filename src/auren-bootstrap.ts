@@ -540,7 +540,7 @@ export function findAurenLaunchers(p: AurenPaths & { port?: number }): Launcher[
   for (const axil of findAxilBins(cwd, home, env, p.libDirs === undefined)) {
     for (const dir of findAurenLibDirs(cwd, home, p.libDirs)) {
       if (existsSync(join(dir, "libaxil-auren.so")) || existsSync(join(dir, "libaxil-auren.dylib"))) {
-        out.push({ kind: "axil", command: axil, args: ["-A", "-p", port, "-m", join(dir, "libaxil-auren")] });
+        out.push({ kind: "axil", command: axil, args: ["-A", "-d", "-p", port, "-m", join(dir, "libaxil-auren")] });
         break;
       }
     }
