@@ -14,8 +14,9 @@ import {
 import {
   buildForgetInvocation, buildGetInvocation, buildScanInvocation,
   buildStoreInvocation, type CormRunner, DaemonCormRunner, loadCormAddonModule, parseResultLines, type ResultLine,
+  stopDaemonForFilespec,
 } from "../corm.ts";
-import { ensureDaemon } from "../daemon.ts";
+import { ensureDaemon, stopDaemonForFilespec as ensureStopDaemonForFilespec } from "../daemon.ts";
 import { type MmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, runtimeEnv } from "../config.ts";
 import { createDefaultRunner, resolveRuntimeCwd } from "../session/store.ts";
 import { debugLog } from "../debug.ts";
@@ -245,6 +246,22 @@ export class CodeStore {
       }
     })();
     return this.daemonReadyPromise;
+  }
+
+  /**
+   * Stops the cormd daemon for this code store and cleans up resources.
+   * Should be called when the worktree is being destroyed.
+   */
+  cleanup(): void {
+    if (this.cormdBin) {
+      try {
+        stopDaemonForFilespec(this.filespec, this.indexDir);
+        debugLog("code", "CodeStore cormd daemon stopped", { filespec: this.filespec });
+      } catch (err) {
+        debugLog("code", "CodeStore cormd daemon cleanup error", { error: String(err) });
+      }
+    }
+    this.daemonReadyPromise = null;
   }
 
   private loadManifestFromDisk(): boolean {

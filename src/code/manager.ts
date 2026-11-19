@@ -44,7 +44,12 @@ export function getCodeInstances(options: CodeStoreOptions = {}): CodeInstances 
   return created;
 }
 
-export function clearCodeInstances(): void { instancesByRoot.clear(); }
+export function clearCodeInstances(): void {
+  for (const instances of instancesByRoot.values()) {
+    instances.store.cleanup();
+  }
+  instancesByRoot.clear();
+}
 
 export function hasExplicitCodeParams(params: Record<string, unknown>): boolean {
   return Boolean(

@@ -497,15 +497,19 @@ function findAurenLibDirs(cwd: string, home: string, explicitLibDirs?: string[])
   const dirs: string[] = [];
   const add = (d: string | null | undefined) => { if (d && !dirs.includes(d)) dirs.push(d); };
   if (explicitLibDirs !== undefined) for (const d of explicitLibDirs) add(d);
+  for (const b of [cwd, home]) {
+    for (const sub of [join(b, "external", "axil-auren"), join(b, "axil-auren")]) {
+      add(join(sub, "lib"));
+    }
+  }
   for (const r of resolvePkgRoots("auren", [cwd, home], includeDefaultDirs)) {
-    for (const k of keys) add(join(r, "prebuilds", k));
-    add(join(r, "build", "Release"));
     add(join(r, "lib"));
+    add(join(r, "build", "Release"));
+    for (const k of keys) add(join(r, "prebuilds", k));
   }
   for (const b of [cwd, home]) {
     for (const sub of [join(b, "external", "axil-auren"), join(b, "axil-auren")]) {
       for (const k of keys) add(join(sub, "npm", "prebuilds", k));
-      add(join(sub, "lib"));
     }
   }
   if (includeDefaultDirs) {

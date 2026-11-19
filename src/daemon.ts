@@ -8,6 +8,71 @@ import { runtimeEnv } from "./config.ts";
 import { bytesToBinaryString } from "./payload.ts";
 import { debugLog } from "./debug.ts";
 
+// Global registry of spawned cormd daemons for automatic cleanup
+interface SpawnedDaemon {
+  pid: number;
+  filespec: string;
+  socketPath: string;
+  lockPath: string;
+}
+
+const spawnedDaemons = new Map<string, SpawnedDaemon>(); // key: filespec
+let exitHandlersRegistered = false;
+
+function registerExitHandlers(): void {
+  if (exitHandlersRegistered) return;
+  exitHandlersRegistered = true;
+
+  const cleanup = () => {
+    for (const daemon of spawnedDaemons.values()) {
+      try {
+        process.kill(daemon.pid, "SIGTERM");
+        debugLog("persistence", "Auto-killed cormd on exit", { pid: daemon.pid, filespec: daemon.filespec });
+      } catch { /* ignore */ }
+      try {
+        if (existsSync(daemon.socketPath)) rmSync(daemon.socketPath, { force: true });
+        if (existsSync(daemon.lockPath)) rmSync(daemon.lockPath, { force: true });
+      } catch { /* ignore */ }
+    }
+    spawnedDaemons.clear();
+  };
+
+  process.on("exit", cleanup);
+  process.on("SIGINT", () => { cleanup(); process.exit(130); });
+  process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+  // Note: SIGKILL cannot be caught
+}
+
+function trackDaemon(filespec: string, pid: number, socketPath: string, lockPath: string): void {
+  spawnedDaemons.set(filespec, { pid, filespec, socketPath, lockPath });
+  registerExitHandlers();
+}
+
+function untrackDaemon(filespec: string): void {
+  spawnedDaemons.delete(filespec);
+}
+
+/**
+ * Gets the tracked daemon PID for a filespec, if any.
+ */
+export function getTrackedDaemonPid(filespec: string): number | undefined {
+  return spawnedDaemons.get(filespec)?.pid;
+}
+
+/**
+ * Checks if a tracked daemon process is still alive.
+ */
+export function isTrackedDaemonAlive(filespec: string): boolean {
+  const daemon = spawnedDaemons.get(filespec);
+  if (!daemon) return false;
+  try {
+    process.kill(daemon.pid, 0); // Signal 0 checks existence
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Extracts the target database filespec from an Invocation's argument list
  * based on positional command flag layout, rather than searching arbitrary
@@ -586,6 +651,25 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
     const probe = await probeDaemonIdentity(options.socketPath, options.filespec, 150);
     if (probe.live) {
       if (probe.matches) {
+        // Track existing daemon if we can find its PID
+        const existingPid = getTrackedDaemonPid(options.filespec);
+        if (!existingPid || !isTrackedDaemonAlive(options.filespec)) {
+          // Try to find and track the PID
+          try {
+            const { spawnSync } = await import("node:child_process");
+            const lsofRes = spawnSync("lsof", ["-t", lockPath], { timeout: 500 });
+            if (lsofRes.status === 0 && lsofRes.stdout) {
+              const pids = lsofRes.stdout.toString().trim().split("\n").filter(Boolean);
+              for (const pidStr of pids) {
+                const pid = parseInt(pidStr, 10);
+                if (!isNaN(pid) && pid > 0) {
+                  trackDaemon(options.filespec, pid, options.socketPath, lockPath);
+                  break;
+                }
+              }
+            }
+          } catch { /* ignore */ }
+        }
         return options.socketPath;
       } else {
         // Responsive but incompatible database: fail closed, never reuse silently!
@@ -604,6 +688,7 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
       } catch {
         // Best effort removal
       }
+      untrackDaemon(options.filespec);
     }
   }
 
@@ -634,6 +719,12 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
       },
     );
     child.unref();
+
+    // Track the spawned daemon PID for automatic cleanup
+    if (child.pid) {
+      trackDaemon(options.filespec, child.pid, options.socketPath, lockPath);
+      debugLog("persistence", "Spawned and tracked cormd", { pid: child.pid, filespec: options.filespec });
+    }
   }
 
   // 3. Poll for confirmed socket readiness and identity match
@@ -665,4 +756,110 @@ export async function ensureDaemon(options: DaemonStartupOptions): Promise<strin
   }
 
   throw new Error(`cormd failed to confirm readiness on ${options.socketPath} within ${timeoutMs}ms`);
+}
+
+/**
+ * Stops a cormd daemon for the given socket path and database directory.
+ * Sends SIGTERM to the tracked process, then cleans up socket and lock files.
+ * Synchronous (fire-and-forget) for use in cleanup paths.
+ */
+export function stopDaemon(socketPath: string, dbDir: string): void {
+  const lockPath = join(dbDir, ".cormd.lock");
+  
+  // Try to find and kill the cormd process holding the lock
+  // First check our tracked daemon
+  for (const [filespec, daemon] of spawnedDaemons.entries()) {
+    if (daemon.socketPath === socketPath || daemon.lockPath === lockPath) {
+      try {
+        process.kill(daemon.pid, "SIGTERM");
+        debugLog("persistence", "Killed tracked cormd", { pid: daemon.pid, filespec });
+      } catch { /* ignore */ }
+      untrackDaemon(filespec);
+      break;
+    }
+  }
+  
+  // Fallback: try lsof/fuser for any untracked daemon
+  try {
+    const { spawnSync } = require("node:child_process");
+    
+    // Try lsof to find process holding the lock file
+    const lsofRes = spawnSync("lsof", ["-t", lockPath], { timeout: 500 });
+    if (lsofRes.status === 0 && lsofRes.stdout) {
+      const pids = lsofRes.stdout.toString().trim().split("\n").filter(Boolean);
+      for (const pidStr of pids) {
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid) && pid > 0) {
+          try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+        }
+      }
+    } else {
+      // Fallback: try fuser
+      const fuserRes = spawnSync("fuser", [lockPath], { timeout: 500 });
+      if (fuserRes.status === 0 && fuserRes.stdout) {
+        const pids = fuserRes.stdout.toString().trim().split(/\s+/).filter(Boolean);
+        for (const pidStr of pids) {
+          const pid = parseInt(pidStr, 10);
+          if (!isNaN(pid) && pid > 0) {
+            try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+          }
+        }
+      }
+    }
+  } catch {
+    // Best effort
+  }
+  
+  // Clean up socket file
+  try {
+    if (existsSync(socketPath)) {
+      rmSync(socketPath, { force: true });
+    }
+  } catch {
+    // Best effort
+  }
+  
+  // Clean up lock file
+  try {
+    if (existsSync(lockPath)) {
+      rmSync(lockPath, { force: true });
+    }
+  } catch {
+    // Best effort
+  }
+}
+
+/**
+ * Stops a cormd daemon for the given filespec (database path).
+ * Derives socket path and db directory from the filespec.
+ * Synchronous (fire-and-forget) for use in cleanup paths.
+ */
+export function stopDaemonForFilespec(filespec: string, cwd?: string): void {
+  const rawDb = filespec.includes("@")
+    ? filespec.slice(0, filespec.indexOf("@"))
+    : filespec.includes(":")
+    ? filespec.slice(0, filespec.indexOf(":"))
+    : filespec;
+  const dbDir = isAbsolute(rawDb) ? dirname(rawDb) : join(cwd ?? process.cwd(), dirname(rawDb));
+  const socketPath = join(dbDir, "cormd.sock");
+  stopDaemon(socketPath, dbDir);
+  untrackDaemon(filespec);
+}
+
+/**
+ * Cleans up all tracked cormd daemons. Called automatically on process exit,
+ * but can be invoked manually for intra-session cleanup.
+ */
+export function cleanupAllTrackedDaemons(): void {
+  for (const [filespec, daemon] of spawnedDaemons.entries()) {
+    try {
+      process.kill(daemon.pid, "SIGTERM");
+      debugLog("persistence", "Cleanup killed cormd", { pid: daemon.pid, filespec });
+    } catch { /* ignore */ }
+    try {
+      if (existsSync(daemon.socketPath)) rmSync(daemon.socketPath, { force: true });
+      if (existsSync(daemon.lockPath)) rmSync(daemon.lockPath, { force: true });
+    } catch { /* ignore */ }
+  }
+  spawnedDaemons.clear();
 }
