@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeRelPath } from "./payload_codec.ts";
-import { resolveSharedCoordinationDir } from "./lore_binding.ts";
+import { deriveWorkspaceLabel, resolveSharedCoordinationDir } from "./lore_binding.ts";
 
 export interface SwarmAttentionLease {
   sessionId: string;
@@ -104,7 +104,7 @@ export function recordSwarmAttentionLease(
   const lease: SwarmAttentionLease = {
     sessionId: input.sessionId,
     shortId,
-    workspaceLabel: input.workspaceLabel,
+    workspaceLabel: input.workspaceLabel ?? deriveWorkspaceLabel(indexDir),
     filePath: normFile,
     symbolName: input.symbolName,
     qualifiedName: input.qualifiedName,

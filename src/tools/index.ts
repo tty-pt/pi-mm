@@ -7,6 +7,7 @@ import { readMmConfig, resolveAxisPath, resolveCormBin, resolveCormdBin, resolve
 import type { CormRunner } from "../corm.ts";
 import { NativeAddonCormRunner, ShellCormRunner, DaemonCormRunner, filespecFor, embedEnv, loadCormAddonModule, isDaemonLockHeld } from "../corm.ts";
 import { ensureDaemon } from "../daemon.ts";
+import { resolvePrimaryWorktreeRoot } from "../code/lore_binding.ts";
 import { makeStoreTool } from "./store.ts";
 import { makeScanTool } from "./scan.ts";
 import { makeThinkTool } from "./think.ts";
@@ -164,7 +165,7 @@ export function defaultEnvSource(pi: Pi): EnvSource {
       }
       const fastReady = await Promise.race([
         runnerPromise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
       ]);
       runner = fastReady ?? new DaemonCormRunner(socketPath, fallbackRunner);
     } else if (hasNativeAddon) {
@@ -185,7 +186,15 @@ export function socketPath(env: ToolEnv): string {
 }
 
 export function resolveMemDir(cwd: string, dir: string): string {
-  return isAbsolute(dir) ? dir : join(cwd, dir);
+  if (isAbsolute(dir)) return dir;
+  const localMemDir = join(cwd, dir);
+  if (existsSync(join(localMemDir, "mem.db"))) return localMemDir;
+  const primaryRoot = resolvePrimaryWorktreeRoot(cwd);
+  if (primaryRoot !== cwd) {
+    const primaryMemDir = join(primaryRoot, dir);
+    if (existsSync(primaryMemDir)) return primaryMemDir;
+  }
+  return localMemDir;
 }
 
 export function memDir(env: ToolEnv): string {

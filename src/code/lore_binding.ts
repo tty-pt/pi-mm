@@ -91,13 +91,56 @@ export function isGenericSingleWordSymbol(name: string): boolean {
   return !name.includes("_") && !name.includes(":") && !name.includes(".") && splitIdentifierWords(name).length < 2;
 }
 
+const WORKTREE_MARKERS = [
+  "/.pi/scratch/slot-",
+  "/.worktrees/",
+  "/.pi/subagents/worktrees/",
+];
+
+export function deriveWorkspaceLabel(dirPath: string): string | undefined {
+  const norm = dirPath.replaceAll("\\", "/");
+  for (const marker of WORKTREE_MARKERS) {
+    const idx = norm.indexOf(marker);
+    if (idx > 0) {
+      const start = idx + (marker === "/.pi/scratch/slot-" ? "/.pi/scratch/".length : marker.length);
+      const slash = norm.indexOf("/", start);
+      const name = slash < 0 ? norm.slice(start) : norm.slice(start, slash);
+      if (name) return name;
+    }
+  }
+  return undefined;
+}
+
+export function resolvePrimaryWorktreeRoot(cwd: string): string {
+  const norm = cwd.replaceAll("\\", "/");
+  for (const marker of WORKTREE_MARKERS) {
+    const idx = norm.indexOf(marker);
+    if (idx > 0) return norm.slice(0, idx);
+  }
+  try {
+    const gitPath = join(cwd, ".git");
+    if (existsSync(gitPath)) {
+      const text = readFileSync(gitPath, "utf8").trim();
+      if (text.startsWith("gitdir:")) {
+        const gitdir = text.slice(7).trim().replaceAll("\\", "/");
+        const wtIdx = gitdir.lastIndexOf("/.git/worktrees/");
+        if (wtIdx > 0) return gitdir.slice(0, wtIdx);
+      }
+    }
+  } catch { /* fallback to cwd */ }
+  return cwd;
+}
+
 export function resolveSharedCoordinationDir(indexDir: string): string {
   const norm = indexDir.replaceAll("\\", "/");
-  const marker = "/.pi/scratch/slot-";
-  const idx = norm.indexOf(marker);
-  if (idx <= 0) return indexDir;
-  const afterSlot = norm.indexOf("/", idx + marker.length);
-  return afterSlot < 0 ? indexDir : `${norm.slice(0, idx)}${norm.slice(afterSlot)}`;
+  for (const marker of WORKTREE_MARKERS) {
+    const idx = norm.indexOf(marker);
+    if (idx > 0) {
+      const afterSlot = norm.indexOf("/", idx + marker.length);
+      return afterSlot < 0 ? indexDir : `${norm.slice(0, idx)}${norm.slice(afterSlot)}`;
+    }
+  }
+  return indexDir;
 }
 
 function isAnchorCorroboratedByLore(anchor: CodeSymbolAnchor, summary: string, subsystem?: string): boolean {
