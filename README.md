@@ -10,7 +10,7 @@
 
 > Multi-resolution persistent memory, active session recall, and live codebase mipmap graphs for the Pi Coding Agent powered by native C engines (`libmm`, `libcorm`, `libsepal`, `liblemma`, `libjoint`, `libislet`).
 
-`pi-mm` gives your [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) a unified multi-resolution memory space spanning **persistent cross-session lore** (`scope: "persistent"`), **ephemeral active session transcripts & lossless compaction** (`scope: "session"`), and **live codebase symbol graphs, call graphs, and git diff blast radius** (`scope: "code"`). It automatically injects relevant prior technical decisions into context before each turn, compacts long sessions into navigable mipmaps, and fuses historical debugging episodes directly into code symbol reads—with **zero manual configuration**.
+`pi-mm` gives your [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent) a unified multi-resolution memory space spanning **persistent cross-session lore** (`scope: "persistent"`), **ephemeral active session transcripts & lossless compaction** (`scope: "session"`), and **live codebase symbol graphs, call graphs, and git diff blast radius** (`scope: "code"`). It delegates core heavy operations (HTOK v4 binary serialization, RRF hybrid ranking, AST call-graph tracing, DAG traversal, and state lifecycle transitions) directly to `libmm.so` via `@tty-pt/mm` Node-API and WebAssembly bindings. It automatically injects relevant prior technical decisions into context before each turn, compacts long sessions into navigable mipmaps, and fuses historical debugging episodes directly into code symbol reads—with **zero manual configuration**.
 
 ---
 
