@@ -95,6 +95,11 @@ export interface MmRawAddon {
   projectCodeSearch?: (project: string | null, query: string, fileFilter?: string, kindFilter?: string, limit?: number) => string;
   projectCodeSymbol?: (project: string | null, symbol: string, fileFilter?: string) => string;
   projectCodeTrace?: (project: string | null, symbol: string, direction?: string, depth?: number) => string;
+  distillPrompt?: (conversationText: string) => string;
+  distillCommit?: (ctx: unknown, distilledText: string) => { rc: number; tier: string; ref: number };
+  sessionIngestTurn?: (ctx: unknown, tier: string, sessionId: string, turnIdx: number, role: string, text: string) => number;
+  sessionRecall?: (ctx: unknown, tier: string, sessionId?: string, query?: string, zoomTurn?: number, lineStart?: number, lineEnd?: number) => string;
+  traverse?: (ctx: unknown, tier: string, startRef: number, direction?: string, maxDepth?: number) => string;
 }
 
 let cachedMmAddon: MmRawAddon | null | undefined = undefined;
