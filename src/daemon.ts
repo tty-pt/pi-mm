@@ -18,6 +18,17 @@ interface SpawnedDaemon {
 
 const spawnedDaemons = new Map<string, SpawnedDaemon>(); // key: filespec
 let exitHandlersRegistered = false;
+let onSigint: (() => void) | null = null;
+let onSigterm: (() => void) | null = null;
+let onExit: (() => void) | null = null;
+
+function unregisterExitHandlers(): void {
+  if (!exitHandlersRegistered) return;
+  exitHandlersRegistered = false;
+  if (onExit) { process.off("exit", onExit); onExit = null; }
+  if (onSigint) { process.off("SIGINT", onSigint); onSigint = null; }
+  if (onSigterm) { process.off("SIGTERM", onSigterm); onSigterm = null; }
+}
 
 function registerExitHandlers(): void {
   if (exitHandlersRegistered) return;
@@ -37,9 +48,12 @@ function registerExitHandlers(): void {
     spawnedDaemons.clear();
   };
 
-  process.on("exit", cleanup);
-  process.on("SIGINT", () => { cleanup(); process.exit(130); });
-  process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+  onExit = cleanup;
+  onSigint = () => { cleanup(); process.exit(130); };
+  onSigterm = () => { cleanup(); process.exit(143); };
+  process.on("exit", onExit);
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
   // Note: SIGKILL cannot be caught
 }
 
@@ -50,6 +64,9 @@ function trackDaemon(filespec: string, pid: number, socketPath: string, lockPath
 
 function untrackDaemon(filespec: string): void {
   spawnedDaemons.delete(filespec);
+  if (spawnedDaemons.size === 0) {
+    unregisterExitHandlers();
+  }
 }
 
 /**

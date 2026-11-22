@@ -92,6 +92,9 @@ export interface MmRawAddon {
   codeDetectXyMismatches: (idx: unknown) => string;
   codeResolveCrossBoundary: (idx: unknown, symbolName?: string, filePath?: string) => string;
   codeFirstTouchDossier: (idx: unknown, fileOrSymbol: string) => string;
+  projectCodeSearch?: (project: string | null, query: string, fileFilter?: string, kindFilter?: string, limit?: number) => string;
+  projectCodeSymbol?: (project: string | null, symbol: string, fileFilter?: string) => string;
+  projectCodeTrace?: (project: string | null, symbol: string, direction?: string, depth?: number) => string;
 }
 
 let cachedMmAddon: MmRawAddon | null | undefined = undefined;
