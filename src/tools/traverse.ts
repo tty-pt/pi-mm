@@ -4,6 +4,7 @@ import { axisPath, memDir, sepalConfigured } from "./index.ts";
 import { filespecFor, buildGetInvocation, buildListInvocation, embedEnv } from "../corm.ts";
 import { decodeResult } from "../payload.ts";
 import { parseBareRefs } from "../resolve.ts";
+import { loadMmAddon } from "../mm_native.ts";
 import type { MemoryEnvelope, MipmapLevel, LifecycleState, EpisodeRecord } from "../types.ts";
 
 export interface TraversalNode {
@@ -159,6 +160,24 @@ export function makeTraverseTool(envSource: EnvSource): PiToolSpec {
         }
         if (!bin) {
           return { content: [{ type: "text", text: "mm unavailable: corm binary not found" }], details: { error: "no-corm" } };
+        }
+
+        const addon = loadMmAddon();
+        if (addon?.openContext && addon?.traverse) {
+          try {
+            const ctxWrapper = addon.openContext(cwd);
+            if (ctxWrapper) {
+              const res = addon.traverse(ctxWrapper, "project", ref, direction, maxDepth);
+              if (res && res.trim()) {
+                return {
+                  content: [{ type: "text", text: res.trim() }],
+                  details: { root: ref, direction, maxDepth, native: true },
+                };
+              }
+            }
+          } catch {
+            // Fall back to JS traversal
+          }
         }
 
         const embed = sepalConfigured(env.cfg);

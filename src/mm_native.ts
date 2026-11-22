@@ -182,6 +182,8 @@ export function getMmAddon(): MmRawAddon | null {
   return cachedMmAddon;
 }
 
+export const loadMmAddon = getMmAddon;
+
 export function isMmNativeAvailable(): boolean {
   return getMmAddon() !== null;
 }

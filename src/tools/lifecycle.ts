@@ -9,6 +9,7 @@ import type { LifecycleState, LifecycleTransition } from "../types.ts";
 import { updateLoreBindingLifecycle } from "../code/lore_binding.ts";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadMmAddon } from "../mm_native.ts";
 
 const PERMITTED_TRANSITIONS: Record<LifecycleState, LifecycleState[]> = {
   observed: ["hypothesized", "tested", "supported", "contradicted", "superseded"],
@@ -190,6 +191,33 @@ export async function executeLifecycle(
     }
 
     const cwd = memDir(env);
+    const addon = loadMmAddon();
+    if (addon?.openContext && addon?.review) {
+      try {
+        const ctxWrapper = addon.openContext(cwd);
+        if (ctxWrapper) {
+          const res = addon.review(ctxWrapper, {
+            action: "update_lifecycle",
+            ref,
+            lifecycle: nextState,
+            reason: reason || "",
+            evidenceRef: evidenceRef || 0,
+          });
+          if (res?.rc === 0) {
+            await syncBindingAndDirectives(env, ctx, ref, nextState);
+            return exportDetail({
+              ref,
+              previousState: fromState,
+              currentState: nextState,
+              native: true,
+            });
+          }
+        }
+      } catch {
+        // Fall back to JS update
+      }
+    }
+
     const fspec = filespecFor(cwd, sepalConfigured(env.cfg));
     const axes = axisPath(env);
     const eEnv = embedEnv(env.cfg);
