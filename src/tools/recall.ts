@@ -31,6 +31,7 @@ import {
   type LoreDriftReport,
   verifyLoreBindingForRef,
 } from "../code/lore_binding.ts";
+import { loadMmAddon } from "../mm_native.ts";
 
 function parseInlineZoomRef(rawQuery: string): number | null {
   const lower = rawQuery.trim().toLowerCase();
@@ -581,6 +582,25 @@ async function executeRecall(
     };
 
     if (isSessionExplicit) {
+      const addon = loadMmAddon();
+      if (addon?.openContext && addon?.sessionRecall && !sessionParam) {
+        try {
+          const ctxWrapper = addon.openContext(ctx?.cwd || env.cwd);
+          if (ctxWrapper) {
+            const zoomTurn = typeof params["zoomTurn"] === "number" ? params["zoomTurn"] : 0;
+            const rawLineRange = Array.isArray(params["lineRange"]) && params["lineRange"].length === 2
+              ? [Number(params["lineRange"][0]), Number(params["lineRange"][1])]
+              : [0, 0];
+            const nativeSess = addon.sessionRecall(ctxWrapper, "both", sessionId, rawQuery, zoomTurn, rawLineRange[0], rawLineRange[1]);
+            if (nativeSess && nativeSess.trim()) {
+              return {
+                content: [{ type: "text", text: nativeSess.trim() }],
+                details: { native: true, totalMatches: 1 },
+              };
+            }
+          }
+        } catch { /* fallback to JS session recall */ }
+      }
       return await executeExplicitSessionRecall(params, rawQuery, sessionParam, sessionOpts, ctx);
     }
 
