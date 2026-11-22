@@ -6,6 +6,9 @@ import type {
   L3SynthesisInput,
   L3SynthesisOutcome,
 } from "./types.ts";
+import { loadMmAddon } from "../mm_native.ts";
+
+export { loadMmAddon };
 
 export function normalizeChatCompletionUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim().replace(/\/+$/, "");

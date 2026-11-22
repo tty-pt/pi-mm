@@ -4,6 +4,7 @@ import type { SessionTurnEvent } from "./types.ts";
 import { formatToolEventSummary } from "../hooks/events.ts";
 import type { ToolResultEvent } from "../hooks/events.ts";
 import { debugLog } from "../debug.ts";
+import { loadMmAddon } from "../mm_native.ts";
 
 const SKIP_TOOL_NAMES = new Set([
   "memory_recall",
@@ -111,6 +112,17 @@ export class SessionSink {
     });
 
     debugLog("session", "Recorded user prompt in session store", { ref, turnIndex: this.currentTurnIndex });
+
+    try {
+      const addon = loadMmAddon();
+      if (addon?.openContext && addon?.sessionIngestTurn) {
+        const ctxWrapper = addon.openContext(this.store.indexDir);
+        if (ctxWrapper) {
+          addon.sessionIngestTurn(ctxWrapper, "project", this.store.sessionId, this.currentTurnIndex, "user", cleanPrompt);
+        }
+      }
+    } catch { /* best effort native sync */ }
+
     return ref;
   }
 
@@ -155,6 +167,17 @@ export class SessionSink {
     });
 
     debugLog("session", "Recorded assistant turn in session store", { ref, turnIndex: this.currentTurnIndex });
+
+    try {
+      const addon = loadMmAddon();
+      if (addon?.openContext && addon?.sessionIngestTurn) {
+        const ctxWrapper = addon.openContext(this.store.indexDir);
+        if (ctxWrapper) {
+          addon.sessionIngestTurn(ctxWrapper, "project", this.store.sessionId, this.currentTurnIndex, "assistant", cleanText);
+        }
+      }
+    } catch { /* best effort native sync */ }
+
     return ref;
   }
 

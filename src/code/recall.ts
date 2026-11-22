@@ -24,6 +24,7 @@ import { formatLoreDriftSection, verifyLoreBindingsForSymbols } from "./lore_bin
 import { splitIdentifierWords } from "./lexer.ts";
 import { normalizeRelPath } from "./payload_codec.ts";
 import { fuseRankingsRRF } from "../tools/ranking.ts";
+import { loadMmAddon } from "../mm_native.ts";
 
 export { formatCodeDiffImpact, formatCodeOverview, formatCodeTrace, formatSymbolCard };
 
@@ -46,6 +47,27 @@ export class CodeRecallEngine {
     gitDiffProvider?: () => Promise<string>,
   ): Promise<CodeRecallOutput> {
     await this.store.ensureIndexed();
+
+    const addon = loadMmAddon();
+    const projRoot = this.store.projectRoot;
+
+    if (addon?.projectCodeTrace && typeof options.trace === "string" && options.trace.trim() !== "") {
+      try {
+        const nativeTrace = addon.projectCodeTrace(projRoot, options.trace.trim(), options.direction || "both", options.depth ?? 2);
+        if (nativeTrace && nativeTrace.trim()) {
+          return { mode: "trace", rendered: nativeTrace.trim(), symbols: [] };
+        }
+      } catch { /* fallback */ }
+    }
+
+    if (addon?.projectCodeSymbol && typeof options.symbol === "string" && options.symbol.trim() !== "") {
+      try {
+        const nativeSym = addon.projectCodeSymbol(projRoot, options.symbol.trim(), options.file);
+        if (nativeSym && nativeSym.trim()) {
+          return { mode: "symbol", rendered: nativeSym.trim(), symbols: [] };
+        }
+      } catch { /* fallback */ }
+    }
 
     if (typeof options.diagnose === "string" && options.diagnose.trim() !== "") {
       const diffText = gitDiffProvider ? await gitDiffProvider() : undefined;
