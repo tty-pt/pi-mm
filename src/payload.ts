@@ -744,12 +744,13 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
           if (fieldData.length >= 2) {
             const hCount = hView.getUint16(hOff, true); hOff += 2;
             history = [];
-            for (let i = 0; i < hCount && hOff < fieldData.length; i++) {
+            for (let i = 0; i < hCount && hOff + 12 <= fieldData.length; i++) {
               const from = U8_TO_LIFECYCLE[fieldData[hOff++]] ?? "observed";
               const to = U8_TO_LIFECYCLE[fieldData[hOff++]] ?? "supported";
               const hTs = hView.getUint32(hOff, true); hOff += 4;
               const evRef = hView.getUint32(hOff, true); hOff += 4;
               const rLen = hView.getUint16(hOff, true); hOff += 2;
+              if (hOff + rLen > fieldData.length) break;
               const rBytes = fieldData.subarray(hOff, hOff + rLen);
               const reasonToks = unpackTokens(rBytes);
               const reason = decodeTokens(reasonToks);
@@ -828,12 +829,13 @@ export function decodeHtokPayload(raw: string | Uint8Array): { date: string; env
           if (fieldData.length >= 2) {
             const hCount = hView.getUint16(hOff, true); hOff += 2;
             history = [];
-            for (let i = 0; i < hCount && hOff < fieldData.length; i++) {
+            for (let i = 0; i < hCount && hOff + 12 <= fieldData.length; i++) {
               const from = U8_TO_LIFECYCLE[fieldData[hOff++]] ?? "observed";
               const to = U8_TO_LIFECYCLE[fieldData[hOff++]] ?? "supported";
               const hTs = hView.getUint32(hOff, true); hOff += 4;
               const evRef = hView.getUint32(hOff, true); hOff += 4;
               const rLen = hView.getUint16(hOff, true); hOff += 2;
+              if (hOff + rLen > fieldData.length) break;
               const rBytes = fieldData.subarray(hOff, hOff + rLen);
               const reasonToks = unpackTokens(rBytes);
               const reason = decodeTokens(reasonToks);
