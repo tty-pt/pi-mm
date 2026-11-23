@@ -187,13 +187,32 @@ export function socketPath(env: ToolEnv): string {
 
 export function resolveMemDir(cwd: string, dir: string): string {
   if (isAbsolute(dir)) return dir;
+
+  // 1. Direct path check
   const localMemDir = join(cwd, dir);
   if (existsSync(join(localMemDir, "mem.db"))) return localMemDir;
+
+  // 2. Canonical .mm fallback if dir was .pi/mm or vice-versa
+  if (dir === ".pi/mm" || dir === ".mm") {
+    const mmDir = join(cwd, ".mm");
+    if (existsSync(join(mmDir, "mem.db"))) return mmDir;
+    const piMmDir = join(cwd, ".pi", "mm");
+    if (existsSync(join(piMmDir, "mem.db"))) return piMmDir;
+  }
+
+  // 3. Worktree primary root check
   const primaryRoot = resolvePrimaryWorktreeRoot(cwd);
   if (primaryRoot !== cwd) {
-    const primaryMemDir = join(primaryRoot, dir);
-    if (existsSync(primaryMemDir)) return primaryMemDir;
+    const primaryTarget = join(primaryRoot, dir);
+    if (existsSync(join(primaryTarget, "mem.db"))) return primaryTarget;
+    if (dir === ".pi/mm" || dir === ".mm") {
+      const primaryMm = join(primaryRoot, ".mm");
+      if (existsSync(join(primaryMm, "mem.db"))) return primaryMm;
+      const primaryPiMm = join(primaryRoot, ".pi", "mm");
+      if (existsSync(join(primaryPiMm, "mem.db"))) return primaryPiMm;
+    }
   }
+
   return localMemDir;
 }
 

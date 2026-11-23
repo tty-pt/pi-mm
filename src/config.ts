@@ -144,7 +144,7 @@ export const DEFAULT_CONFIG: MmConfig = {
   socketPath: undefined,
   runtimeDir: undefined,
   axisLibs: null,
-  memDir: ".pi/mm",
+  memDir: ".mm",
   scanLimit: 10,
   advancedTools: false,
   captureMode: undefined,

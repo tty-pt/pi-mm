@@ -10,7 +10,7 @@ Deno.test("loadConfig: undefined → defaults", () => {
   const cfg = loadConfig(undefined);
   check(cfg.cormBin === "", "cormBin default empty");
   check(cfg.axisLibs === null, "axisLibs default null");
-  check(cfg.memDir === ".pi/mm", "memDir default");
+  check(cfg.memDir === ".mm", "memDir default");
   check(cfg.scanLimit === 10, "scanLimit default");
 });
 
@@ -146,7 +146,7 @@ Deno.test("resolveAxisPath: explicit list, local monorepo, node_modules prebuild
 
 Deno.test("readMmConfig: no settings file → defaults", async () => {
   const cfg = await readMmConfig("/definitely/not/a/real/pi/config/dir");
-  check(cfg.memDir === ".pi/mm", "defaults on missing settings");
+  check(cfg.memDir === ".mm", "defaults on missing settings");
 });
 
 Deno.test("readMmConfig: applies global settings when project settings is absent", async () => {
