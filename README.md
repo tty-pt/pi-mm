@@ -78,11 +78,11 @@ By default, `pi-mm` exposes 3 focused tools to keep the agent's context clean an
 - **Live Epistemic Invalidation, Working-Memory Staleness Radar & Swarm Stigmergy**:
   - **Code-to-Lore Causal Binding (`src/code/lore_binding.ts`)**: Binds `supported`/`tested` invariants and episodes to AST symbol fingerprints (`lore-bindings.json`). If a bound symbol's signature/callees change, the symbol is deleted, or a `git diff` hunk touches its span, `memory_recall` flags the invariant as `⚠️ [STALE_SUSPECT]`.
   - **Working-Memory Context-Window Staleness Radar (`src/code/context_sync.ts`)**: Tracks per-session snapshots (`mtimeMs`, size, symbol spans/fingerprints) of every file inspected or edited by the agent. If a file in the agent's working context is modified externally on disk, the next `memory_recall` auto-refreshes `CodeStore` and emits a surgical symbol delta alert (`modified`, `lines_shifted`, `added`, `removed`).
-  - **Collective Swarm Stigmergy (`src/code/stigmergy.ts`)**: Broadcasts 15-minute spatial attention leases (`swarm-leases.json`, shared across `.pi/scratch/slot-*` worktrees) when sessions inspect or mutate symbols, surfacing active peer sessions (`exact_symbol`, `same_file`, `call_graph_neighbor`) in real time.
+  - **Collective Swarm Stigmergy (`src/code/stigmergy.ts`)**: Broadcasts 15-minute spatial attention leases (`swarm-leases.json`, shared across `.pi/scratch/slot-*`, `.worktrees/*`, and `.pi/subagents/worktrees/*` worktrees) when sessions inspect or mutate symbols, surfacing active peer sessions (`exact_symbol`, `same_file`, `call_graph_neighbor`) in real time.
 
 ### 2.2 Ephemeral Semantic Session Memory, Provenance Boundaries & Mipmap Compaction (`scope: "session"`)
 
-`pi-mm` indexes active conversational turns and tool outputs into an ephemeral per-session multi-axis store (`.pi/mm/sessions/<sessionId>/session.db`), enabling progressive in-session recall, parallel session inspection, and lossless context compaction:
+`pi-mm` indexes active conversational turns and tool outputs into an ephemeral per-session multi-axis store (`.mm/sessions/<sessionId>/session.db`, with automatic `.pi/mm` fallback), enabling progressive in-session recall, parallel session inspection, and lossless context compaction:
 
 - **Asymmetric Multi-Granularity Ingestion & Write Serialization** (`src/session/sink.ts`, `src/session/store.ts`):
   - Decomposes each settled turn into **Turn (L1)** summaries, **Block (L1)** tool/reasoning segments, and **Symbol (L0)** exact identifier/path records over `libcorm` (`joint,lemma,sepal`), while preserving raw line-addressable turn payloads on disk (`turns/turn-<N>.json`).

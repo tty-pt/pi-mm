@@ -5,19 +5,35 @@ All notable changes to the `@tty-pt/pi-mm` package will be documented in this fi
 ## [Unreleased] (target: v0.9.0)
 
 ### Added
+- **Native `libmm` Delegation (`src/mm_native.ts`, `src/tools/traverse.ts`, `src/tools/lifecycle.ts`, `src/tools/recall.ts`, `src/code/recall.ts`, `src/session/sink.ts`, `src/synth/adapter.ts`)**:
+  - Declared native `libmm` N-API bindings for `projectCodeSearch`/`projectCodeSymbol`/`projectCodeTrace`, `distillPrompt`/`distillCommit`, `sessionIngestTurn`/`sessionRecall`, and `traverse` (`87d353a`, `af6a8d2`).
+  - Delegated `traverse` and lifecycle updates (`566384d`), code recall, session turn ingestion, and distillation synthesis (`7198d55`), and session recall queries (`e85ab0e`) to native `libmm` with TypeScript fallback.
+- **Bidirectional Code-Lore Links, Persistent Recall Filters & Interactive Ambiguity Resolution (`src/code/graph.ts`, `src/code/lore_binding.ts`, `src/code/manager.ts`, `src/code/recall.ts`, `src/tools/recall.ts`, `src/tools/record.ts`, `src/tools/store.ts`, `src/tools/ranking.ts`)**:
+  - Added bidirectional code-to-lore graph edges, persistent recall filtering options, and interactive ambiguity resolution across symbol lookups (`e06477f`).
+- **Worktree-Aware Coordination & Primary Root Resolution (`src/code/lore_binding.ts`, `src/code/stigmergy.ts`, `src/tools/index.ts`)**:
+  - Added `deriveWorkspaceLabel()` and `resolvePrimaryWorktreeRoot()` recognizing `.pi/scratch/slot-*`, `.worktrees/*`, `.pi/subagents/worktrees/*`, and `.git` `gitdir:` worktree pointers (`203ab13`).
+  - Extended `resolveSharedCoordinationDir()`, auto-populated `workspaceLabel` on swarm attention leases, resolved primary-worktree memory directories in `resolveMemDir()`, and increased `cormd` startup fast-ready wait from `50ms` to `2500ms` (`203ab13`).
 - **In-Process `@tty-pt/mm` (`libmm` `^1.0.0`) Native N-API Integration (`package.json`, `src/mm_native.ts`, `src/tools/ranking.ts`, `src/code/scanner.ts`, `src/hooks/auto_recall.ts`, `src/payload.ts`, `src/window.ts`, `src/versions.ts`, `src/index.ts`, `tests/mm_native.test.ts`)**:
-  - Added `@tty-pt/mm` (`^1.0.0`) dependency and `src/mm_native.ts` (`getMmAddon`, `isMmNativeAvailable`) loading `mm.node` / `mm_node.node` in-process across `prebuilds/<platform>-<arch>[-musl]` and local worktrees.
-  - Accelerated Reciprocal Rank Fusion (`fuseRankingsRRF`, `adaptiveRrfK`), 8-factor epistemic scoring (`computeRankingScore`), hygiene filters (`isTechnicalInquiry`, `isCodeOrDocArtifact`, `isQuestionMemory`, `isAssistantEcho`, `isCleanSummaryText`), temporal window calculation (`levelWindow` $\rightarrow$ `windowForLevel`), prompt intent classification (`classifyPromptIntent`), and source symbol scanning (`scanSourceSymbolsNative`) via the native C `libmm` kernel.
-  - Added `libmm >= 1.0.0` (`mm.pc` / `@tty-pt/mm`) to `REQUIRED_ENGINE_FEATURES`, `MIN_ENGINE_VERSIONS`, and `/mm doctor` status output (`[✓] Native libmm N-API Addon: Active in-process (@tty-pt/mm)`).
+  - Added `@tty-pt/mm` (`^1.0.0`) dependency and `src/mm_native.ts` (`getMmAddon`, `isMmNativeAvailable`) loading `mm.node` / `mm_node.node` in-process across `prebuilds/<platform>-<arch>[-musl]` and local worktrees (`00b9901`).
+  - Accelerated Reciprocal Rank Fusion (`fuseRankingsRRF`, `adaptiveRrfK`), 8-factor epistemic scoring (`computeRankingScore`), hygiene filters (`isTechnicalInquiry`, `isCodeOrDocArtifact`, `isQuestionMemory`, `isAssistantEcho`, `isCleanSummaryText`), temporal window calculation (`levelWindow` $\rightarrow$ `windowForLevel`), prompt intent classification (`classifyPromptIntent`), and source symbol scanning (`scanSourceSymbolsNative`) via the native C `libmm` kernel (`00b9901`).
+  - Added `libmm >= 1.0.0` (`mm.pc` / `@tty-pt/mm`) to `REQUIRED_ENGINE_FEATURES`, `MIN_ENGINE_VERSIONS`, and `/mm doctor` status output (`[✓] Native libmm N-API Addon: Active in-process (@tty-pt/mm)`) (`00b9901`).
+
+### Changed
+- **Canonical `.mm` Directory & Standardized Metadata (`src/config.ts`, `src/tools/index.ts`, `package.json`, `README.md`)**:
+  - Canonicalized default `memDir` to `.mm` with automatic fallback to `.pi/mm` in both local and primary worktree roots (`f9ec8ff`).
+  - Clarified native `libmm` C delegation in `README.md` (`7a8e0dd`) and standardized package author (`Paulo Quirino <quirinpa@gmail.com>`) and `BSD-2-Clause` license metadata (`acfd9da`).
 
 ### Fixed
+- **HTOK Unpack Bounds & Daemon Lifecycle Cleanup (`src/payload.ts`, `src/daemon.ts`, `src/auren-bootstrap.ts`, `src/code/manager.ts`, `src/code/store.ts`, `src/corm.ts`)**:
+  - Added safety bounds check to the HTOK history unpack loop in `src/payload.ts` (`1747e11`).
+  - Tracked and cleaned up `cormd` daemon lifecycles, prioritized local `auren` libraries (`44f53f4`), added `-d` daemon flag to the `axil-auren` launcher (`02a5b70`), and unregistered exit signal handlers when no daemons remain (`87d353a`).
 - **Natural "Remember" Capture, Flashbulb Anchor Preservation & Directive Recall (`src/hooks/auto_recall.ts`, `src/hooks/events.ts`, `src/hooks/reinforcement.ts`, `src/synth/adapter.ts`, `src/tools/consolidate.ts`, `src/tools/record.ts`, `src/tools/store.ts`, `tests/natural_remember_and_directives.test.ts`)**:
-  - Captured natural conversational remember requests (`"remember ..."`, `"don't forget ..."`) as flashbulb anchors (`isAnchor: true`) and preserved anchor flags across L0 $\rightarrow$ L1/L2 consolidation and synthesis.
-  - Improved standing directive recall and periodic reinforcement scheduling, filtered non-standing L2 invariants out of the global standing directives block in `buildInjectedContext`, and deduplicated `Additional facts` against rendered session excerpts in `formatCompactMemoryEntry`.
+  - Captured natural conversational remember requests (`"remember ..."`, `"don't forget ..."`) as flashbulb anchors (`isAnchor: true`) and preserved anchor flags across L0 $\rightarrow$ L1/L2 consolidation and synthesis (`3aa956e`).
+  - Improved standing directive recall and periodic reinforcement scheduling, filtered non-standing L2 invariants out of the global standing directives block in `buildInjectedContext`, and deduplicated `Additional facts` against rendered session excerpts in `formatCompactMemoryEntry` (`3aa956e`).
 - **Advisory Lock Coordination, `sepal` CLI Fallback & Classifier Timeout Hardening (`src/lock.ts`, `src/daemon.ts`, `src/napi_runner.ts`, `src/judge/nearest.ts`, `tests/concurrency.test.ts`, `tests/no-live-network.ts`, `tests/validation_fixes.test.ts`)**:
-  - Guarded `Deno.FsFile.tryLock` availability in `src/lock.ts` and `src/daemon.ts` and ran coordinator inspection/removal hooks cleanly when a Node `flock` helper child exits on contention.
-  - Routed `sepal`-indexed store commands in `NativeAddonCormRunner` through the CLI fallback runner so vector embedding hooks execute consistently.
-  - Reduced initial exemplar batch embedding timeout in `src/judge/nearest.ts` from `12000ms` to `2000ms` and canceled unread error response bodies (`res.body?.cancel()`).
+  - Guarded `Deno.FsFile.tryLock` availability in `src/lock.ts` and `src/daemon.ts` and ran coordinator inspection/removal hooks cleanly when a Node `flock` helper child exits on contention (`00b9901`).
+  - Routed `sepal`-indexed store commands in `NativeAddonCormRunner` through the CLI fallback runner so vector embedding hooks execute consistently (`00b9901`).
+  - Reduced initial exemplar batch embedding timeout in `src/judge/nearest.ts` from `12000ms` to `2000ms` and canceled unread error response bodies (`res.body?.cancel()`) (`00b9901`).
 
 ## [0.8.0] - 2026-11-15
 
